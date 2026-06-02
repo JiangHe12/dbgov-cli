@@ -3,6 +3,7 @@ module github.com/JiangHe12/dbgov-cli
 go 1.25.0
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/JiangHe12/opskit-core v0.0.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/spf13/cobra v1.9.1

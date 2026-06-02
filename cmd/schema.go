@@ -5,15 +5,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
-	"github.com/JiangHe12/dbgov-cli/internal/backend/fake"
-	"github.com/JiangHe12/dbgov-cli/internal/backend/mysql"
+	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
+	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
-	"github.com/JiangHe12/opskit-core/audit"
-	"github.com/JiangHe12/opskit-core/safety"
 )
-
-const eventSchemaDiff audit.EventType = "schema.diff"
 
 type schemaDiffOptions struct {
 	file string
@@ -56,7 +51,7 @@ func runSchemaDiff(f *cliFlags, opts schemaDiffOptions) error {
 	if err != nil {
 		return err
 	}
-	b, ctxName, meta, err := buildSchemaBackend(f, opts)
+	b, meta, err := buildBackend(f, backendOptions{Fake: opts.fake})
 	if err != nil {
 		return err
 	}
@@ -65,34 +60,8 @@ func runSchemaDiff(f *cliFlags, opts schemaDiffOptions) error {
 		return err
 	}
 	diff := schema.Diff(current, desired)
-	writeSchemaDiffAudit(f, ctxName, meta, diff, nil)
+	writeSchemaDiffAudit(f, meta, diff, nil)
 	return printSchemaDiff(f, diff)
-}
-
-func buildSchemaBackend(f *cliFlags, opts schemaDiffOptions) (dbbackend.Backend, string, *dbgovctxForAudit, error) {
-	if opts.fake {
-		return fake.New(), "fake", &dbgovctxForAudit{Name: "fake"}, nil
-	}
-	ctx, name := selectedContext(f)
-	if ctx == nil {
-		return nil, "", nil, errNoContext()
-	}
-	if ctx.Engine != "mysql" {
-		return nil, "", nil, errUnsupportedEngine(ctx.Engine)
-	}
-	dsn := ctx.Username + ":" + ctx.Password + "@tcp(" + ctx.Host + ":" + itoa(ctx.Port) + ")/" + ctx.Database
-	b, err := mysql.New(dsn, ctx.Database)
-	if err != nil {
-		return nil, "", nil, err
-	}
-	return b, name, &dbgovctxForAudit{Name: name, Env: ctx.Env, Protected: ctx.Protected, Database: ctx.Database}, nil
-}
-
-type dbgovctxForAudit struct {
-	Name      string
-	Env       string
-	Protected bool
-	Database  string
 }
 
 func printSchemaDiff(f *cliFlags, diff schema.DiffResult) error {
@@ -114,29 +83,12 @@ func printSchemaDiff(f *cliFlags, diff schema.DiffResult) error {
 	return nil
 }
 
-func writeSchemaDiffAudit(f *cliFlags, contextName string, meta *dbgovctxForAudit, diff schema.DiffResult, opErr error) {
-	path, err := audit.DefaultPath()
-	if err != nil {
-		return
+func writeSchemaDiffAudit(f *cliFlags, meta contextMeta, diff schema.DiffResult, opErr error) {
+	event := dbgaudit.New(dbgaudit.EventTypeSchemaDiff, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "diff"))
+	event.Risk = "R0"
+	if diff.Destructive {
+		event.Risk = "R3"
+		event.Destructive = true
 	}
-	status := audit.StatusSuccess
-	if opErr != nil {
-		status = audit.StatusFailed
-	}
-	event := audit.Event{
-		EventType: eventSchemaDiff,
-		Operator:  currentOperator(f),
-		Context: audit.EventContext{
-			Name:      contextName,
-			Env:       meta.Env,
-			Protected: meta.Protected,
-		},
-		Target: audit.EventTarget{
-			App:          meta.Database,
-			ResourceType: "schema",
-			Resource:     "diff",
-		},
-		Status: status,
-	}
-	_ = audit.Append(path, event)
+	emitAudit(f, event, opErr)
 }
