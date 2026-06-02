@@ -2,7 +2,7 @@
 
 > 目标:把 nacos-cli / sentinel-cli 中重复的治理外壳抽成独立 Go module `opskit-core`,对齐已分叉的规则,再让 dbgov 直接复用。
 > 关联:见 `DESIGN.md`(dbgov 设计)。本施工单是 dbgov 编码前的前置工程。
-> 状态:计划阶段,尚未动工。
+> 状态:已执行完毕(行为收敛至 5c)。
 
 ---
 
@@ -170,3 +170,16 @@ Phase 6  core 收口 v1.0.0;dbgov 正式开发
 ## 10. 一句话
 
 **sentinel 先迁验证抽取 → dbgov 薄切早验证 API → nacos 最后迁走版本号**,每包按"挪出 internal/ + 去领域化 + 替换 + 测试绿"的配方增量推进,最终三工具共享一份经过审计、规则对齐的治理脊椎。
+
+---
+
+## 11. 实际执行(as-built)
+
+本节记录执行结果与原计划的关键偏离;上文保留为当时的施工计划,不按事后结果逐行改写历史。
+
+- **audit**:实际采用"共享引擎 + 各工具自有 Event 结构"。core 提供 append/lock/rotate/age/quarantine/verify/raw query 引擎,并通过配置注入 timestamp/type/operator 等 schema 键名;sentinel、nacos 保留各自 Event/事件常量/查询展示壳。原因是 sentinel 与 nacos 的落盘字段、键名、嵌套结构差异较大,用单一超集 struct 会脆弱且容易破坏格式。
+- **输出信封(envelope)**:实际并入 `printer` 包做可选、参数化能力,不是独立包,也不是 Phase 3 一次性落地。现有裸 JSON 输出保持默认,需要信封的工具显式注入 apiVersion/kind 等样式。
+- **ctx**:实际收敛为共享 Store 持久化引擎 + 可选 Base。sentinel/dbgov 继续嵌入 `ctx.Base`;nacos 因配置 schema 不同,使用 `NewStoreWithoutBase` 接入 Store,保留自己的 Context 类型和 yaml 字段。
+- **Phase 5 实际拆分**:5b-1(audit 引擎支持外来 Event) → 5b-2a~2f(apperrors/credstore/telemetry/printer/ctx/audit 逐包迁 nacos) → 5b-3(兼容债清理:删除 nacos 重复 encrypted-file、keychain 统一 bare contextName、nacos ctx `otel*` 收敛为 `otlp*`) → 5c(nacos 迁 core safety,R1/R2/R3 收紧为均需 `--yes` 或交互确认)。
+- **贯穿原则**:共享引擎在 core,各工具领域类型/命令壳/文案/字段名通过本工具保留或注入;分叉行为取更正确者为家族标准,例如 apperrors 退出码采用 nacos 精细映射、vault 错误分类采用精细映射、safety 采用更严格的 R1/R2/R3 授权规则。
+- **家族目标**:opskit-core 已被 sentinel-cli、nacos-cli、dbgov 复用;未来 es-cli / mq-cli 等治理工具按同一契约接入,避免再复制治理外壳。

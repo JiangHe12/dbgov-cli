@@ -1,7 +1,7 @@
 # dbgov 设计文档
 
-> 状态:设计阶段(尚未实现)。本文件记录 dbgov 的定位、范围、治理模型与命令树,供后续实现与给 codex 出落地指令时对齐。
-> 关联产品线:`nacos-cli`(配置治理)、`sentinel-cli`(流控规则治理)、`dbgov`(关系型库治理)。三者共享同一套治理 DNA,未来抽公共核心模块 `opskit-core` 复用。
+> 状态:设计基线。dbgov 已完成基于 `opskit-core` 的最小竖切,正式能力仍按本文推进。
+> 关联产品线:`nacos-cli`(配置治理)、`sentinel-cli`(流控规则治理)、`dbgov`(关系型库治理)。三者共享同一套治理 DNA,公共核心模块 `opskit-core` 已抽出并被三者复用。
 
 ---
 
@@ -251,11 +251,11 @@ dbgov grant ... / dbgov user ...    # 账号/权限治理(DCL),一期不做
 
 ---
 
-## 11. 与现有工具的关系 / 未来
+## 11. 与现有工具的关系 / 工具家族
 
-- dbgov 与 nacos-cli / sentinel-cli **共享治理外壳**(safety/audit/credstore/ctx/backup/printer/apperrors + RBAC + OTel + backend 接口 + 追加式审计(append-only) + pkg 对外 API)。
-- 这套外壳目前在 nacos-cli / sentinel-cli 间是**复制 + 已分叉**的。建议在做 dbgov 之前(2→3 的时间窗口)**抽出共享模块 `opskit-core`**,三者 import 之,各自只留领域 backend + 命令 + 校验。
-- 未来若做 Redis/ES 治理,作为 `opskit-core` 上的独立领域工具(品牌名,非 `redis-cli`)。
+- dbgov 与 nacos-cli / sentinel-cli **共享治理外壳**:通用治理引擎已抽入 `opskit-core`,各工具 import 之,各自只留领域 backend + 命令 + 校验。
+- 当前工具家族为:`nacos-cli`(配置治理)、`sentinel-cli`(流控规则治理)、`dbgov`(关系型库治理)。三者共享 `opskit-core` 的 apperrors / lockfile / printer / credstore / audit / ctx / safety / telemetry 等通用能力。
+- 未来若做 ES / MQ 等治理工具,按同一契约接入 `opskit-core`,作为独立领域工具(品牌名,非官方二进制重名)。Redis 若确需治理,也只作为 `opskit-core` 上的薄 profile 评估。
 
 ---
 
@@ -274,10 +274,10 @@ dbgov grant ... / dbgov user ...    # 账号/权限治理(DCL),一期不做
 **当 schema-apply 背后的可插拔执行器,dbgov 只做门禁+审计+dry-run 编排+可观测,不重造。** 小表/快操作 → 直接 ALTER;大表/锁表 → 委托在线工具。context 声明 `--online-ddl-tool gh-ost|pt-osc|none` + 路径/参数。dbgov 负责风险分级、ticket、dry-run(展示将执行命令 + 预估耗时/影响)、审计(记录完整调用与结果)、进度结构化透传。**分期**:v1 = 直接 DDL + 大表/锁表硬拦截(超阈值报错提示配置在线工具);在线 DDL 委托放 v1.1。
 
 ### Q5 opskit-core 抽取清单 + 分叉对齐
-**先抽 opskit-core,再建 dbgov;以 sentinel 代码为基底。**
-- 进 core:safety(risk/ticket/RBAC/authorize)、audit(append-only + schema/时序 verify + 坏行隔离 + 可选 age 加密)、credstore、ctx 框架、backup 框架、printer、apperrors、lockfile、输出信封(apiVersion/kind)、`backend.Backend` 接口骨架、doctor 框架、capabilities 框架、OTel。
-- 留各 CLI:领域 backend、领域命令、领域校验、SKILL.md。
-- **Go 机制**:共享包必须从 `internal/` 挪到可公开 import 的路径(`internal/` 包跨 module 引不到);opskit-core 为独立 module,打 semver tag;消费方 `require` 它,本地联调用 `replace` 指向本地目录。
-- 分叉点规范形状:风险常量用 sentinel 的 `R0/R1/R2/R3`;AllowFlag 值不带 `--` 前缀;R2 授权采 sentinel 更严形(除 ticket 外还要 `--yes`/确认);RBAC 进 core;`ValidateBackupPolicy` 进 core。
-- **护栏**:改 nacos 的 AllowFlag 值格式 / R2 行为可能破坏其已发布契约和 golden,涉破坏性变更须走版本号 + 迁移流程,不为 dbgov 需求悄悄掀掉稳定的 nacos 契约。
-- 次序:抽 core → 先迁 sentinel(验证接口)→ 再迁 nacos → 最后建 dbgov。**绝不再造第三份复制粘贴。** 赶时间的底线:定义好 core、dbgov 直接 import 新建,另两个 fast-follow 迁移。
+**opskit-core 已抽出;sentinel、nacos 已收敛到 core,dbgov 已构建在 core 上。**
+- 已进 core:apperrors、lockfile、printer(含可选输出信封)、credstore、audit(共享引擎)、ctx(Store 引擎 + 可选 Base)、safety(risk/ticket/RBAC/authorize/backup policy)、telemetry。
+- 留各 CLI:领域 backend、领域命令、领域校验、领域 Context/Event 类型、SKILL.md。
+- **Go 机制**:共享包已从 `internal/` 挪到可公开 import 的路径;`opskit-core` 为独立 module。消费方 `require github.com/JiangHe12/opskit-core`,本地联调用 `replace` 指向本地目录。
+- 分叉点规范形状已收敛:风险常量为 `R0/R1/R2/R3`;AllowFlag 值不带 `--` 前缀;R1/R2/R3 按家族标准均需 `--yes` 或交互确认,R2/R3 额外需 ticket,R3 额外需 allow-flag;RBAC opt-in;`ValidateBackupPolicy` 在 core。
+- **护栏**:core 只放共享引擎和通用包;各工具领域类型/字段/事件/命令壳由各自项目保留并通过配置注入。
+- 次序已执行:抽 core → 迁 sentinel → dbgov 薄竖切验证 → 迁 nacos 并完成行为收敛。**不再造第三份复制粘贴。**
