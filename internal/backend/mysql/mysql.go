@@ -36,7 +36,7 @@ func (b *Backend) Ping(ctx context.Context) error {
 
 func (b *Backend) IntrospectSchema(ctx context.Context) (schema.Schema, error) {
 	rows, err := b.db.QueryContext(ctx, `
-SELECT table_name, column_name, column_type
+SELECT table_name, column_name, column_type, is_nullable, column_default, column_key
 FROM information_schema.columns
 WHERE table_schema = ?
 ORDER BY table_name, ordinal_position`, b.database)
@@ -47,15 +47,21 @@ ORDER BY table_name, ordinal_position`, b.database)
 
 	result := schema.Schema{Tables: map[string]schema.Table{}}
 	for rows.Next() {
-		var tableName, columnName, columnType string
-		if err := rows.Scan(&tableName, &columnName, &columnType); err != nil {
+		var tableName, columnName, columnType, nullable, columnKey string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&tableName, &columnName, &columnType, &nullable, &defaultValue, &columnKey); err != nil {
 			return schema.Schema{}, err
 		}
 		table := result.Tables[tableName]
 		if table.Name == "" {
 			table.Name = tableName
 		}
-		table.Columns = append(table.Columns, schema.Column{Name: columnName, Type: columnType})
+		column := schema.Column{Name: columnName, Type: columnType, Nullable: strings.EqualFold(nullable, "YES"), Key: columnKey}
+		if defaultValue.Valid {
+			value := defaultValue.String
+			column.Default = &value
+		}
+		table.Columns = append(table.Columns, column)
 		result.Tables[tableName] = table
 	}
 	if err := rows.Err(); err != nil {
@@ -64,7 +70,103 @@ ORDER BY table_name, ordinal_position`, b.database)
 	if len(result.Tables) == 0 {
 		return result, fmt.Errorf("no tables found in database %q", b.database)
 	}
+	if err := b.loadIndexes(ctx, &result); err != nil {
+		return schema.Schema{}, err
+	}
+	if err := b.loadForeignKeys(ctx, &result); err != nil {
+		return schema.Schema{}, err
+	}
 	return result, nil
+}
+
+func (b *Backend) loadIndexes(ctx context.Context, result *schema.Schema) error {
+	rows, err := b.db.QueryContext(ctx, `
+SELECT table_name, index_name, column_name, non_unique, seq_in_index
+FROM information_schema.statistics
+WHERE table_schema = ?
+ORDER BY table_name, index_name, seq_in_index`, b.database)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	type key struct{ table, name string }
+	indexes := map[key]*schema.Index{}
+	order := []key{}
+	for rows.Next() {
+		var tableName, indexName, columnName string
+		var nonUnique int
+		var seq int
+		if err := rows.Scan(&tableName, &indexName, &columnName, &nonUnique, &seq); err != nil {
+			return err
+		}
+		k := key{table: tableName, name: indexName}
+		idx, ok := indexes[k]
+		if !ok {
+			indexes[k] = &schema.Index{Name: indexName, Unique: nonUnique == 0}
+			idx = indexes[k]
+			order = append(order, k)
+		}
+		idx.Columns = append(idx.Columns, columnName)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, k := range order {
+		table := result.Tables[k.table]
+		if table.Name == "" {
+			continue
+		}
+		table.Indexes = append(table.Indexes, *indexes[k])
+		result.Tables[k.table] = table
+	}
+	return nil
+}
+
+func (b *Backend) loadForeignKeys(ctx context.Context, result *schema.Schema) error {
+	rows, err := b.db.QueryContext(ctx, `
+SELECT kcu.table_name, kcu.constraint_name, kcu.column_name, kcu.referenced_table_name, kcu.referenced_column_name, kcu.ordinal_position
+FROM information_schema.key_column_usage kcu
+JOIN information_schema.referential_constraints rc
+  ON rc.constraint_schema = kcu.constraint_schema
+ AND rc.constraint_name = kcu.constraint_name
+WHERE kcu.table_schema = ?
+  AND kcu.referenced_table_name IS NOT NULL
+ORDER BY kcu.table_name, kcu.constraint_name, kcu.ordinal_position`, b.database)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	type key struct{ table, name string }
+	foreignKeys := map[key]*schema.ForeignKey{}
+	order := []key{}
+	for rows.Next() {
+		var tableName, constraintName, columnName, refTable, refColumn string
+		var ordinal int
+		if err := rows.Scan(&tableName, &constraintName, &columnName, &refTable, &refColumn, &ordinal); err != nil {
+			return err
+		}
+		k := key{table: tableName, name: constraintName}
+		fk, ok := foreignKeys[k]
+		if !ok {
+			foreignKeys[k] = &schema.ForeignKey{Name: constraintName, RefTable: refTable}
+			fk = foreignKeys[k]
+			order = append(order, k)
+		}
+		fk.Columns = append(fk.Columns, columnName)
+		fk.RefColumns = append(fk.RefColumns, refColumn)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, k := range order {
+		table := result.Tables[k.table]
+		if table.Name == "" {
+			continue
+		}
+		table.ForeignKeys = append(table.ForeignKeys, *foreignKeys[k])
+		result.Tables[k.table] = table
+	}
+	return nil
 }
 
 func (b *Backend) Query(ctx context.Context, sqlText string) (dbbackend.QueryResult, error) {
@@ -92,6 +194,25 @@ func (b *Backend) Explain(ctx context.Context, sqlText string) (dbbackend.Explai
 		Rows:          result.Rows,
 		EstimatedRows: estimateRows(result),
 	}, nil
+}
+
+func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
+	rows, err := b.db.QueryContext(ctx, "SHOW CREATE TABLE `"+escapeIdent(table)+"`")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		return "", fmt.Errorf("table %q not found", table)
+	}
+	var tableName, ddl string
+	if err := rows.Scan(&tableName, &ddl); err != nil {
+		return "", err
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return ddl, nil
 }
 
 func scanRows(rows *sql.Rows) (dbbackend.QueryResult, error) {
@@ -154,4 +275,8 @@ func estimateRows(result dbbackend.QueryResult) int64 {
 		}
 	}
 	return total
+}
+
+func escapeIdent(value string) string {
+	return strings.ReplaceAll(value, "`", "``")
 }

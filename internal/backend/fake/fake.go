@@ -19,6 +19,8 @@ func New() *Backend {
 				{Name: "id", Type: "BIGINT"},
 				{Name: "legacy", Type: "TEXT"},
 			},
+			Indexes:     []schema.Index{{Name: "PRIMARY", Columns: []string{"id"}, Unique: true}},
+			ForeignKeys: []schema.ForeignKey{{Name: "fk_users_org", Columns: []string{"org_id"}, RefTable: "orgs", RefColumns: []string{"id"}}},
 		},
 	}}}
 }
@@ -42,4 +44,8 @@ func (b *Backend) Explain(context.Context, string) (dbbackend.ExplainResult, err
 		Rows:          [][]string{{"1", "SIMPLE", "users", "2"}},
 		EstimatedRows: 2,
 	}, nil
+}
+
+func (b *Backend) TableDDL(context.Context, string) (string, error) {
+	return "CREATE TABLE `users` (`id` BIGINT, `legacy` TEXT);", nil
 }

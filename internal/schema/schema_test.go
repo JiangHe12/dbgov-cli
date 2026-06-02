@@ -51,3 +51,22 @@ func TestDiffSchemaFindsAddAndDropColumns(t *testing.T) {
 		t.Fatal("DiffResult.Destructive = false, want true")
 	}
 }
+
+func TestSchemaModelCarriesIntrospectionDetails(t *testing.T) {
+	def := "CURRENT_TIMESTAMP"
+	table := Table{
+		Name: "users",
+		Columns: []Column{
+			{Name: "id", Type: "BIGINT", Nullable: false, Key: "PRI"},
+			{Name: "created_at", Type: "DATETIME", Nullable: true, Default: &def},
+		},
+		Indexes:     []Index{{Name: "idx_users_created_at", Columns: []string{"created_at"}, Unique: false}},
+		ForeignKeys: []ForeignKey{{Name: "fk_users_org", Columns: []string{"org_id"}, RefTable: "orgs", RefColumns: []string{"id"}}},
+	}
+	if table.Columns[1].Default == nil || *table.Columns[1].Default != def {
+		t.Fatalf("default not carried: %+v", table.Columns[1])
+	}
+	if table.Indexes[0].Columns[0] != "created_at" || table.ForeignKeys[0].RefTable != "orgs" {
+		t.Fatalf("introspection details not carried: %+v", table)
+	}
+}

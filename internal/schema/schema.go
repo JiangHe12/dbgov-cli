@@ -11,13 +11,31 @@ type Schema struct {
 }
 
 type Table struct {
-	Name    string   `json:"name"`
-	Columns []Column `json:"columns"`
+	Name        string       `json:"name"`
+	Columns     []Column     `json:"columns"`
+	Indexes     []Index      `json:"indexes,omitempty"`
+	ForeignKeys []ForeignKey `json:"foreignKeys,omitempty"`
 }
 
 type Column struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name     string  `json:"name"`
+	Type     string  `json:"type"`
+	Nullable bool    `json:"nullable"`
+	Default  *string `json:"default,omitempty"`
+	Key      string  `json:"key,omitempty"`
+}
+
+type Index struct {
+	Name    string   `json:"name"`
+	Columns []string `json:"columns"`
+	Unique  bool     `json:"unique"`
+}
+
+type ForeignKey struct {
+	Name       string   `json:"name"`
+	Columns    []string `json:"columns"`
+	RefTable   string   `json:"refTable"`
+	RefColumns []string `json:"refColumns"`
 }
 
 type Action string

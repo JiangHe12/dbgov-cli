@@ -81,6 +81,63 @@ func TestSchemaDiffWritesDbgovAuditEvent(t *testing.T) {
 	}
 }
 
+func TestSchemaListDescribeDumpFakeBackend(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	out, _, err := executeCommandForTest("-o", "json", "schema", "list", "--fake")
+	if err != nil {
+		t.Fatalf("schema list error = %v", err)
+	}
+	if !strings.Contains(out, `"kind": "SchemaTableList"`) || !strings.Contains(out, `"users"`) {
+		t.Fatalf("unexpected list output: %s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeSchemaList || evt.Target.ObjectType != "schema" {
+		t.Fatalf("list audit event = %+v", evt)
+	}
+
+	out, _, err = executeCommandForTest("-o", "json", "schema", "describe", "users", "--fake")
+	if err != nil {
+		t.Fatalf("schema describe error = %v", err)
+	}
+	if !strings.Contains(out, `"kind": "SchemaDescribe"`) || !strings.Contains(out, `"indexes"`) || !strings.Contains(out, `"foreignKeys"`) {
+		t.Fatalf("unexpected describe output: %s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeSchemaDescribe || evt.Target.Object != "users" {
+		t.Fatalf("describe audit event = %+v", evt)
+	}
+
+	out, _, err = executeCommandForTest("-o", "json", "schema", "dump", "--fake")
+	if err != nil {
+		t.Fatalf("schema dump stdout error = %v", err)
+	}
+	if !strings.Contains(out, "CREATE TABLE `users`") {
+		t.Fatalf("unexpected dump output: %s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeSchemaDump {
+		t.Fatalf("dump audit event = %+v", evt)
+	}
+}
+
+func TestSchemaDumpWritesDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, "schema")
+	_, _, err := executeCommandForTest("schema", "dump", "--fake", "--dir", dir)
+	if err != nil {
+		t.Fatalf("schema dump --dir error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "users.sql"))
+	if err != nil {
+		t.Fatalf("read dumped ddl: %v", err)
+	}
+	if !strings.Contains(string(data), "CREATE TABLE `users`") {
+		t.Fatalf("dumped ddl = %s", string(data))
+	}
+}
+
 func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -17,18 +17,20 @@ const (
 type EventType string
 
 const (
-	EventTypeQuery       EventType = "query"
-	EventTypeExplain     EventType = "explain"
-	EventTypeSchemaDump  EventType = "schema.dump"
-	EventTypeSchemaDiff  EventType = "schema.diff"
-	EventTypeSchemaApply EventType = "schema.apply"
-	EventTypeDataExec    EventType = "data.exec"
-	EventTypeExport      EventType = "export"
-	EventTypeImport      EventType = "import"
-	EventTypeReconcile   EventType = "reconcile"
-	EventTypeRollback    EventType = "rollback"
-	EventTypeDoctor      EventType = "doctor"
-	EventTypeAuditPrune  EventType = "audit.prune"
+	EventTypeQuery          EventType = "query"
+	EventTypeExplain        EventType = "explain"
+	EventTypeSchemaDump     EventType = "schema.dump"
+	EventTypeSchemaList     EventType = "schema.list"
+	EventTypeSchemaDescribe EventType = "schema.describe"
+	EventTypeSchemaDiff     EventType = "schema.diff"
+	EventTypeSchemaApply    EventType = "schema.apply"
+	EventTypeDataExec       EventType = "data.exec"
+	EventTypeExport         EventType = "export"
+	EventTypeImport         EventType = "import"
+	EventTypeReconcile      EventType = "reconcile"
+	EventTypeRollback       EventType = "rollback"
+	EventTypeDoctor         EventType = "doctor"
+	EventTypeAuditPrune     EventType = "audit.prune"
 )
 
 const (

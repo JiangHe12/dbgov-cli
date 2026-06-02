@@ -11,6 +11,7 @@ type Backend interface {
 	IntrospectSchema(ctx context.Context) (schema.Schema, error)
 	Query(ctx context.Context, sql string) (QueryResult, error)
 	Explain(ctx context.Context, sql string) (ExplainResult, error)
+	TableDDL(ctx context.Context, table string) (string, error)
 }
 
 type QueryResult struct {
