@@ -6,6 +6,7 @@ import (
 	"github.com/JiangHe12/opskit-core/credstore"
 	corectx "github.com/JiangHe12/opskit-core/ctx"
 	"github.com/JiangHe12/opskit-core/lockfile"
+	"github.com/JiangHe12/opskit-core/printer"
 	"github.com/JiangHe12/opskit-core/safety"
 	"github.com/JiangHe12/opskit-core/telemetry"
 )
@@ -25,6 +26,7 @@ func init() {
 	})
 	corectx.Configure(corectx.Options{APIVersion: "dbgov.io/context/v1", ConfigDirName: ".dbgov"})
 	lockfile.Configure(lockfile.Options{TimeoutEnvVar: "DBGOV_LOCK_TIMEOUT"})
+	printer.Configure(printer.Options{APIVersion: "dbgov.io/v1"})
 	safety.Configure(safety.Config{
 		Prompt:                   "Proceed with database operation? [y/N] ",
 		OperatorEnvVar:           "DBGOV_OPERATOR",
@@ -36,11 +38,10 @@ func init() {
 		MetricNamePrefix: "dbgov",
 	})
 	credstore.Configure(credstore.Options{
-		MasterPasswordEnv:     "DBGOV_MASTER_PASSWORD",
-		PromptName:            "dbgov",
-		ConfigDirName:         ".dbgov",
-		KeychainService:       "dbgov",
-		KeychainAccountPrefix: "dbgov:",
-		EncryptedFileMagic:    []byte("DBGOV001"),
+		MasterPasswordEnv:  "DBGOV_MASTER_PASSWORD",
+		PromptName:         "dbgov",
+		ConfigDirName:      ".dbgov",
+		KeychainService:    "dbgov",
+		EncryptedFileMagic: []byte("DBGOV001"),
 	})
 }

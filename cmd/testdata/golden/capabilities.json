@@ -1,0 +1,70 @@
+{
+  "apiVersion": "dbgov.io/v1",
+  "kind": "Capabilities",
+  "success": true,
+  "data": {
+    "tool": {
+      "name": "dbgov",
+      "version": "dev"
+    },
+    "supported": {
+      "contextApiVersion": "dbgov.io/context/v1",
+      "auditApiVersion": "dbgov.io/audit/v1",
+      "engines": [
+        {
+          "name": "mysql",
+          "status": "available",
+          "rollback": {
+            "ddl": "none",
+            "data": "irreversible",
+            "notes": [
+              "DDL uses implicit commit; rollback uses structural snapshot guidance only.",
+              "Deleted data cannot be reconstructed by dbgov."
+            ]
+          }
+        },
+        {
+          "name": "postgres",
+          "status": "planned",
+          "rollback": {
+            "ddl": "transactional",
+            "data": "generally-irreversible",
+            "notes": [
+              "Transactional DDL rollback is planned for supported operations.",
+              "Data rollback requires explicit undo capture in future phases."
+            ]
+          }
+        }
+      ],
+      "riskModel": [
+        {
+          "level": "R0",
+          "authorization": "free"
+        },
+        {
+          "level": "R1",
+          "authorization": "--yes or interactive confirmation"
+        },
+        {
+          "level": "R2",
+          "authorization": "--yes plus --ticket"
+        },
+        {
+          "level": "R3",
+          "authorization": "--yes plus --ticket plus operation-specific --allow-* flag"
+        }
+      ],
+      "allowFlags": [
+        "--allow-destructive",
+        "--allow-no-where",
+        "--allow-production-prune"
+      ],
+      "governance": {
+        "audit": "append-only JSONL with optional age encryption",
+        "rbac": "opt-in roles reader/writer/admin",
+        "dryRun": true,
+        "otel": true
+      }
+    }
+  }
+}
