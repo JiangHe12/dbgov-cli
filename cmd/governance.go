@@ -58,7 +58,7 @@ func authorizeRead(f *cliFlags) error {
 	return safety.Authorize(safety.R0, safety.Options{Operator: currentOperator(f)})
 }
 
-func authorizeWrite(f *cliFlags, base safety.Risk, meta contextMeta, requiredAllow safety.AllowFlag, granted map[safety.AllowFlag]bool) error {
+func authorizeWrite(f *cliFlags, base safety.Risk, meta contextMeta, requiredAllows []safety.AllowFlag, granted map[safety.AllowFlag]bool) error {
 	effective := safety.EffectiveRisk(base, safety.ContextMeta{
 		Name:          meta.Name,
 		Env:           meta.Env,
@@ -69,14 +69,14 @@ func authorizeWrite(f *cliFlags, base safety.Risk, meta contextMeta, requiredAll
 	// External ticket validators are intentionally not wired in this phase;
 	// only the context regex TicketPattern is passed to core safety.
 	return safety.Authorize(effective, safety.Options{
-		Yes:               f.Yes,
-		NonInteractive:    f.NonInteractive,
-		Ticket:            f.Ticket,
-		TicketPattern:     meta.TicketPattern,
-		RequiredAllowFlag: requiredAllow,
-		GrantedAllowFlags: granted,
-		Roles:             meta.Roles,
-		Operator:          currentOperator(f),
+		Yes:                f.Yes,
+		NonInteractive:     f.NonInteractive,
+		Ticket:             f.Ticket,
+		TicketPattern:      meta.TicketPattern,
+		RequiredAllowFlags: requiredAllows,
+		GrantedAllowFlags:  granted,
+		Roles:              meta.Roles,
+		Operator:           currentOperator(f),
 	})
 }
 

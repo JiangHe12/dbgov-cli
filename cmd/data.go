@@ -100,15 +100,15 @@ func runDataExec(f *cliFlags, opts dataExecOptions) error {
 		return printDataExecPlan(f, plan)
 	}
 
-	requiredAllow := safety.AllowFlag("")
+	var requiredAllows []safety.AllowFlag
 	granted := map[safety.AllowFlag]bool{}
 	if plan.Destructive {
-		requiredAllow = safety.AllowNoWhere
+		requiredAllows = []safety.AllowFlag{safety.AllowNoWhere}
 		if opts.allowNoWhere {
 			granted[safety.AllowNoWhere] = true
 		}
 	}
-	if err := authorizeWrite(f, safetyRisk(plan.Risk), meta, requiredAllow, granted); err != nil {
+	if err := authorizeWrite(f, safetyRisk(plan.Risk), meta, requiredAllows, granted); err != nil {
 		event := newDataExecAuditEvent(f, meta, plan)
 		event.Status = dbgaudit.StatusDenied
 		setAuditError(&event, err)

@@ -106,15 +106,15 @@ func runImport(f *cliFlags, opts importOptions) error {
 		return printSchemaPlan(f, plan)
 	}
 
-	requiredAllow := safety.AllowFlag("")
+	var requiredAllows []safety.AllowFlag
 	granted := map[safety.AllowFlag]bool{}
 	if plan.Destructive {
-		requiredAllow = safety.AllowDestructive
+		requiredAllows = []safety.AllowFlag{safety.AllowDestructive}
 		if opts.allowDestructive {
 			granted[safety.AllowDestructive] = true
 		}
 	}
-	if err := authorizeWrite(f, safetyRisk(plan.OverallRisk), meta, requiredAllow, granted); err != nil {
+	if err := authorizeWrite(f, safetyRisk(plan.OverallRisk), meta, requiredAllows, granted); err != nil {
 		event := newImportAuditEvent(f, meta, plan)
 		event.Status = dbgaudit.StatusDenied
 		setAuditError(&event, err)

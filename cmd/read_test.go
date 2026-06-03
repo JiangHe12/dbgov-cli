@@ -249,7 +249,7 @@ func TestSchemaApplyR3RequiresTicketAllowFlagAndYes(t *testing.T) {
 
 func TestAuthorizeWriteRaisesProtectedR1ToR2(t *testing.T) {
 	flags := &cliFlags{Yes: true, NonInteractive: true, Operator: "alice"}
-	err := authorizeWrite(flags, safety.R1, contextMeta{Protected: true}, "", nil)
+	err := authorizeWrite(flags, safety.R1, contextMeta{Protected: true}, nil, nil)
 	if err == nil {
 		t.Fatal("expected protected R1 to require ticket after risk upgrade")
 	}
@@ -425,7 +425,7 @@ func TestDataExecDeleteNoWhereR3RequiresTicketAllowAndYes(t *testing.T) {
 
 func TestDataExecProtectedSmallUpdateUpgradesToR2(t *testing.T) {
 	flags := &cliFlags{Yes: true, NonInteractive: true, Operator: "alice"}
-	err := authorizeWrite(flags, safety.R1, contextMeta{Protected: true}, "", nil)
+	err := authorizeWrite(flags, safety.R1, contextMeta{Protected: true}, nil, nil)
 	if err == nil {
 		t.Fatal("expected protected R1 data exec to require ticket")
 	}
