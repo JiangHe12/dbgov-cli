@@ -1,104 +1,102 @@
 # dbgov-cli
 
-**Governed database operations for AI agents.**
+[English](README.md) | [中文](README_zh.md)
 
-`dbgov` lets an AI coding agent change a real database the way a careful human
-would: every mutation is risk-classified, its blast radius is measured by the
-database itself (never guessed), dangerous actions are walled behind a human
-ticket and explicit allow-flags, and everything is written to an append-only
-audit log. `mysql`/`psql` are great for typing a query — they give you no
-dry-run, no impact estimate, no rollback, no multi-environment context, and no
-audit. That gap is why dbgov exists.
+Governed MySQL operations CLI for AI agents and operators. It provides read queries, schema planning and apply, governed DML, GitOps import/reconcile/rollback, audit, RBAC, and local credential management.
 
-> Status: **v0.x — MySQL only.** PostgreSQL is the fast-follow. The governance
-> model and command surface are stable; the engine set will grow.
+## Overview
+
+`dbgov` is built around a governance spine: connect to MySQL, classify risk, require explicit authorization for writes, execute through backend interfaces, and write structured audit events. It is MySQL-only today; PostgreSQL is planned but not enabled unless capabilities report it.
 
 ## Install
 
-```sh
-# npm (downloads the prebuilt binary for your platform)
-npm install -g dbgov-cli      # then: dbgov --help
-
-# or with Go
+```bash
+npm install -g dbgov-cli
+# or
 go install github.com/JiangHe12/dbgov-cli@latest
 ```
 
-## Governance model
+Release binaries are available from GitHub Releases. npm installs download the matching platform binary.
 
-| Tier | Meaning | Gate |
+## Quickstart
+
+```bash
+DBGOV_PASSWORD='<password>' dbgov ctx set local --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser -o json
+dbgov ctx use local -o json
+dbgov query --sql "SELECT 1" -o json
+dbgov explain --sql "SELECT * FROM users WHERE id = 1" -o json
+dbgov schema list -o json
+```
+
+Use `-o json` for automation and AI agents.
+
+## Governance Model
+
+| Risk | Meaning | Authorization |
 |---|---|---|
-| **R0** | reads / local (query, explain, schema inspect, plan, audit query) | free, still audited |
-| **R1** | ordinary write (add column, small WHERE'd DML) | `--yes` (or interactive confirm) |
-| **R2** | sensitive write / large impact / protected-context R1 | `+ --ticket` |
-| **R3** | destructive / irreversible (drop column/table, no-WHERE DML, prune) | `+ --ticket + matching --allow-*` |
+| R0 | read-only operations and local inspection | no approval required, still audited |
+| R1 | incremental writes such as add column, small WHERE DML, incremental import | `--yes` or interactive confirmation |
+| R2 | large-impact WHERE DML or protected-context R1 | non-empty `--ticket` plus `--yes` |
+| R3 | destructive schema, no-WHERE UPDATE/DELETE, prune, destructive rollback | `--ticket`, required `--allow-*`, and `--yes` |
 
-- **Impact is authoritative, not guessed.** Risk tiering for DML uses the
-  database's own `EXPLAIN` row estimate; if it can't be measured, dbgov refuses
-  to proceed rather than guess.
-- **`--ticket` and `--allow-*` are walls an agent cannot fill in** — they force
-  a single, traceable, intentional human approval. Protected contexts raise
-  every operation one tier.
-- **RBAC** (opt-in): per-operator roles `reader/writer/admin` cap the risk an
-  operator may perform.
-- **Snapshots**: schema-mutating commands capture the pre-change schema first;
-  `rollback` restores structure (MySQL rollback is structure-level and lossy —
-  dropped data is not recovered, and dbgov says so loudly).
-- **Audit**: every command (including denied and failed) appends a JSONL record;
-  query and verify it with `dbgov audit`.
+Allow flags are precise: schema drop/modify uses `--allow-destructive`, no-WHERE DML uses `--allow-no-where`, table prune uses `--allow-production-prune`. Rollback has an R2 floor and may require one or both destructive/prune allow flags. If a context defines `ticketPattern`, tickets must match it; by default no pattern is enforced.
 
-## Commands
+RBAC applies to writes: `reader` is R0, `writer` is up to R2, and `admin` is up to R3. AI agents and automation must not auto-fill `--ticket`, `--allow-*`, or high-risk `--yes`. Impact must come from `dbgov explain`, `schema plan`, or `--dry-run`, never model guesses.
 
-```
-dbgov version | capabilities | doctor
+All operations, including denied and failed attempts, append to `~/.dbgov/audit.log`. Use `audit query`, `audit verify`, and `audit prune` to inspect, validate, and clean rotated logs.
 
-dbgov ctx set|use|list|current|delete <name>     # connection contexts
-dbgov ctx role set|unset|list <ctx>              # RBAC (opt-in)
-dbgov ctx migrate-credentials --to encrypted-file|keychain
+## Usage
 
-# Read (R0)
-dbgov query   --sql "SELECT ..."                 # rejects write SQL
-dbgov explain --sql "..."                        # plan / blast radius
-dbgov schema  list | describe <t> | dump [--dir] | diff -f f.sql | plan -f f.sql
-
-# Schema change (declarative, R1–R3)
-dbgov schema apply -f desired.sql [--dry-run] [--ticket] [--allow-destructive] [--yes]
-
-# Data change (imperative DML, R1–R3)
-dbgov data exec --sql "UPDATE ... WHERE ..." [--dry-run] [--ticket] [--allow-no-where] [--yes]
-
-# GitOps
-dbgov export --dir ./schema                                # R0
-dbgov import ./schema [--dry-run] [--ticket] [--allow-destructive]
-dbgov reconcile ./schema [--prune] [--ticket] [--allow-destructive] [--allow-production-prune]
-dbgov rollback list | --to <snapshot> [--dry-run] [--ticket] [--allow-*]
-
-# Audit (R0)
-dbgov audit query [--since --operator --type --status --risk --context ...]
-dbgov audit verify [--strict]
+```bash
+dbgov version -o json
+dbgov capabilities -o json
+dbgov doctor config -o json
+dbgov ctx list -o json
+dbgov query --sql "SELECT * FROM users" -o json
+dbgov explain --sql "SELECT * FROM users WHERE active = 1" -o json
+dbgov schema dump --dir ./schema -o json
+dbgov schema plan -f desired.sql -o json
+dbgov schema apply -f desired.sql --dry-run -o json
+dbgov data exec --sql "UPDATE users SET active=0 WHERE id=1" --dry-run -o json
+dbgov export --dir ./schema -o json
+dbgov import ./schema --dry-run -o json
+dbgov reconcile ./schema --dry-run -o json
+dbgov rollback list -o json
+dbgov audit query --since 24h -o json
 ```
 
-Use `-o json` for machine-readable output (the default for agent consumption).
+## Configuration and Contexts
 
-## For AI agents
+Contexts live under `~/.dbgov`. Use `ctx set`, `ctx use`, `ctx current`, and `ctx list` to manage them. Credentials may be literal during setup, read from `DBGOV_PASSWORD`, or migrated to secure backends:
 
-dbgov is designed to be driven by an agent, with a human in the loop only where
-it matters:
+```bash
+dbgov ctx migrate-credentials --to encrypted-file -o json
+dbgov ctx role set prod --target-operator alice --role writer -o json
+```
 
-- The agent **must never** auto-fill `--ticket`, `--allow-*`, or a high-risk
-  `--yes`. Those are exactly the human-approval walls. The agent should run
-  `--dry-run` / `plan`, report the dbgov-computed risk and impact to the user,
-  and let the user supply the ticket/allow-flags.
-- Impact figures the agent reports must come from dbgov (`explain`, `plan`,
-  `--dry-run`), never from the model's own estimate.
+Set `DBGOV_OPERATOR` in CI to make audit and RBAC identity stable.
 
-## Built on
+## Rollback and Snapshots
 
-dbgov is part of the JiangHe12 operations CLI family and is built on
-[opskit-core](https://github.com/JiangHe12/opskit-core) (the shared governance
-engine — risk model, audit, credential store, RBAC), alongside
-[sentinel-cli](https://github.com/JiangHe12/sentinel-cli) and
-[nacos-cli](https://github.com/JiangHe12/nacos-cli).
+Schema mutations capture a pre-change DDL snapshot before execution. `rollback --to <snapshot>` restores structure only; MySQL data dropped by table or column deletion is not recovered. dbgov prints this warning during rollback planning and execution.
 
-## License
+## CI/CD
 
-[MIT](LICENSE) © 2026 JiangHe12
+```bash
+go build ./...
+go test -count=1 ./...
+gofmt -l main.go cmd internal
+```
+
+MySQL integration tests are opt-in with `DBGOV_TEST_MYSQL_DSN`.
+
+## AI Skill
+
+```bash
+dbgov install claude --skills
+dbgov install codex --skills
+```
+
+## Contributing, Security, License
+
+See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and [LICENSE](LICENSE).

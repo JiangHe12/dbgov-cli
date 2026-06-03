@@ -5,6 +5,12 @@
   "bin": {
     "dbgov": "bin/dbgov-cli.js"
   },
+  "files": [
+    "bin/",
+    "scripts/install.js",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "postinstall": "node scripts/install.js"
   },
