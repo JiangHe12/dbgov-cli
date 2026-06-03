@@ -49,7 +49,7 @@ linters:
 
     # security
     - gosec
-    - gomodguard
+    - gomodguard_v2
     - gomoddirectives
 
     # logging
