@@ -13,6 +13,7 @@ import (
 	"github.com/JiangHe12/dbgov-cli/internal/backend/fake"
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
+	"github.com/JiangHe12/dbgov-cli/internal/schema"
 	corectx "github.com/JiangHe12/opskit-core/ctx"
 )
 
@@ -510,6 +511,128 @@ func TestDataExecRejectsNonDMLAndExplainFailure(t *testing.T) {
 	}
 	if len(backend.ExecutedDML) != 0 {
 		t.Fatalf("executed after explain failure: %+v", backend.ExecutedDML)
+	}
+}
+
+func TestExportWritesSchemaDirectoryAndAudit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	backend := fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	backend.DDLs = map[string]string{
+		"users":  "CREATE TABLE `users` (`id` BIGINT);",
+		"orders": "CREATE TABLE `orders` (`id` BIGINT);",
+	}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+	dir := filepath.Join(home, "schema")
+
+	_, _, err := executeCommandForTest("export", "--dir", dir, "--fake")
+	if err != nil {
+		t.Fatalf("export error = %v", err)
+	}
+	for _, table := range []string{"users", "orders"} {
+		data, err := os.ReadFile(filepath.Join(dir, table+".sql"))
+		if err != nil {
+			t.Fatalf("read exported %s.sql: %v", table, err)
+		}
+		if !strings.Contains(string(data), "CREATE TABLE `"+table+"`") {
+			t.Fatalf("%s.sql = %s", table, data)
+		}
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeExport || evt.Status != dbgaudit.StatusSucceeded {
+		t.Fatalf("export audit event = %+v", evt)
+	}
+}
+
+func TestImportR1RequiresYesAndExecutesMultiTablePlan(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	writeTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));")
+	writeTestFile(t, dir, "orders.sql", "CREATE TABLE orders (id BIGINT);")
+
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+	_, _, err := executeCommandForTest("--non-interactive", "import", dir, "--fake")
+	if err == nil {
+		t.Fatal("expected R1 import without --yes to be denied")
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed denied import: %+v", backend.Executed)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeImport || evt.Status != dbgaudit.StatusDenied || evt.Risk != "R1" {
+		t.Fatalf("denied import audit event = %+v", evt)
+	}
+
+	_, _, err = executeCommandForTest("--yes", "import", dir, "--fake")
+	if err != nil {
+		t.Fatalf("import R1 error = %v", err)
+	}
+	if len(backend.Executed) != 2 {
+		t.Fatalf("executed = %+v", backend.Executed)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeImport || evt.Status != dbgaudit.StatusSucceeded || evt.Executed != 2 {
+		t.Fatalf("success import audit event = %+v", evt)
+	}
+}
+
+func TestImportR3RequiresTicketAllowDestructive(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	writeTestFile(t, dir, "users.sql", "CREATE TABLE users (id TEXT);")
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "import", dir, "--fake")
+	if err == nil {
+		t.Fatal("expected destructive import without allow flag to be denied")
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed denied destructive import: %+v", backend.Executed)
+	}
+
+	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "import", dir, "--fake", "--allow-destructive")
+	if err != nil {
+		t.Fatalf("destructive import error = %v", err)
+	}
+	if len(backend.Executed) != 2 {
+		t.Fatalf("executed = %+v", backend.Executed)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeImport || evt.Risk != "R3" || !evt.Destructive {
+		t.Fatalf("destructive import audit event = %+v", evt)
+	}
+}
+
+func TestImportDryRunAndNoDropTableForMissingDesiredTable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	writeTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));")
+	backend := fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	out, _, err := executeCommandForTest("-o", "json", "import", dir, "--fake", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry-run import error = %v", err)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("dry-run executed import: %+v", backend.Executed)
+	}
+	if strings.Contains(out, "DROP TABLE") || strings.Contains(out, "DROP_TABLE") {
+		t.Fatalf("import dry-run planned table deletion:\n%s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeImport || !evt.DryRun {
+		t.Fatalf("dry-run import audit event = %+v", evt)
 	}
 }
 

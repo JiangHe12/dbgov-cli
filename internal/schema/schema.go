@@ -2,6 +2,8 @@ package schema
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -96,6 +98,39 @@ func ParseDesiredSQL(sqlText string) (Schema, error) {
 	}}, nil
 }
 
+func LoadDesiredDir(dir string) (Schema, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return Schema{}, err
+	}
+	result := Schema{Tables: map[string]Table{}}
+	seenSQL := false
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".sql") {
+			continue
+		}
+		seenSQL = true
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			return Schema{}, err
+		}
+		parsed, err := ParseDesiredSQL(string(data))
+		if err != nil {
+			return Schema{}, err
+		}
+		for name, table := range parsed.Tables {
+			if _, exists := result.Tables[name]; exists {
+				return Schema{}, fmt.Errorf("duplicate table %q in desired schema directory", name)
+			}
+			result.Tables[name] = table
+		}
+	}
+	if !seenSQL {
+		return Schema{}, fmt.Errorf("desired schema directory contains no .sql files")
+	}
+	return result, nil
+}
+
 func parseColumns(body string) ([]Column, error) {
 	parts := splitColumnParts(body)
 	columns := make([]Column, 0, len(parts))
@@ -177,12 +212,6 @@ func Diff(current, desired Schema) DiffResult {
 		}
 		if added && dropped {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("possible column rename in table %s: add+drop detected; drop will lose data, please confirm manually", tableName))
-		}
-	}
-	for _, tableName := range sortedTableNames(current.Tables) {
-		if _, ok := desired.Tables[tableName]; !ok {
-			result.Changes = append(result.Changes, Change{Action: ActionDropTable, Table: tableName, Destructive: true})
-			result.Destructive = true
 		}
 	}
 	return result

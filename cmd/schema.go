@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -356,29 +357,7 @@ func runSchemaDump(f *cliFlags, opts schemaReadOptions) error {
 		return err
 	}
 
-	result := schemaDumpResult{}
-	var opErr error
-	for _, name := range sortedTableNames(current) {
-		ddl, err := b.TableDDL(commandContext(f), name)
-		if err != nil {
-			opErr = err
-			break
-		}
-		if opts.dir == "" {
-			result.Tables = append(result.Tables, schemaDumpTable{Name: name, DDL: ddl})
-			continue
-		}
-		if err := os.MkdirAll(opts.dir, 0o700); err != nil {
-			opErr = err
-			break
-		}
-		path := filepath.Join(opts.dir, name+".sql")
-		if err := os.WriteFile(path, []byte(formatDDLStatement(ddl)), 0o600); err != nil {
-			opErr = err
-			break
-		}
-		result.Files = append(result.Files, path)
-	}
+	result, opErr := dumpSchema(commandContext(f), b, current, opts.dir)
 
 	event := dbgaudit.New(dbgaudit.EventTypeSchemaDump, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "dump"))
 	event.Risk = "R0"
@@ -387,6 +366,31 @@ func runSchemaDump(f *cliFlags, opts schemaReadOptions) error {
 		return opErr
 	}
 	return printSchemaDump(f, result)
+}
+
+func dumpSchema(ctx context.Context, b interface {
+	TableDDL(context.Context, string) (string, error)
+}, current schema.Schema, dir string) (schemaDumpResult, error) {
+	result := schemaDumpResult{}
+	for _, name := range sortedTableNames(current) {
+		ddl, err := b.TableDDL(ctx, name)
+		if err != nil {
+			return result, err
+		}
+		if dir == "" {
+			result.Tables = append(result.Tables, schemaDumpTable{Name: name, DDL: ddl})
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return result, err
+		}
+		path := filepath.Join(dir, name+".sql")
+		if err := os.WriteFile(path, []byte(formatDDLStatement(ddl)), 0o600); err != nil {
+			return result, err
+		}
+		result.Files = append(result.Files, path)
+	}
+	return result, nil
 }
 
 func printSchemaDiff(f *cliFlags, diff schema.DiffResult) error {

@@ -17,6 +17,7 @@ type Backend struct {
 	DMLAffected int64
 	DMLErr      error
 	ExecutedDML []string
+	DDLs        map[string]string
 }
 
 func New() *Backend {
@@ -61,7 +62,12 @@ func (b *Backend) Explain(context.Context, string) (dbbackend.ExplainResult, err
 	}, nil
 }
 
-func (b *Backend) TableDDL(context.Context, string) (string, error) {
+func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
+	if b.DDLs != nil {
+		if ddl, ok := b.DDLs[table]; ok {
+			return ddl, nil
+		}
+	}
 	return "CREATE TABLE `users` (`id` BIGINT, `legacy` TEXT);", nil
 }
 

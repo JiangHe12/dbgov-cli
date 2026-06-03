@@ -1,6 +1,10 @@
 package schema
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseCreateTablesMinimal(t *testing.T) {
 	got, err := ParseDesiredSQL(`
@@ -93,6 +97,52 @@ func TestDiffSchemaWarnsAboutPossibleRename(t *testing.T) {
 	}
 }
 
+func TestDiffDoesNotDropTablesMissingFromDesired(t *testing.T) {
+	current := Schema{Tables: map[string]Table{
+		"users":  {Name: "users", Columns: []Column{{Name: "id", Type: "BIGINT"}}},
+		"orders": {Name: "orders", Columns: []Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+	desired := Schema{Tables: map[string]Table{
+		"users": {Name: "users", Columns: []Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+
+	diff := Diff(current, desired)
+	for _, change := range diff.Changes {
+		if change.Action == ActionDropTable {
+			t.Fatalf("Diff produced DROP_TABLE for missing desired table: %+v", diff.Changes)
+		}
+	}
+}
+
+func TestLoadDesiredDirMergesSQLFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeSchemaTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT);")
+	writeSchemaTestFile(t, dir, "orders.sql", "CREATE TABLE orders (id BIGINT, user_id BIGINT);")
+	writeSchemaTestFile(t, dir, "notes.txt", "ignored")
+
+	got, err := LoadDesiredDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDesiredDir() error = %v", err)
+	}
+	if len(got.Tables) != 2 || got.Tables["users"].Name != "users" || got.Tables["orders"].Name != "orders" {
+		t.Fatalf("schema = %+v", got)
+	}
+}
+
+func TestLoadDesiredDirRejectsDuplicateTablesAndEmptyDirs(t *testing.T) {
+	dup := t.TempDir()
+	writeSchemaTestFile(t, dup, "users.sql", "CREATE TABLE users (id BIGINT);")
+	writeSchemaTestFile(t, dup, "also_users.sql", "CREATE TABLE users (name TEXT);")
+	if _, err := LoadDesiredDir(dup); err == nil {
+		t.Fatal("expected duplicate table error")
+	}
+
+	empty := t.TempDir()
+	if _, err := LoadDesiredDir(empty); err == nil {
+		t.Fatal("expected empty directory error")
+	}
+}
+
 func TestClassifyDiffRisk(t *testing.T) {
 	add := Change{Action: ActionAddColumn, Table: "users", Column: "name", Type: "VARCHAR(100)"}
 	if risk, destructive := ClassifyChange(add); risk != RiskR1 || destructive {
@@ -105,6 +155,13 @@ func TestClassifyDiffRisk(t *testing.T) {
 	diff := DiffResult{Changes: []Change{add, modify}, Destructive: true}
 	if classified := ClassifyDiff(diff); classified.OverallRisk != RiskR3 || !classified.Destructive {
 		t.Fatalf("ClassifyDiff() = %+v", classified)
+	}
+}
+
+func writeSchemaTestFile(t *testing.T, dir, name, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
