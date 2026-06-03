@@ -21,7 +21,9 @@ type versionInfo struct {
 }
 
 func SetVersionInfo(v, c, d string) {
-	version = v
+	if v != "" {
+		version = v
+	}
 	commit = c
 	date = d
 }

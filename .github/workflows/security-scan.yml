@@ -1,0 +1,85 @@
+name: Security scan
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'  # Mondays 08:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  govulncheck-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.3.0
+
+      - name: Run govulncheck
+        id: scan
+        continue-on-error: true
+        run: |
+          set +e
+          govulncheck -json ./... > vuln-report.json
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+
+      - name: Open or update issue on findings
+        if: steps.scan.outputs.exit_code != '0'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const reportRaw = fs.readFileSync('vuln-report.json', 'utf8');
+            const report = reportRaw.length > 60000
+              ? reportRaw.slice(0, 60000) + '\n\n... (truncated, see full report in workflow run artifacts)'
+              : reportRaw;
+
+            const date = new Date().toISOString().split('T')[0];
+            const title = `Security: govulncheck findings on main (${date})`;
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'security,auto-generated',
+              state: 'open',
+            });
+
+            const body = `Weekly vuln scan found issues.\n\nWorkflow run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}\n\n\`\`\`json\n${report}\n\`\`\``;
+
+            if (existing.data.length > 0) {
+              const issue = existing.data[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Updated scan results (${date}):\n\n\`\`\`json\n${report}\n\`\`\``,
+              });
+              core.info(`Updated existing issue #${issue.number}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['security', 'auto-generated'],
+              });
+              core.info(`Created issue #${created.data.number}`);
+            }
+
+      - name: Upload report as artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vuln-report
+          path: vuln-report.json
+          retention-days: 30
