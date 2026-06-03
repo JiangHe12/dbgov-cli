@@ -133,6 +133,54 @@ func TestExecDDLStopsAtFirstError(t *testing.T) {
 	}
 }
 
+func TestExecDMLCommitsTransaction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE users SET name='x' WHERE id=1")).
+		WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectCommit()
+
+	affected, err := backend.ExecDML(context.Background(), "UPDATE users SET name='x' WHERE id=1")
+	if err != nil {
+		t.Fatalf("ExecDML() error = %v", err)
+	}
+	if affected != 3 {
+		t.Fatalf("affected = %d, want 3", affected)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestExecDMLRollsBackOnFailure(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM users WHERE id=1")).
+		WillReturnError(errors.New("boom"))
+	mock.ExpectRollback()
+
+	affected, err := backend.ExecDML(context.Background(), "DELETE FROM users WHERE id=1")
+	if err == nil {
+		t.Fatal("ExecDML() error = nil, want failure")
+	}
+	if affected != 0 {
+		t.Fatalf("affected = %d, want 0", affected)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestQueryReturnsColumnsAndStringRows(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

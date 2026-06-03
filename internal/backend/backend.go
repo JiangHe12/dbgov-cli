@@ -14,6 +14,7 @@ type Backend interface {
 	TableDDL(ctx context.Context, table string) (string, error)
 	RenderDDL(changes []schema.Change) ([]string, error)
 	ExecDDL(ctx context.Context, statements []string) (executed int, err error)
+	ExecDML(ctx context.Context, sql string) (affected int64, err error)
 }
 
 type QueryResult struct {

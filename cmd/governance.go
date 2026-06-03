@@ -29,7 +29,11 @@ var newFakeBackend = func() dbbackend.Backend { return fake.New() }
 
 func buildBackend(f *cliFlags, opts backendOptions) (dbbackend.Backend, contextMeta, error) {
 	if opts.Fake {
-		return newFakeBackend(), contextMeta{Name: "fake", Database: "fake"}, nil
+		meta := contextMeta{Name: "fake", Database: "fake"}
+		if ctx, name := selectedContext(f); ctx != nil {
+			meta = contextMeta{Name: name, Env: ctx.Env, Protected: ctx.Protected, Database: ctx.Database, TicketPattern: ctx.TicketPattern, Roles: ctx.Roles}
+		}
+		return newFakeBackend(), meta, nil
 	}
 	ctx, name := selectedContext(f)
 	if ctx == nil {

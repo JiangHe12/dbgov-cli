@@ -1,0 +1,243 @@
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
+	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
+	"github.com/JiangHe12/dbgov-cli/internal/safety"
+	"github.com/JiangHe12/dbgov-cli/internal/schema"
+	"github.com/JiangHe12/dbgov-cli/internal/sqlclass"
+	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/printer"
+)
+
+const defaultImpactThreshold int64 = 1000 // Future phase: make per-context configurable.
+
+type dataExecOptions struct {
+	sql          string
+	file         string
+	fake         bool
+	dryRun       bool
+	allowNoWhere bool
+}
+
+type dataExecPlan struct {
+	SQL                   string `json:"sql"`
+	Kind                  string `json:"kind"`
+	HasWhere              bool   `json:"hasWhere"`
+	ImpactRows            *int64 `json:"impactRows,omitempty"`
+	Risk                  string `json:"risk"`
+	Destructive           bool   `json:"destructive"`
+	RequiredAuthorization string `json:"requiredAuthorization,omitempty"`
+}
+
+type dataExecResult struct {
+	SQL          string `json:"sql"`
+	Risk         string `json:"risk"`
+	ImpactRows   *int64 `json:"impactRows,omitempty"`
+	AffectedRows int64  `json:"affectedRows"`
+}
+
+func newDataCmd(f *cliFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "data",
+		Short: "Execute governed data changes",
+	}
+	cmd.AddCommand(dataExecCmd(f))
+	return cmd
+}
+
+func dataExecCmd(f *cliFlags) *cobra.Command {
+	var opts dataExecOptions
+	cmd := &cobra.Command{
+		Use:   "exec --sql UPDATE ...",
+		Short: "Execute governed INSERT/UPDATE/DELETE statements",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDataExec(f, opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.sql, "sql", "", "DML statement to execute")
+	cmd.Flags().StringVarP(&opts.file, "file", "f", "", "Read DML statement from file")
+	cmd.Flags().BoolVar(&opts.fake, "fake", false, "Use in-memory fake backend")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Print risk and impact without executing DML")
+	cmd.Flags().BoolVar(&opts.allowNoWhere, "allow-no-where", false, "Allow UPDATE/DELETE without WHERE")
+	return cmd
+}
+
+func runDataExec(f *cliFlags, opts dataExecOptions) error {
+	sqlText, err := readDMLStatement(opts)
+	if err != nil {
+		return err
+	}
+	backend, meta, err := buildBackend(f, backendOptions{Fake: opts.fake})
+	if err != nil {
+		return err
+	}
+	kind, hasWhere, ok := sqlclass.ClassifyDML(sqlText)
+	if !ok {
+		err := apperrors.New(apperrors.CodeValidationFailed, "data exec only accepts INSERT, UPDATE, or DELETE; use dbgov query for reads and schema apply for DDL", nil)
+		event := newDataExecAuditEvent(f, meta, dataExecPlan{SQL: sqlText})
+		emitAudit(f, event, err)
+		return err
+	}
+	plan, err := buildDataExecPlan(commandContext(f), backend, sqlText, kind, hasWhere)
+	if err != nil {
+		event := newDataExecAuditEvent(f, meta, dataExecPlan{SQL: sqlText, Kind: string(kind), HasWhere: hasWhere})
+		emitAudit(f, event, err)
+		return err
+	}
+	if opts.dryRun {
+		event := newDataExecAuditEvent(f, meta, plan)
+		event.DryRun = true
+		emitAudit(f, event, nil)
+		return printDataExecPlan(f, plan)
+	}
+
+	requiredAllow := safety.AllowFlag("")
+	granted := map[safety.AllowFlag]bool{}
+	if plan.Destructive {
+		requiredAllow = safety.AllowNoWhere
+		if opts.allowNoWhere {
+			granted[safety.AllowNoWhere] = true
+		}
+	}
+	if err := authorizeWrite(f, safetyRisk(plan.Risk), meta, requiredAllow, granted); err != nil {
+		event := newDataExecAuditEvent(f, meta, plan)
+		event.Status = dbgaudit.StatusDenied
+		setAuditError(&event, err)
+		emitAudit(f, event, nil)
+		return err
+	}
+
+	affected, err := backend.ExecDML(commandContext(f), sqlText)
+	event := newDataExecAuditEvent(f, meta, plan)
+	event.AffectedRows = &affected
+	emitAudit(f, event, err)
+	if err != nil {
+		return err
+	}
+	return printDataExecResult(f, dataExecResult{SQL: sqlText, Risk: plan.Risk, ImpactRows: plan.ImpactRows, AffectedRows: affected})
+}
+
+func readDMLStatement(opts dataExecOptions) (string, error) {
+	if (opts.sql == "") == (opts.file == "") {
+		return "", apperrors.New(apperrors.CodeUsageError, "provide exactly one of --sql or --file", nil)
+	}
+	sqlText := opts.sql
+	if opts.file != "" {
+		data, err := os.ReadFile(opts.file)
+		if err != nil {
+			return "", err
+		}
+		sqlText = string(data)
+	}
+	return normalizeSingleStatement(sqlText)
+}
+
+func normalizeSingleStatement(sqlText string) (string, error) {
+	trimmed := strings.TrimSpace(sqlText)
+	if trimmed == "" {
+		return "", apperrors.New(apperrors.CodeValidationFailed, "SQL statement is empty", nil)
+	}
+	trimmed = strings.TrimSuffix(trimmed, ";")
+	if strings.Contains(trimmed, ";") {
+		return "", apperrors.New(apperrors.CodeValidationFailed, "data exec accepts exactly one SQL statement", nil)
+	}
+	return strings.TrimSpace(trimmed), nil
+}
+
+func buildDataExecPlan(ctx context.Context, backend interface {
+	Explain(ctx context.Context, sql string) (dbbackend.ExplainResult, error)
+}, sqlText string, kind sqlclass.Kind, hasWhere bool) (dataExecPlan, error) {
+	plan := dataExecPlan{
+		SQL:      sqlText,
+		Kind:     string(kind),
+		HasWhere: hasWhere,
+	}
+	switch kind {
+	case sqlclass.KindInsert:
+		plan.Risk = "R1"
+		plan.RequiredAuthorization = requiredAuthorization(sqlclassRisk(plan.Risk))
+		return plan, nil
+	case sqlclass.KindUpdate, sqlclass.KindDelete:
+		if !hasWhere {
+			plan.Risk = "R3"
+			plan.Destructive = true
+			plan.RequiredAuthorization = "R3 requires --yes or interactive confirmation, --ticket, and --allow-no-where"
+			return plan, nil
+		}
+		explain, err := backend.Explain(ctx, sqlText)
+		if err != nil {
+			return plan, apperrors.New(apperrors.CodeValidationFailed, "cannot estimate DML impact with EXPLAIN; refusing to continue", err)
+		}
+		impact := explain.EstimatedRows
+		plan.ImpactRows = &impact
+		if impact > defaultImpactThreshold {
+			plan.Risk = "R2"
+		} else {
+			plan.Risk = "R1"
+		}
+		plan.RequiredAuthorization = requiredAuthorization(sqlclassRisk(plan.Risk))
+		return plan, nil
+	default:
+		return plan, apperrors.New(apperrors.CodeValidationFailed, "unsupported DML kind", nil)
+	}
+}
+
+func printDataExecPlan(f *cliFlags, plan dataExecPlan) error {
+	p := newPrinter(f)
+	if f.Output == "json" {
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecPlan", Data: plan})
+	}
+	rows := [][]string{{plan.SQL, plan.Kind, fmtImpactRows(plan.ImpactRows), plan.Risk, plan.RequiredAuthorization}}
+	p.Table([]string{"SQL", "KIND", "IMPACT_ROWS", "RISK", "REQUIRED_AUTHORIZATION"}, rows)
+	return nil
+}
+
+func printDataExecResult(f *cliFlags, result dataExecResult) error {
+	p := newPrinter(f)
+	if f.Output == "json" {
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecResult", Data: result})
+	}
+	p.Table([]string{"SQL", "RISK", "IMPACT_ROWS", "AFFECTED_ROWS"}, [][]string{{result.SQL, result.Risk, fmtImpactRows(result.ImpactRows), fmt.Sprint(result.AffectedRows)}})
+	return nil
+}
+
+func newDataExecAuditEvent(f *cliFlags, meta contextMeta, plan dataExecPlan) dbgaudit.Event {
+	event := dbgaudit.New(dbgaudit.EventTypeDataExec, currentOperator(f), auditContext(meta), auditTarget(meta, "data", "exec"))
+	event.Statement = plan.SQL
+	event.Risk = plan.Risk
+	event.Destructive = plan.Destructive
+	if plan.ImpactRows != nil {
+		impact := int(*plan.ImpactRows)
+		event.ImpactRows = &impact
+	}
+	return event
+}
+
+func fmtImpactRows(rows *int64) string {
+	if rows == nil {
+		return ""
+	}
+	return fmt.Sprint(*rows)
+}
+
+func sqlclassRisk(risk string) schema.Risk {
+	switch risk {
+	case "R1":
+		return schema.RiskR1
+	case "R2":
+		return schema.RiskR2
+	case "R3":
+		return schema.RiskR3
+	default:
+		return schema.RiskR0
+	}
+}

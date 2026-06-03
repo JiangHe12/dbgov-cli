@@ -1,6 +1,19 @@
 package sqlclass
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
+
+type Kind string
+
+const (
+	KindInsert Kind = "insert"
+	KindUpdate Kind = "update"
+	KindDelete Kind = "delete"
+)
+
+var whereRE = regexp.MustCompile(`(?i)\bwhere\b`)
 
 func IsReadOnly(sql string) bool {
 	keyword := firstKeyword(sql)
@@ -9,6 +22,19 @@ func IsReadOnly(sql string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func ClassifyDML(sql string) (kind Kind, hasWhere bool, ok bool) {
+	switch firstKeyword(sql) {
+	case "insert":
+		return KindInsert, false, true
+	case "update":
+		return KindUpdate, hasWhereToken(sql), true
+	case "delete":
+		return KindDelete, hasWhereToken(sql), true
+	default:
+		return "", false, false
 	}
 }
 
@@ -22,4 +48,8 @@ func firstKeyword(sql string) string {
 		return ""
 	}
 	return strings.ToLower(fields[0])
+}
+
+func hasWhereToken(sql string) bool {
+	return whereRE.MatchString(sql)
 }

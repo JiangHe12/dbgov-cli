@@ -252,6 +252,27 @@ func (b *Backend) ExecDDL(ctx context.Context, statements []string) (int, error)
 	return len(statements), nil
 }
 
+func (b *Backend) ExecDML(ctx context.Context, sqlText string) (int64, error) {
+	tx, err := b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	result, err := tx.ExecContext(ctx, sqlText)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
 func scanRows(rows *sql.Rows) (dbbackend.QueryResult, error) {
 	columns, err := rows.Columns()
 	if err != nil {

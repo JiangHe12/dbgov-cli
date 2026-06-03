@@ -9,9 +9,14 @@ import (
 )
 
 type Backend struct {
-	Schema   schema.Schema
-	Executed []string
-	FailAt   int
+	Schema      schema.Schema
+	Executed    []string
+	FailAt      int
+	ExplainRows int64
+	ExplainErr  error
+	DMLAffected int64
+	DMLErr      error
+	ExecutedDML []string
 }
 
 func New() *Backend {
@@ -42,10 +47,17 @@ func (b *Backend) Query(context.Context, string) (dbbackend.QueryResult, error) 
 }
 
 func (b *Backend) Explain(context.Context, string) (dbbackend.ExplainResult, error) {
+	if b.ExplainErr != nil {
+		return dbbackend.ExplainResult{}, b.ExplainErr
+	}
+	rows := b.ExplainRows
+	if rows == 0 {
+		rows = 2
+	}
 	return dbbackend.ExplainResult{
 		Columns:       []string{"id", "select_type", "table", "rows"},
-		Rows:          [][]string{{"1", "SIMPLE", "users", "2"}},
-		EstimatedRows: 2,
+		Rows:          [][]string{{"1", "SIMPLE", "users", fmt.Sprint(rows)}},
+		EstimatedRows: rows,
 	}, nil
 }
 
@@ -80,4 +92,12 @@ func (b *Backend) ExecDDL(ctx context.Context, statements []string) (int, error)
 		b.Executed = append(b.Executed, statement)
 	}
 	return len(statements), nil
+}
+
+func (b *Backend) ExecDML(ctx context.Context, sql string) (int64, error) {
+	if b.DMLErr != nil {
+		return 0, b.DMLErr
+	}
+	b.ExecutedDML = append(b.ExecutedDML, sql)
+	return b.DMLAffected, nil
 }
