@@ -1,4 +1,5 @@
 .claude
-bin/
+bin/*
+!bin/dbgov-cli.js
 dist/
 *.exe

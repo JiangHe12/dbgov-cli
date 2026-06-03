@@ -1,0 +1,28 @@
+{
+  "name": "dbgov-cli",
+  "version": "0.1.0",
+  "description": "Governed MySQL operations CLI for AI agents",
+  "bin": {
+    "dbgov": "bin/dbgov-cli.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "keywords": [
+    "database",
+    "mysql",
+    "cli",
+    "ai",
+    "governance"
+  ],
+  "author": "JiangHe12",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JiangHe12/dbgov-cli.git"
+  },
+  "homepage": "https://github.com/JiangHe12/dbgov-cli",
+  "engines": {
+    "node": ">=14"
+  }
+}
