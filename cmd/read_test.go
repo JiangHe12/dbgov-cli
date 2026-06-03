@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1558,6 +1559,37 @@ func TestAuditPruneRejectsInvalidSelection(t *testing.T) {
 	}
 }
 
+func TestInstallSkillsRequiresFlagAndCopiesSkill(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	SetSkillFS(os.DirFS(repoRootForCmdTest(t)))
+	t.Cleanup(func() { SetSkillFS(nil) })
+
+	if _, _, err := executeCommandForTest("install", "claude"); err == nil {
+		t.Fatal("expected install without --skills to fail")
+	}
+
+	out, _, err := executeCommandForTest("-o", "json", "install", "claude", "--skills")
+	if err != nil {
+		t.Fatalf("install skills error = %v", err)
+	}
+	dst := filepath.Join(home, ".claude", "skills", "dbgov-cli")
+	if !strings.Contains(out, `"path"`) || !strings.Contains(out, filepath.Base(dst)) {
+		t.Fatalf("install output = %s", out)
+	}
+	data, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("installed SKILL.md missing: %v", err)
+	}
+	if !strings.Contains(string(data), "name: dbgov-cli") {
+		t.Fatalf("installed SKILL.md content = %s", string(data))
+	}
+	if _, err := os.Stat(filepath.Join(dst, "skill_test.go")); !os.IsNotExist(err) {
+		t.Fatalf("skill_test.go should not be installed, stat err = %v", err)
+	}
+}
+
 func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1649,6 +1681,27 @@ func appendBadAuditLineForTest(t *testing.T, path string) {
 	if _, err := f.WriteString("{bad json\n"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func repoRootForCmdTest(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	dir := filepath.Dir(file)
+	for i := 0; i < 20; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	t.Fatal("could not find repo root")
+	return ""
 }
 
 func intPtr(v int) *int {
