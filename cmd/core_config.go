@@ -30,7 +30,7 @@ func init() {
 	safety.Configure(safety.Config{
 		Prompt:                   "Proceed with database operation? [y/N] ",
 		OperatorEnvVar:           "DBGOV_OPERATOR",
-		RoleAssignmentHintFormat: "assign one with: dbgov ctx role set <context> --operator=%s --role=%s",
+		RoleAssignmentHintFormat: "assign one with: dbgov ctx role set <context> --target-operator=%s --role=%s",
 	})
 	telemetry.Configure(telemetry.Config{
 		ServiceName:      "dbgov",

@@ -258,6 +258,34 @@ func TestAuthorizeWriteRaisesProtectedR1ToR2(t *testing.T) {
 	}
 }
 
+func TestAuthorizeWriteEnforcesRoles(t *testing.T) {
+	roles := map[string]string{
+		"alice": safety.RoleReader,
+		"bob":   safety.RoleWriter,
+		"carol": safety.RoleAdmin,
+	}
+	meta := contextMeta{Roles: roles}
+
+	if err := authorizeWrite(&cliFlags{Operator: "alice", Yes: true, NonInteractive: true}, safety.R1, meta, nil, nil); err == nil {
+		t.Fatal("reader should be denied for R1 writes")
+	}
+	if err := authorizeWrite(&cliFlags{Operator: "bob", Yes: true, NonInteractive: true, Ticket: "CHG-1"}, safety.R2, meta, nil, nil); err != nil {
+		t.Fatalf("writer R2 should pass: %v", err)
+	}
+	if err := authorizeWrite(&cliFlags{Operator: "bob", Yes: true, NonInteractive: true, Ticket: "CHG-1"}, safety.R3, meta, []safety.AllowFlag{safety.AllowDestructive}, map[safety.AllowFlag]bool{safety.AllowDestructive: true}); err == nil {
+		t.Fatal("writer should be denied for R3 writes")
+	}
+	if err := authorizeWrite(&cliFlags{Operator: "carol", Yes: true, NonInteractive: true, Ticket: "CHG-1"}, safety.R3, meta, []safety.AllowFlag{safety.AllowDestructive}, map[safety.AllowFlag]bool{safety.AllowDestructive: true}); err != nil {
+		t.Fatalf("admin R3 should pass: %v", err)
+	}
+	if err := authorizeWrite(&cliFlags{Operator: "dave", Yes: true, NonInteractive: true}, safety.R1, meta, nil, nil); err == nil {
+		t.Fatal("operator without assigned role should be denied")
+	}
+	if err := authorizeWrite(&cliFlags{Operator: "dave", Yes: true, NonInteractive: true}, safety.R1, contextMeta{}, nil, nil); err != nil {
+		t.Fatalf("empty Roles should preserve original write authorization: %v", err)
+	}
+}
+
 func TestSchemaApplyDryRunDoesNotAuthorizeOrExecute(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -431,6 +459,71 @@ func TestDataExecProtectedSmallUpdateUpgradesToR2(t *testing.T) {
 	err := authorizeWrite(flags, safety.R1, contextMeta{Protected: true}, nil, nil)
 	if err == nil {
 		t.Fatal("expected protected R1 data exec to require ticket")
+	}
+}
+
+func TestCtxRoleSetListUnsetAndAudit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	_, _, err := executeCommandForTest("--config", configPath, "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1", "--database", "demo")
+	if err != nil {
+		t.Fatalf("ctx set error = %v", err)
+	}
+	_, _, err = executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--target-operator", "alice", "--role", safety.RoleWriter)
+	if err != nil {
+		t.Fatalf("ctx role set error = %v", err)
+	}
+	evt := lastAuditEvent(t, home)
+	if evt.EventType != dbgaudit.EventTypeRoleAssign || evt.Role != safety.RoleWriter || evt.Target.Object != "alice" || evt.Context.Name != "local" {
+		t.Fatalf("role assign audit event = %+v", evt)
+	}
+
+	out, _, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "role", "list", "local")
+	if err != nil {
+		t.Fatalf("ctx role list error = %v", err)
+	}
+	if !strings.Contains(out, `"operator": "alice"`) || !strings.Contains(out, `"role": "writer"`) {
+		t.Fatalf("ctx role list output = %s", out)
+	}
+
+	_, _, err = executeCommandForTest("--config", configPath, "ctx", "role", "unset", "local", "--target-operator", "alice")
+	if err != nil {
+		t.Fatalf("ctx role unset error = %v", err)
+	}
+	evt = lastAuditEvent(t, home)
+	if evt.EventType != dbgaudit.EventTypeRoleRevoke || evt.Role != "" || evt.Target.Object != "alice" || evt.Context.Name != "local" {
+		t.Fatalf("role revoke audit event = %+v", evt)
+	}
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	cfg, err := dbgovctx.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Contexts["local"].Roles != nil {
+		t.Fatalf("roles after unset = %+v, want nil", cfg.Contexts["local"].Roles)
+	}
+}
+
+func TestCtxRoleValidation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	if _, _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "missing", "--target-operator", "alice", "--role", safety.RoleWriter); err == nil {
+		t.Fatal("expected missing context to fail")
+	}
+	_, _, err := executeCommandForTest("--config", configPath, "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("ctx set error = %v", err)
+	}
+	if _, _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--role", safety.RoleWriter); err == nil {
+		t.Fatal("expected missing --target-operator to fail")
+	}
+	if _, _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--target-operator", "alice", "--role", "owner"); err == nil {
+		t.Fatal("expected invalid role to fail")
 	}
 }
 

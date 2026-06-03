@@ -34,6 +34,8 @@ const (
 	EventTypeAuditQuery     EventType = "audit.query"
 	EventTypeAuditVerify    EventType = "audit.verify"
 	EventTypeAuditPrune     EventType = "audit.prune"
+	EventTypeRoleAssign     EventType = "role.assign"
+	EventTypeRoleRevoke     EventType = "role.revoke"
 )
 
 const (
@@ -53,6 +55,7 @@ type Event struct {
 	Ticket          string     `json:"ticket,omitempty"`
 	Reason          string     `json:"reason,omitempty"`
 	Target          Target     `json:"target"`
+	Role            string     `json:"role,omitempty"`
 	Statement       string     `json:"statement,omitempty"`
 	Risk            string     `json:"risk"`
 	ImpactRows      *int       `json:"impactRows,omitempty"`
