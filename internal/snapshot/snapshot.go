@@ -83,7 +83,7 @@ func Load(baseDir, id string) (Snapshot, error) {
 	if id == "" || id != filepath.Base(id) || filepath.Ext(id) != "" {
 		return Snapshot{}, fmt.Errorf("invalid snapshot id: %s", id)
 	}
-	data, err := os.ReadFile(filepath.Join(baseDir, id+".json"))
+	data, err := os.ReadFile(filepath.Join(baseDir, id+".json")) //nolint:gosec // id is validated as a base filename before joining with the snapshot directory.
 	if err != nil {
 		return Snapshot{}, err
 	}

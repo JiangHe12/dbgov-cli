@@ -11,9 +11,11 @@ const (
 	R3 = coresafety.R3
 )
 
-type ContextMeta = coresafety.ContextMeta
-type Options = coresafety.Options
-type AllowFlag = coresafety.AllowFlag
+type (
+	ContextMeta = coresafety.ContextMeta
+	Options     = coresafety.Options
+	AllowFlag   = coresafety.AllowFlag
+)
 
 const (
 	RoleReader = coresafety.RoleReader
@@ -27,6 +29,8 @@ const (
 	AllowProductionPrune AllowFlag = "allow-production-prune"
 )
 
-var EffectiveRisk = coresafety.EffectiveRisk
-var Authorize = coresafety.Authorize
-var ValidateBackupPolicy = coresafety.ValidateBackupPolicy
+var (
+	EffectiveRisk        = coresafety.EffectiveRisk
+	Authorize            = coresafety.Authorize
+	ValidateBackupPolicy = coresafety.ValidateBackupPolicy
+)

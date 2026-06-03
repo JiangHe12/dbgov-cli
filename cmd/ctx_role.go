@@ -6,10 +6,11 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/JiangHe12/opskit-core/apperrors"
+
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
-	"github.com/JiangHe12/opskit-core/apperrors"
 )
 
 type roleOptions struct {
@@ -36,7 +37,7 @@ func ctxRoleSetCmd(f *cliFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set <context>",
 		Short: "Assign an operator role for a context",
-		Args:  requireExactArgs("ctx role set", 1),
+		Args:  requireExactArgs("ctx role set"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCtxRoleSet(f, args[0], opts)
 		},
@@ -51,7 +52,7 @@ func ctxRoleUnsetCmd(f *cliFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "unset <context>",
 		Short: "Remove an operator role from a context",
-		Args:  requireExactArgs("ctx role unset", 1),
+		Args:  requireExactArgs("ctx role unset"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCtxRoleUnset(f, args[0], opts)
 		},
@@ -64,7 +65,7 @@ func ctxRoleListCmd(f *cliFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list <context>",
 		Short: "List operator roles for a context",
-		Args:  requireExactArgs("ctx role list", 1),
+		Args:  requireExactArgs("ctx role list"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCtxRoleList(f, args[0])
 		},

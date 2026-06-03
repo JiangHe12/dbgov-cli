@@ -84,12 +84,10 @@ jobs:
           cache: true
 
       - name: golangci-lint
-        # Informational first pass: keep baseline issues visible without
-        # blocking CI. Remove --issues-exit-code=0 once the baseline is drained.
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
-          args: --timeout=5m --issues-exit-code=0
+          args: --timeout=5m
 
   vuln-scan:
     name: vuln-scan / ${{ matrix.os }}

@@ -36,7 +36,7 @@ const (
 	EventTypeAuditPrune        EventType = "audit.prune"
 	EventTypeRoleAssign        EventType = "role.assign"
 	EventTypeRoleRevoke        EventType = "role.revoke"
-	EventTypeCredentialMigrate EventType = "credential.migrate"
+	EventTypeCredentialMigrate EventType = "credential.migrate" //nolint:gosec // Audit event type name, not a credential.
 )
 
 const (

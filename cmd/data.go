@@ -8,13 +8,14 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/printer"
+
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 	"github.com/JiangHe12/dbgov-cli/internal/sqlclass"
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/printer"
 )
 
 const defaultImpactThreshold int64 = 1000 // Future phase: make per-context configurable.
@@ -155,7 +156,8 @@ func normalizeSingleStatement(sqlText string) (string, error) {
 
 func buildDataExecPlan(ctx context.Context, backend interface {
 	Explain(ctx context.Context, sql string) (dbbackend.ExplainResult, error)
-}, sqlText string, kind sqlclass.Kind, hasWhere bool) (dataExecPlan, error) {
+}, sqlText string, kind sqlclass.Kind, hasWhere bool,
+) (dataExecPlan, error) {
 	plan := dataExecPlan{
 		SQL:      sqlText,
 		Kind:     string(kind),

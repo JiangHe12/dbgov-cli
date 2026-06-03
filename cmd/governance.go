@@ -4,6 +4,9 @@ import (
 	"context"
 	"path/filepath"
 
+	"github.com/JiangHe12/opskit-core/apperrors"
+	coreaudit "github.com/JiangHe12/opskit-core/audit"
+
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/backend/fake"
@@ -11,8 +14,6 @@ import (
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
-	"github.com/JiangHe12/opskit-core/apperrors"
-	coreaudit "github.com/JiangHe12/opskit-core/audit"
 )
 
 type backendOptions struct {
@@ -119,7 +120,8 @@ func snapshotBaseDir() (string, error) {
 
 func captureSchemaSnapshot(f *cliFlags, b interface {
 	TableDDL(context.Context, string) (string, error)
-}, current schema.Schema, meta contextMeta, command string) (string, error) {
+}, current schema.Schema, meta contextMeta, command string,
+) (string, error) {
 	baseDir, err := snapshotBaseDir()
 	if err != nil {
 		return "", err

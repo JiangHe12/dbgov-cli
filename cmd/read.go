@@ -5,11 +5,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/printer"
+
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/sqlclass"
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/printer"
 )
 
 type sqlCommandOptions struct {
@@ -17,6 +18,7 @@ type sqlCommandOptions struct {
 	Fake bool
 }
 
+//nolint:dupl // Query and explain commands intentionally keep separate Cobra wiring for clearer help text and audit paths.
 func newQueryCmd(f *cliFlags) *cobra.Command {
 	var opts sqlCommandOptions
 	cmd := &cobra.Command{
@@ -64,6 +66,7 @@ func printQueryResult(f *cliFlags, result dbbackend.QueryResult) error {
 	return nil
 }
 
+//nolint:dupl // Query and explain commands intentionally keep separate Cobra wiring for clearer help text and audit paths.
 func newExplainCmd(f *cliFlags) *cobra.Command {
 	var opts sqlCommandOptions
 	cmd := &cobra.Command{

@@ -31,6 +31,7 @@ type reconcileOptions struct {
 	allowProductionPrune bool
 }
 
+//nolint:dupl // Export mirrors read-only schema commands but stays top-level by design.
 func newExportCmd(f *cliFlags) *cobra.Command {
 	var opts exportOptions
 	cmd := &cobra.Command{
@@ -52,7 +53,7 @@ func newImportCmd(f *cliFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "import <schema-dir>",
 		Short: "Import desired schema from a directory",
-		Args:  requireExactArgs("import", 1),
+		Args:  requireExactArgs("import"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.dir = args[0]
 			return runImport(f, opts)
@@ -69,7 +70,7 @@ func newReconcileCmd(f *cliFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "reconcile <schema-dir>",
 		Short: "Reconcile desired schema directory with the database",
-		Args:  requireExactArgs("reconcile", 1),
+		Args:  requireExactArgs("reconcile"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.dir = args[0]
 			return runReconcile(f, opts)
@@ -83,6 +84,7 @@ func newReconcileCmd(f *cliFlags) *cobra.Command {
 	return cmd
 }
 
+//nolint:dupl // Export and schema dump share the same governed read/audit flow with different event types.
 func runExport(f *cliFlags, opts exportOptions) error {
 	if err := authorizeRead(f); err != nil {
 		return err

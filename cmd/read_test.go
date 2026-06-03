@@ -10,6 +10,10 @@ import (
 	"testing"
 	"time"
 
+	coreaudit "github.com/JiangHe12/opskit-core/audit"
+	corecredstore "github.com/JiangHe12/opskit-core/credstore"
+	corectx "github.com/JiangHe12/opskit-core/ctx"
+
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/backend/fake"
@@ -17,9 +21,6 @@ import (
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
-	coreaudit "github.com/JiangHe12/opskit-core/audit"
-	corecredstore "github.com/JiangHe12/opskit-core/credstore"
-	corectx "github.com/JiangHe12/opskit-core/ctx"
 )
 
 var errFakeExplain = errors.New("fake explain failure")
@@ -28,7 +29,7 @@ func TestQueryFakeBackendJSONAndAudit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	out, _, err := executeCommandForTest("-o", "json", "query", "--sql", "SELECT id, name FROM users", "--fake")
+	out, err := executeCommandForTest("-o", "json", "query", "--sql", "SELECT id, name FROM users", "--fake")
 	if err != nil {
 		t.Fatalf("query error = %v", err)
 	}
@@ -42,7 +43,7 @@ func TestQueryFakeBackendJSONAndAudit(t *testing.T) {
 }
 
 func TestQueryRejectsWriteSQL(t *testing.T) {
-	_, _, err := executeCommandForTest("query", "--sql", "UPDATE users SET name='x'", "--fake")
+	_, err := executeCommandForTest("query", "--sql", "UPDATE users SET name='x'", "--fake")
 	if err == nil {
 		t.Fatal("expected query to reject write SQL")
 	}
@@ -55,7 +56,7 @@ func TestExplainFakeBackendJSONAndAudit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	out, _, err := executeCommandForTest("-o", "json", "explain", "--sql", "SELECT * FROM users", "--fake")
+	out, err := executeCommandForTest("-o", "json", "explain", "--sql", "SELECT * FROM users", "--fake")
 	if err != nil {
 		t.Fatalf("explain error = %v", err)
 	}
@@ -69,7 +70,7 @@ func TestExplainFakeBackendJSONAndAudit(t *testing.T) {
 }
 
 func TestDoctorConfigFakeBackend(t *testing.T) {
-	out, _, err := executeCommandForTest("-o", "json", "doctor", "config", "--fake")
+	out, err := executeCommandForTest("-o", "json", "doctor", "config", "--fake")
 	if err != nil {
 		t.Fatalf("doctor config error = %v", err)
 	}
@@ -83,7 +84,7 @@ func TestSchemaDiffWritesDbgovAuditEvent(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100));`)
-	_, _, err := executeCommandForTest("--config", filepath.Join(home, "config.yaml"), "schema", "diff", "-f", desired, "--fake")
+	_, err := executeCommandForTest("--config", filepath.Join(home, "config.yaml"), "schema", "diff", "-f", desired, "--fake")
 	if err != nil {
 		t.Fatalf("schema diff error = %v", err)
 	}
@@ -98,7 +99,7 @@ func TestSchemaListDescribeDumpFakeBackend(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 
-	out, _, err := executeCommandForTest("-o", "json", "schema", "list", "--fake")
+	out, err := executeCommandForTest("-o", "json", "schema", "list", "--fake")
 	if err != nil {
 		t.Fatalf("schema list error = %v", err)
 	}
@@ -109,7 +110,7 @@ func TestSchemaListDescribeDumpFakeBackend(t *testing.T) {
 		t.Fatalf("list audit event = %+v", evt)
 	}
 
-	out, _, err = executeCommandForTest("-o", "json", "schema", "describe", "users", "--fake")
+	out, err = executeCommandForTest("-o", "json", "schema", "describe", "users", "--fake")
 	if err != nil {
 		t.Fatalf("schema describe error = %v", err)
 	}
@@ -120,7 +121,7 @@ func TestSchemaListDescribeDumpFakeBackend(t *testing.T) {
 		t.Fatalf("describe audit event = %+v", evt)
 	}
 
-	out, _, err = executeCommandForTest("-o", "json", "schema", "dump", "--fake")
+	out, err = executeCommandForTest("-o", "json", "schema", "dump", "--fake")
 	if err != nil {
 		t.Fatalf("schema dump stdout error = %v", err)
 	}
@@ -137,7 +138,7 @@ func TestSchemaDumpWritesDirectory(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	dir := filepath.Join(home, "schema")
-	_, _, err := executeCommandForTest("schema", "dump", "--fake", "--dir", dir)
+	_, err := executeCommandForTest("schema", "dump", "--fake", "--dir", dir)
 	if err != nil {
 		t.Fatalf("schema dump --dir error = %v", err)
 	}
@@ -156,7 +157,7 @@ func TestSchemaPlanFakeBackendShowsRiskDDLAndAudit(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100));`)
 
-	out, _, err := executeCommandForTest("-o", "json", "schema", "plan", "-f", desired, "--fake")
+	out, err := executeCommandForTest("-o", "json", "schema", "plan", "-f", desired, "--fake")
 	if err != nil {
 		t.Fatalf("schema plan error = %v", err)
 	}
@@ -188,7 +189,7 @@ func TestSchemaApplyR1RequiresYesAndExecutesWhenAuthorized(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("--non-interactive", "schema", "apply", "-f", desired, "--fake")
+	_, err := executeCommandForTest("--non-interactive", "schema", "apply", "-f", desired, "--fake")
 	if err == nil {
 		t.Fatal("expected R1 apply without --yes to be denied")
 	}
@@ -199,7 +200,7 @@ func TestSchemaApplyR1RequiresYesAndExecutesWhenAuthorized(t *testing.T) {
 		t.Fatalf("denied audit event = %+v", evt)
 	}
 
-	_, _, err = executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
+	_, err = executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
 	if err != nil {
 		t.Fatalf("schema apply R1 error = %v", err)
 	}
@@ -227,7 +228,7 @@ func TestSchemaApplyR3RequiresTicketAllowFlagAndYes(t *testing.T) {
 		restore := stubFakeBackend(t, backend)
 		fullArgs := append([]string{}, args...)
 		fullArgs = append(fullArgs, "schema", "apply", "-f", desired, "--fake")
-		_, _, err := executeCommandForTest(fullArgs...)
+		_, err := executeCommandForTest(fullArgs...)
 		restore()
 		if err == nil {
 			t.Fatalf("expected R3 apply with args %v to be denied", args)
@@ -240,7 +241,7 @@ func TestSchemaApplyR3RequiresTicketAllowFlagAndYes(t *testing.T) {
 	backend := fake.New()
 	restore := stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "schema", "apply", "-f", desired, "--fake", "--allow-destructive")
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "schema", "apply", "-f", desired, "--fake", "--allow-destructive")
 	if err != nil {
 		t.Fatalf("schema apply R3 error = %v", err)
 	}
@@ -297,7 +298,7 @@ func TestSchemaApplyDryRunDoesNotAuthorizeOrExecute(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	out, _, err := executeCommandForTest("-o", "json", "schema", "apply", "-f", desired, "--fake", "--dry-run")
+	out, err := executeCommandForTest("-o", "json", "schema", "apply", "-f", desired, "--fake", "--dry-run")
 	if err != nil {
 		t.Fatalf("dry-run apply error = %v", err)
 	}
@@ -322,7 +323,7 @@ func TestSchemaApplyAuditsPartialFailure(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "schema", "apply", "-f", desired, "--fake", "--allow-destructive")
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "schema", "apply", "-f", desired, "--fake", "--allow-destructive")
 	if err == nil {
 		t.Fatal("expected partial failure")
 	}
@@ -344,7 +345,7 @@ func TestDataExecInsertR1RequiresYesAndAuditsAffectedRows(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("--non-interactive", "data", "exec", "--sql", "INSERT INTO users(id) VALUES (1)", "--fake")
+	_, err := executeCommandForTest("--non-interactive", "data", "exec", "--sql", "INSERT INTO users(id) VALUES (1)", "--fake")
 	if err == nil {
 		t.Fatal("expected INSERT without --yes to be denied")
 	}
@@ -355,7 +356,7 @@ func TestDataExecInsertR1RequiresYesAndAuditsAffectedRows(t *testing.T) {
 		t.Fatalf("denied insert audit event = %+v", evt)
 	}
 
-	_, _, err = executeCommandForTest("--yes", "data", "exec", "--sql", "INSERT INTO users(id) VALUES (1)", "--fake")
+	_, err = executeCommandForTest("--yes", "data", "exec", "--sql", "INSERT INTO users(id) VALUES (1)", "--fake")
 	if err != nil {
 		t.Fatalf("insert exec error = %v", err)
 	}
@@ -378,7 +379,7 @@ func TestDataExecUpdateWhereSmallImpactR1(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("--yes", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id < 10", "--fake")
+	_, err := executeCommandForTest("--yes", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id < 10", "--fake")
 	if err != nil {
 		t.Fatalf("update exec error = %v", err)
 	}
@@ -397,7 +398,7 @@ func TestDataExecUpdateWhereLargeImpactR2RequiresTicket(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("--yes", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE active=1", "--fake")
+	_, err := executeCommandForTest("--yes", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE active=1", "--fake")
 	if err == nil {
 		t.Fatal("expected large update without ticket to be denied")
 	}
@@ -408,7 +409,7 @@ func TestDataExecUpdateWhereLargeImpactR2RequiresTicket(t *testing.T) {
 		t.Fatalf("large update denied audit event = %+v", evt)
 	}
 
-	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE active=1", "--fake")
+	_, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE active=1", "--fake")
 	if err != nil {
 		t.Fatalf("large update authorized error = %v", err)
 	}
@@ -431,7 +432,7 @@ func TestDataExecDeleteNoWhereR3RequiresTicketAllowAndYes(t *testing.T) {
 		restore := stubFakeBackend(t, backend)
 		fullArgs := append([]string{}, args...)
 		fullArgs = append(fullArgs, "data", "exec", "--sql", "DELETE FROM users", "--fake")
-		_, _, err := executeCommandForTest(fullArgs...)
+		_, err := executeCommandForTest(fullArgs...)
 		restore()
 		if err == nil {
 			t.Fatalf("expected no-WHERE delete with args %v to be denied", args)
@@ -444,7 +445,7 @@ func TestDataExecDeleteNoWhereR3RequiresTicketAllowAndYes(t *testing.T) {
 	backend := fake.New()
 	restore := stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "data", "exec", "--sql", "DELETE FROM users", "--fake", "--allow-no-where")
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "data", "exec", "--sql", "DELETE FROM users", "--fake", "--allow-no-where")
 	if err != nil {
 		t.Fatalf("no-WHERE delete authorized error = %v", err)
 	}
@@ -469,11 +470,11 @@ func TestCtxRoleSetListUnsetAndAudit(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(home, "config.yaml")
-	_, _, err := executeCommandForTest("--config", configPath, "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1", "--database", "demo")
+	_, err := executeCommandForTest("--config", configPath, "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1", "--database", "demo")
 	if err != nil {
 		t.Fatalf("ctx set error = %v", err)
 	}
-	_, _, err = executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--target-operator", "alice", "--role", safety.RoleWriter)
+	_, err = executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--target-operator", "alice", "--role", safety.RoleWriter)
 	if err != nil {
 		t.Fatalf("ctx role set error = %v", err)
 	}
@@ -482,7 +483,7 @@ func TestCtxRoleSetListUnsetAndAudit(t *testing.T) {
 		t.Fatalf("role assign audit event = %+v", evt)
 	}
 
-	out, _, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "role", "list", "local")
+	out, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "role", "list", "local")
 	if err != nil {
 		t.Fatalf("ctx role list error = %v", err)
 	}
@@ -490,7 +491,7 @@ func TestCtxRoleSetListUnsetAndAudit(t *testing.T) {
 		t.Fatalf("ctx role list output = %s", out)
 	}
 
-	_, _, err = executeCommandForTest("--config", configPath, "ctx", "role", "unset", "local", "--target-operator", "alice")
+	_, err = executeCommandForTest("--config", configPath, "ctx", "role", "unset", "local", "--target-operator", "alice")
 	if err != nil {
 		t.Fatalf("ctx role unset error = %v", err)
 	}
@@ -514,17 +515,17 @@ func TestCtxRoleValidation(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(home, "config.yaml")
-	if _, _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "missing", "--target-operator", "alice", "--role", safety.RoleWriter); err == nil {
+	if _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "missing", "--target-operator", "alice", "--role", safety.RoleWriter); err == nil {
 		t.Fatal("expected missing context to fail")
 	}
-	_, _, err := executeCommandForTest("--config", configPath, "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1")
+	_, err := executeCommandForTest("--config", configPath, "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1")
 	if err != nil {
 		t.Fatalf("ctx set error = %v", err)
 	}
-	if _, _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--role", safety.RoleWriter); err == nil {
+	if _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--role", safety.RoleWriter); err == nil {
 		t.Fatal("expected missing --target-operator to fail")
 	}
-	if _, _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--target-operator", "alice", "--role", "owner"); err == nil {
+	if _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--target-operator", "alice", "--role", "owner"); err == nil {
 		t.Fatal("expected invalid role to fail")
 	}
 }
@@ -547,7 +548,7 @@ func TestCtxMigrateCredentialsMigratesOnlyLiteralPasswords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, _, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "migrate-credentials", "--to", "encrypted-file")
+	out, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "migrate-credentials", "--to", "encrypted-file")
 	if err != nil {
 		t.Fatalf("ctx migrate-credentials error = %v", err)
 	}
@@ -591,7 +592,7 @@ func TestCtxMigrateCredentialsContextFilterAndNoCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, _, err := executeCommandForTest("--config", configPath, "ctx", "migrate-credentials", "--to", "encrypted-file", "--context", "prod")
+	_, err := executeCommandForTest("--config", configPath, "ctx", "migrate-credentials", "--to", "encrypted-file", "--context", "prod")
 	if err != nil {
 		t.Fatalf("filtered migrate error = %v", err)
 	}
@@ -603,7 +604,7 @@ func TestCtxMigrateCredentialsContextFilterAndNoCandidates(t *testing.T) {
 		t.Fatalf("context filter changed wrong contexts: prod=%+v dev=%+v", cfg.Contexts["prod"], cfg.Contexts["dev"])
 	}
 
-	out, _, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "migrate-credentials", "--to", "encrypted-file", "--context", "prod")
+	out, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "migrate-credentials", "--to", "encrypted-file", "--context", "prod")
 	if err != nil {
 		t.Fatalf("no-candidate migrate error = %v", err)
 	}
@@ -629,11 +630,11 @@ func TestCtxMigrateCredentialsValidationAndBackendUnavailable(t *testing.T) {
 		{"--config", configPath, "ctx", "migrate-credentials", "--to", "vault"},
 		{"--config", configPath, "ctx", "migrate-credentials", "--to", "unknown"},
 	} {
-		if _, _, err := executeCommandForTest(args...); err == nil {
+		if _, err := executeCommandForTest(args...); err == nil {
 			t.Fatalf("expected args %v to fail", args)
 		}
 	}
-	if _, _, err := executeCommandForTest("--config", configPath, "ctx", "migrate-credentials", "--to", "encrypted-file"); err == nil {
+	if _, err := executeCommandForTest("--config", configPath, "ctx", "migrate-credentials", "--to", "encrypted-file"); err == nil {
 		t.Fatal("expected encrypted-file without master password to fail")
 	}
 	cfg, err := dbgovctx.Load()
@@ -669,7 +670,7 @@ func TestDataExecProtectedContextCommandRequiresTicket(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("--config", configPath, "--context", "prod", "--yes", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1", "--fake")
+	_, err := executeCommandForTest("--config", configPath, "--context", "prod", "--yes", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1", "--fake")
 	if err == nil {
 		t.Fatal("expected protected small update without ticket to be denied")
 	}
@@ -690,7 +691,7 @@ func TestDataExecDryRunDoesNotAuthorizeOrExecute(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	out, _, err := executeCommandForTest("-o", "json", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1", "--fake", "--dry-run")
+	out, err := executeCommandForTest("-o", "json", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1", "--fake", "--dry-run")
 	if err != nil {
 		t.Fatalf("dry-run data exec error = %v", err)
 	}
@@ -709,10 +710,10 @@ func TestDataExecRejectsNonDMLAndExplainFailure(t *testing.T) {
 	backend := fake.New()
 	restore := stubFakeBackend(t, backend)
 	defer restore()
-	if _, _, err := executeCommandForTest("data", "exec", "--sql", "SELECT * FROM users", "--fake"); err == nil {
+	if _, err := executeCommandForTest("data", "exec", "--sql", "SELECT * FROM users", "--fake"); err == nil {
 		t.Fatal("expected SELECT to be rejected")
 	}
-	if _, _, err := executeCommandForTest("data", "exec", "--sql", "CREATE TABLE t (id BIGINT)", "--fake"); err == nil {
+	if _, err := executeCommandForTest("data", "exec", "--sql", "CREATE TABLE t (id BIGINT)", "--fake"); err == nil {
 		t.Fatal("expected DDL to be rejected")
 	}
 	if len(backend.ExecutedDML) != 0 {
@@ -720,7 +721,7 @@ func TestDataExecRejectsNonDMLAndExplainFailure(t *testing.T) {
 	}
 
 	backend.ExplainErr = errFakeExplain
-	if _, _, err := executeCommandForTest("data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1", "--fake"); err == nil {
+	if _, err := executeCommandForTest("data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1", "--fake"); err == nil {
 		t.Fatal("expected EXPLAIN failure to stop data exec")
 	}
 	if len(backend.ExecutedDML) != 0 {
@@ -742,7 +743,7 @@ func TestExportWritesSchemaDirectoryAndAudit(t *testing.T) {
 	defer restore()
 	dir := filepath.Join(home, "schema")
 
-	_, _, err := executeCommandForTest("export", "--dir", dir, "--fake")
+	_, err := executeCommandForTest("export", "--dir", dir, "--fake")
 	if err != nil {
 		t.Fatalf("export error = %v", err)
 	}
@@ -771,7 +772,7 @@ func TestImportR1RequiresYesAndExecutesMultiTablePlan(t *testing.T) {
 	backend := fake.New()
 	restore := stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err := executeCommandForTest("--non-interactive", "import", dir, "--fake")
+	_, err := executeCommandForTest("--non-interactive", "import", dir, "--fake")
 	if err == nil {
 		t.Fatal("expected R1 import without --yes to be denied")
 	}
@@ -782,7 +783,7 @@ func TestImportR1RequiresYesAndExecutesMultiTablePlan(t *testing.T) {
 		t.Fatalf("denied import audit event = %+v", evt)
 	}
 
-	_, _, err = executeCommandForTest("--yes", "import", dir, "--fake")
+	_, err = executeCommandForTest("--yes", "import", dir, "--fake")
 	if err != nil {
 		t.Fatalf("import R1 error = %v", err)
 	}
@@ -804,7 +805,7 @@ func TestImportR3RequiresTicketAllowDestructive(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "import", dir, "--fake")
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "import", dir, "--fake")
 	if err == nil {
 		t.Fatal("expected destructive import without allow flag to be denied")
 	}
@@ -812,7 +813,7 @@ func TestImportR3RequiresTicketAllowDestructive(t *testing.T) {
 		t.Fatalf("executed denied destructive import: %+v", backend.Executed)
 	}
 
-	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "import", dir, "--fake", "--allow-destructive")
+	_, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "import", dir, "--fake", "--allow-destructive")
 	if err != nil {
 		t.Fatalf("destructive import error = %v", err)
 	}
@@ -835,7 +836,7 @@ func TestImportDryRunAndNoDropTableForMissingDesiredTable(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	out, _, err := executeCommandForTest("-o", "json", "import", dir, "--fake", "--dry-run")
+	out, err := executeCommandForTest("-o", "json", "import", dir, "--fake", "--dry-run")
 	if err != nil {
 		t.Fatalf("dry-run import error = %v", err)
 	}
@@ -861,7 +862,7 @@ func TestReconcileWithoutPruneReportsDriftAndExecutesInTableChanges(t *testing.T
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	out, _, err := executeCommandForTest("-o", "json", "--yes", "reconcile", dir, "--fake")
+	out, err := executeCommandForTest("-o", "json", "--yes", "reconcile", dir, "--fake")
 	if err != nil {
 		t.Fatalf("reconcile without prune error = %v", err)
 	}
@@ -889,7 +890,7 @@ func TestReconcilePruneRequiresProductionPruneAllowFlag(t *testing.T) {
 	backend := fake.New()
 	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
 	restore := stubFakeBackend(t, backend)
-	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune")
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune")
 	restore()
 	if err == nil {
 		t.Fatal("expected prune reconcile without --allow-production-prune to be denied")
@@ -905,7 +906,7 @@ func TestReconcilePruneRequiresProductionPruneAllowFlag(t *testing.T) {
 	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
 	restore = stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune", "--allow-production-prune")
+	_, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune", "--allow-production-prune")
 	if err != nil {
 		t.Fatalf("authorized prune reconcile error = %v", err)
 	}
@@ -932,7 +933,7 @@ func TestReconcilePruneAndDestructiveColumnRequireBothAllowFlags(t *testing.T) {
 		backend := fake.New()
 		backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
 		restore := stubFakeBackend(t, backend)
-		_, _, err := executeCommandForTest(args...)
+		_, err := executeCommandForTest(args...)
 		restore()
 		if err == nil {
 			t.Fatalf("expected reconcile with args %v to be denied", args)
@@ -946,7 +947,7 @@ func TestReconcilePruneAndDestructiveColumnRequireBothAllowFlags(t *testing.T) {
 	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
 	restore := stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune", "--allow-destructive", "--allow-production-prune")
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune", "--allow-destructive", "--allow-production-prune")
 	if err != nil {
 		t.Fatalf("reconcile with both allow flags error = %v", err)
 	}
@@ -969,7 +970,7 @@ func TestReconcileDryRunDoesNotAuthorizeOrExecute(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	out, _, err := executeCommandForTest("-o", "json", "reconcile", dir, "--fake", "--prune", "--dry-run")
+	out, err := executeCommandForTest("-o", "json", "reconcile", dir, "--fake", "--prune", "--dry-run")
 	if err != nil {
 		t.Fatalf("dry-run reconcile error = %v", err)
 	}
@@ -993,7 +994,7 @@ func TestSchemaApplyCapturesSnapshotBeforeDDLAndAuditsID(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
+	_, err := executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
 	if err != nil {
 		t.Fatalf("schema apply error = %v", err)
 	}
@@ -1019,7 +1020,7 @@ func TestSchemaApplyDryRunDoesNotCaptureSnapshot(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("schema", "apply", "-f", desired, "--fake", "--dry-run")
+	_, err := executeCommandForTest("schema", "apply", "-f", desired, "--fake", "--dry-run")
 	if err != nil {
 		t.Fatalf("dry-run schema apply error = %v", err)
 	}
@@ -1042,7 +1043,7 @@ func TestSchemaApplySnapshotFailureStopsBeforeDDL(t *testing.T) {
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	_, _, err := executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
+	_, err := executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
 	if err == nil {
 		t.Fatal("expected snapshot capture failure")
 	}
@@ -1066,7 +1067,7 @@ func TestImportAndReconcileCaptureSnapshots(t *testing.T) {
 
 	backend := fake.New()
 	restore := stubFakeBackend(t, backend)
-	_, _, err := executeCommandForTest("--yes", "import", importDir, "--fake")
+	_, err := executeCommandForTest("--yes", "import", importDir, "--fake")
 	restore()
 	if err != nil {
 		t.Fatalf("import error = %v", err)
@@ -1078,7 +1079,7 @@ func TestImportAndReconcileCaptureSnapshots(t *testing.T) {
 	backend = fake.New()
 	restore = stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", reconcileDir, "--fake", "--allow-destructive")
+	_, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", reconcileDir, "--fake", "--allow-destructive")
 	if err != nil {
 		t.Fatalf("reconcile error = %v", err)
 	}
@@ -1107,7 +1108,7 @@ func TestRollbackListOutputsSnapshotsAndAudits(t *testing.T) {
 		t.Fatalf("capture second snapshot: %v", err)
 	}
 
-	out, _, err := executeCommandForTest("-o", "json", "rollback", "list")
+	out, err := executeCommandForTest("-o", "json", "rollback", "list")
 	if err != nil {
 		t.Fatalf("rollback list error = %v", err)
 	}
@@ -1123,7 +1124,7 @@ func TestRollbackListEmpty(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	out, _, err := executeCommandForTest("-o", "json", "rollback", "list")
+	out, err := executeCommandForTest("-o", "json", "rollback", "list")
 	if err != nil {
 		t.Fatalf("empty rollback list error = %v", err)
 	}
@@ -1145,14 +1146,14 @@ func TestRollbackToIncrementalRestoreHasR2FloorAndAuditsSnapshot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+	sourceID := captureSnapshotForTest(t, home, map[string]string{
 		"users":  "CREATE TABLE users (id BIGINT, legacy TEXT);",
 		"orders": "CREATE TABLE orders (id BIGINT);",
 	})
 
 	backend := fake.New()
 	restore := stubFakeBackend(t, backend)
-	_, _, err := executeCommandForTest("--yes", "rollback", "--to", sourceID, "--fake")
+	_, err := executeCommandForTest("--yes", "rollback", "--to", sourceID, "--fake")
 	restore()
 	if err == nil {
 		t.Fatal("expected rollback R2 floor to require --ticket")
@@ -1167,7 +1168,7 @@ func TestRollbackToIncrementalRestoreHasR2FloorAndAuditsSnapshot(t *testing.T) {
 	backend = fake.New()
 	restore = stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
+	_, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
 	if err != nil {
 		t.Fatalf("authorized rollback error = %v", err)
 	}
@@ -1184,13 +1185,13 @@ func TestRollbackToDestructiveRestoreRequiresAllowDestructive(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+	sourceID := captureSnapshotForTest(t, home, map[string]string{
 		"users": "CREATE TABLE users (id BIGINT);",
 	})
 
 	backend := fake.New()
 	restore := stubFakeBackend(t, backend)
-	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
 	restore()
 	if err == nil {
 		t.Fatal("expected destructive rollback without --allow-destructive to be denied")
@@ -1202,7 +1203,7 @@ func TestRollbackToDestructiveRestoreRequiresAllowDestructive(t *testing.T) {
 	backend = fake.New()
 	restore = stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-destructive")
+	_, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-destructive")
 	if err != nil {
 		t.Fatalf("destructive rollback error = %v", err)
 	}
@@ -1215,13 +1216,13 @@ func TestRollbackToPruneRestoreRequiresAllowProductionPrune(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+	sourceID := captureSnapshotForTest(t, home, map[string]string{
 		"users": "CREATE TABLE users (id BIGINT, legacy TEXT);",
 	})
 	backend := fake.New()
 	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
 	restore := stubFakeBackend(t, backend)
-	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
 	restore()
 	if err == nil {
 		t.Fatal("expected prune rollback without --allow-production-prune to be denied")
@@ -1234,7 +1235,7 @@ func TestRollbackToPruneRestoreRequiresAllowProductionPrune(t *testing.T) {
 	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
 	restore = stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-production-prune")
+	_, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-production-prune")
 	if err != nil {
 		t.Fatalf("prune rollback error = %v", err)
 	}
@@ -1247,7 +1248,7 @@ func TestRollbackToRequiresBothAllowFlagsForDropColumnAndDropTable(t *testing.T)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+	sourceID := captureSnapshotForTest(t, home, map[string]string{
 		"users": "CREATE TABLE users (id BIGINT);",
 	})
 	cases := [][]string{
@@ -1258,7 +1259,7 @@ func TestRollbackToRequiresBothAllowFlagsForDropColumnAndDropTable(t *testing.T)
 		backend := fake.New()
 		backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
 		restore := stubFakeBackend(t, backend)
-		_, _, err := executeCommandForTest(args...)
+		_, err := executeCommandForTest(args...)
 		restore()
 		if err == nil {
 			t.Fatalf("expected rollback args %v to be denied", args)
@@ -1272,7 +1273,7 @@ func TestRollbackToRequiresBothAllowFlagsForDropColumnAndDropTable(t *testing.T)
 	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
 	restore := stubFakeBackend(t, backend)
 	defer restore()
-	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-destructive", "--allow-production-prune")
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-destructive", "--allow-production-prune")
 	if err != nil {
 		t.Fatalf("rollback with both allow flags error = %v", err)
 	}
@@ -1285,14 +1286,14 @@ func TestRollbackToDryRunWarnsAndDoesNotCaptureOrExecute(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+	sourceID := captureSnapshotForTest(t, home, map[string]string{
 		"users": "CREATE TABLE users (id BIGINT);",
 	})
 	backend := fake.New()
 	restore := stubFakeBackend(t, backend)
 	defer restore()
 
-	out, _, err := executeCommandForTest("-o", "json", "rollback", "--to", sourceID, "--fake", "--dry-run")
+	out, err := executeCommandForTest("-o", "json", "rollback", "--to", sourceID, "--fake", "--dry-run")
 	if err != nil {
 		t.Fatalf("dry-run rollback error = %v", err)
 	}
@@ -1315,10 +1316,10 @@ func TestRollbackToDryRunWarnsAndDoesNotCaptureOrExecute(t *testing.T) {
 }
 
 func TestRollbackToRejectsInvalidSnapshotID(t *testing.T) {
-	if _, _, err := executeCommandForTest("rollback", "--to", "..\\evil", "--fake", "--dry-run"); err == nil {
+	if _, err := executeCommandForTest("rollback", "--to", "..\\evil", "--fake", "--dry-run"); err == nil {
 		t.Fatal("expected invalid snapshot id to be rejected")
 	}
-	if _, _, err := executeCommandForTest("rollback", "--to", "missing-snapshot", "--fake", "--dry-run"); err == nil {
+	if _, err := executeCommandForTest("rollback", "--to", "missing-snapshot", "--fake", "--dry-run"); err == nil {
 		t.Fatal("expected missing snapshot id to be rejected")
 	}
 }
@@ -1351,7 +1352,7 @@ func TestAuditQueryFiltersDbgovEventsAndPreservesFields(t *testing.T) {
 	})
 	appendBadAuditLineForTest(t, path)
 
-	out, _, err := executeCommandForTest("-o", "json", "audit", "query",
+	out, err := executeCommandForTest("-o", "json", "audit", "query",
 		"--path", path,
 		"--operator", "alice",
 		"--type", "data.exec",
@@ -1403,7 +1404,7 @@ func TestAuditQueryReverseAndLimitAfterFiltering(t *testing.T) {
 		Status:    dbgaudit.StatusSucceeded,
 	})
 
-	out, _, err := executeCommandForTest("-o", "json", "audit", "query", "--path", path, "--risk", "R2", "--reverse", "--limit", "2")
+	out, err := executeCommandForTest("-o", "json", "audit", "query", "--path", path, "--risk", "R2", "--reverse", "--limit", "2")
 	if err != nil {
 		t.Fatalf("audit query reverse error = %v", err)
 	}
@@ -1422,7 +1423,7 @@ func TestAuditQueryEmptyLog(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	out, _, err := executeCommandForTest("-o", "json", "audit", "query", "--path", filepath.Join(home, "missing.log"))
+	out, err := executeCommandForTest("-o", "json", "audit", "query", "--path", filepath.Join(home, "missing.log"))
 	if err != nil {
 		t.Fatalf("audit query empty error = %v", err)
 	}
@@ -1443,7 +1444,7 @@ func TestAuditVerifyReportsMalformedAndStrictFails(t *testing.T) {
 		Risk:      "R0",
 		Status:    dbgaudit.StatusSucceeded,
 	})
-	out, _, err := executeCommandForTest("-o", "json", "audit", "verify", "--path", path)
+	out, err := executeCommandForTest("-o", "json", "audit", "verify", "--path", path)
 	if err != nil {
 		t.Fatalf("audit verify clean error = %v", err)
 	}
@@ -1455,14 +1456,14 @@ func TestAuditVerifyReportsMalformedAndStrictFails(t *testing.T) {
 	}
 
 	appendBadAuditLineForTest(t, path)
-	out, _, err = executeCommandForTest("-o", "json", "audit", "verify", "--path", path)
+	out, err = executeCommandForTest("-o", "json", "audit", "verify", "--path", path)
 	if err != nil {
 		t.Fatalf("audit verify non-strict malformed error = %v", err)
 	}
 	if !strings.Contains(out, `"malformed": 1`) {
 		t.Fatalf("audit verify malformed output = %s", out)
 	}
-	if _, _, err = executeCommandForTest("audit", "verify", "--path", path, "--strict"); err == nil {
+	if _, err = executeCommandForTest("audit", "verify", "--path", path, "--strict"); err == nil {
 		t.Fatal("expected strict audit verify to fail on malformed log")
 	}
 }
@@ -1476,7 +1477,7 @@ func TestAuditPruneBeforeDryRunAndConfirm(t *testing.T) {
 	old := writeTestFile(t, home, "audit.log.20260101-000000.log", "old\n")
 	newer := writeTestFile(t, home, "audit.log.20260201-000000.log", "newer\n")
 
-	out, _, err := executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--before", "2026-01-15T00:00:00Z")
+	out, err := executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--before", "2026-01-15T00:00:00Z")
 	if err != nil {
 		t.Fatalf("audit prune dry-run error = %v", err)
 	}
@@ -1492,7 +1493,7 @@ func TestAuditPruneBeforeDryRunAndConfirm(t *testing.T) {
 		t.Fatalf("dry-run should not write prune audit event, stat err = %v", err)
 	}
 
-	out, _, err = executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--before", "2026-01-15", "--confirm")
+	out, err = executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--before", "2026-01-15", "--confirm")
 	if err != nil {
 		t.Fatalf("audit prune confirm error = %v", err)
 	}
@@ -1522,7 +1523,7 @@ func TestAuditPruneKeepLastNeverDeletesActiveLog(t *testing.T) {
 	second := writeTestFile(t, home, "audit.log.20260201-000000.log", "second\n")
 	third := writeTestFile(t, home, "audit.log.20260301-000000.log", "third\n")
 
-	out, _, err := executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--keep-last", "1", "--confirm")
+	out, err := executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--keep-last", "1", "--confirm")
 	if err != nil {
 		t.Fatalf("audit prune keep-last error = %v", err)
 	}
@@ -1553,7 +1554,7 @@ func TestAuditPruneRejectsInvalidSelection(t *testing.T) {
 		{"audit", "prune", "--path", path, "--keep-last", "-2"},
 	}
 	for _, args := range cases {
-		if _, _, err := executeCommandForTest(args...); err == nil {
+		if _, err := executeCommandForTest(args...); err == nil {
 			t.Fatalf("expected audit prune args to fail: %v", args)
 		}
 	}
@@ -1566,11 +1567,11 @@ func TestInstallSkillsRequiresFlagAndCopiesSkill(t *testing.T) {
 	SetSkillFS(os.DirFS(repoRootForCmdTest(t)))
 	t.Cleanup(func() { SetSkillFS(nil) })
 
-	if _, _, err := executeCommandForTest("install", "claude"); err == nil {
+	if _, err := executeCommandForTest("install", "claude"); err == nil {
 		t.Fatal("expected install without --skills to fail")
 	}
 
-	out, _, err := executeCommandForTest("-o", "json", "install", "claude", "--skills")
+	out, err := executeCommandForTest("-o", "json", "install", "claude", "--skills")
 	if err != nil {
 		t.Fatalf("install skills error = %v", err)
 	}
@@ -1646,9 +1647,9 @@ func snapshotDirForTest(home string) string {
 	return filepath.Join(home, ".dbgov", "snapshots")
 }
 
-func captureSnapshotForTest(t *testing.T, home, command string, tables map[string]string) string {
+func captureSnapshotForTest(t *testing.T, home string, tables map[string]string) string {
 	t.Helper()
-	id, err := dbgsnapshot.Capture(snapshotDirForTest(home), dbgsnapshot.Meta{Operator: "tester", Command: command, Context: "fake"}, tables)
+	id, err := dbgsnapshot.Capture(snapshotDirForTest(home), dbgsnapshot.Meta{Operator: "tester", Command: "apply", Context: "fake"}, tables)
 	if err != nil {
 		t.Fatal(err)
 	}

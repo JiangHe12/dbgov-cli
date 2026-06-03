@@ -10,11 +10,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/printer"
+
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/printer"
 )
 
 type schemaDiffOptions struct {
@@ -106,7 +107,7 @@ func schemaDescribeCmd(f *cliFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "describe <table>",
 		Short: "Describe a database table",
-		Args:  requireExactArgs("schema describe", 1),
+		Args:  requireExactArgs("schema describe"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSchemaDescribe(f, opts, args[0])
 		},
@@ -348,6 +349,7 @@ func runSchemaDescribe(f *cliFlags, opts schemaReadOptions, table string) error 
 	return printSchemaDescribe(f, tbl)
 }
 
+//nolint:dupl // Schema dump and export share the same governed read/audit flow with different event types.
 func runSchemaDump(f *cliFlags, opts schemaReadOptions) error {
 	if err := authorizeRead(f); err != nil {
 		return err
@@ -377,7 +379,8 @@ func runSchemaDump(f *cliFlags, opts schemaReadOptions) error {
 
 func dumpSchema(ctx context.Context, b interface {
 	TableDDL(context.Context, string) (string, error)
-}, current schema.Schema, dir string) (schemaDumpResult, error) {
+}, current schema.Schema, dir string,
+) (schemaDumpResult, error) {
 	result := schemaDumpResult{}
 	for _, name := range sortedTableNames(current) {
 		ddl, err := b.TableDDL(ctx, name)
@@ -420,14 +423,16 @@ func printSchemaDiff(f *cliFlags, diff schema.DiffResult) error {
 
 func buildSchemaPlan(b interface {
 	RenderDDL([]schema.Change) ([]string, error)
-}, current, desired schema.Schema) (schemaPlan, error) {
+}, current, desired schema.Schema,
+) (schemaPlan, error) {
 	diff := schema.Diff(current, desired)
 	return buildSchemaPlanFromDiff(b, diff)
 }
 
 func buildSchemaPlanFromDiff(b interface {
 	RenderDDL([]schema.Change) ([]string, error)
-}, diff schema.DiffResult) (schemaPlan, error) {
+}, diff schema.DiffResult,
+) (schemaPlan, error) {
 	risk := schema.ClassifyDiff(diff)
 	statements, err := b.RenderDDL(diff.Changes)
 	if err != nil {
@@ -558,6 +563,8 @@ func schemaPlanStatements(plan schemaPlan) []string {
 
 func requiredAuthorization(risk schema.Risk) string {
 	switch risk {
+	case schema.RiskR0:
+		return ""
 	case schema.RiskR3:
 		return "R3 requires --yes or interactive confirmation, --ticket, and required allow flag(s) when applied"
 	case schema.RiskR2:

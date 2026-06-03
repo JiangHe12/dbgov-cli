@@ -11,9 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 	"github.com/JiangHe12/opskit-core/printer"
 	"github.com/JiangHe12/opskit-core/telemetry"
+
+	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 )
 
 type cliFlags struct {
@@ -135,10 +136,10 @@ func commandContext(f *cliFlags) context.Context {
 	return ctx
 }
 
-func requireExactArgs(name string, n int) cobra.PositionalArgs {
+func requireExactArgs(name string) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
-		if len(args) != n {
-			return fmt.Errorf("%s requires %d argument(s)", name, n)
+		if len(args) != 1 {
+			return fmt.Errorf("%s requires 1 argument(s)", name)
 		}
 		return nil
 	}

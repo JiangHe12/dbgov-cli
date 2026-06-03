@@ -37,6 +37,7 @@ func init() {
 		AttributePrefix:  "dbgov",
 		MetricNamePrefix: "dbgov",
 	})
+	//nolint:gosec // DBGOV_MASTER_PASSWORD and DBGOV001 are configuration identifiers, not embedded credentials.
 	credstore.Configure(credstore.Options{
 		MasterPasswordEnv:  "DBGOV_MASTER_PASSWORD",
 		PromptName:         "dbgov",

@@ -16,12 +16,12 @@ func writeTestFile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
-func executeCommandForTest(args ...string) (string, string, error) {
-	var out, errOut bytes.Buffer
+func executeCommandForTest(args ...string) (string, error) {
+	var out bytes.Buffer
 	cmd := NewRootCmd()
 	cmd.SetOut(&out)
-	cmd.SetErr(&errOut)
+	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs(args)
 	err := cmd.Execute()
-	return out.String(), errOut.String(), err
+	return out.String(), err
 }

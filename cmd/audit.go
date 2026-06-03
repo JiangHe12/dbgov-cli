@@ -7,10 +7,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/opskit-core/apperrors"
 	coreaudit "github.com/JiangHe12/opskit-core/audit"
 	"github.com/JiangHe12/opskit-core/printer"
+
+	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 )
 
 type auditQueryOptions struct {

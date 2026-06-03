@@ -6,8 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 	"github.com/JiangHe12/opskit-core/apperrors"
+
+	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 )
 
 type contextView struct {
@@ -36,7 +37,7 @@ func ctxSetCmd(f *cliFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set <name>",
 		Short: "Add or update a context",
-		Args:  requireExactArgs("ctx set", 1),
+		Args:  requireExactArgs("ctx set"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if req.Engine == "" {
 				req.Engine = "mysql"
@@ -85,7 +86,7 @@ func ctxUseCmd(f *cliFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "use <name>",
 		Short: "Switch current context",
-		Args:  requireExactArgs("ctx use", 1),
+		Args:  requireExactArgs("ctx use"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := dbgovctx.UseContext(args[0]); err != nil {
 				return err
@@ -158,7 +159,7 @@ func ctxDeleteCmd(f *cliFlags) *cobra.Command {
 		Use:     "delete <name>",
 		Aliases: []string{"rm", "remove"},
 		Short:   "Delete a context",
-		Args:    requireExactArgs("ctx delete", 1),
+		Args:    requireExactArgs("ctx delete"),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := dbgovctx.DeleteContext(args[0]); err != nil {
 				return err

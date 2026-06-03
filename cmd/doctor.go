@@ -3,8 +3,9 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/opskit-core/printer"
+
+	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 )
 
 type doctorOptions struct {
@@ -44,7 +45,7 @@ func runDoctor(f *cliFlags, opts doctorOptions, target string) error {
 		return err
 	}
 	report := DoctorReport{}
-	backend, meta, err := buildBackend(f, backendOptions{Fake: opts.Fake})
+	backend, meta, err := buildBackend(f, backendOptions(opts))
 	if target == "config" {
 		report.Checks = append(report.Checks, checkFromError("config", err))
 		emitDoctorAudit(f, meta, err)

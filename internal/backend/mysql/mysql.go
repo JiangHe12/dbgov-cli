@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/go-sql-driver/mysql" // Register MySQL database/sql driver.
 
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
@@ -179,7 +179,7 @@ func (b *Backend) Query(ctx context.Context, sqlText string) (dbbackend.QueryRes
 }
 
 func (b *Backend) Explain(ctx context.Context, sqlText string) (dbbackend.ExplainResult, error) {
-	explainSQL := "EXPLAIN " + strings.TrimSpace(sqlText)
+	explainSQL := "EXPLAIN " + strings.TrimSpace(sqlText) //nolint:gosec // Adds EXPLAIN to an already classified statement; no additional SQL surface is introduced.
 	rows, err := b.db.QueryContext(ctx, explainSQL)
 	if err != nil {
 		return dbbackend.ExplainResult{}, err

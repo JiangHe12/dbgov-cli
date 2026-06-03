@@ -110,7 +110,7 @@ func LoadDesiredDir(dir string) (Schema, error) {
 			continue
 		}
 		seenSQL = true
-		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name())) //nolint:gosec // entry.Name comes from os.ReadDir over the requested schema directory.
 		if err != nil {
 			return Schema{}, err
 		}
@@ -295,6 +295,8 @@ func sameColumnType(left, right string) bool {
 
 func riskRank(risk Risk) int {
 	switch risk {
+	case RiskR0:
+		return 0
 	case RiskR1:
 		return 1
 	case RiskR2:
