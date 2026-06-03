@@ -17,6 +17,7 @@ import (
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
 	coreaudit "github.com/JiangHe12/opskit-core/audit"
+	corecredstore "github.com/JiangHe12/opskit-core/credstore"
 	corectx "github.com/JiangHe12/opskit-core/ctx"
 )
 
@@ -524,6 +525,122 @@ func TestCtxRoleValidation(t *testing.T) {
 	}
 	if _, _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--target-operator", "alice", "--role", "owner"); err == nil {
 		t.Fatal("expected invalid role to fail")
+	}
+}
+
+func TestCtxMigrateCredentialsMigratesOnlyLiteralPasswords(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("DBGOV_MASTER_PASSWORD", "test-passphrase")
+	configPath := filepath.Join(home, "config.yaml")
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	if err := dbgovctx.SetContext("literal", dbgovctx.Context{Base: corectx.Base{Password: "secret"}, Engine: "mysql", Host: "127.0.0.1", Port: 3306}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbgovctx.SetContext("ref", dbgovctx.Context{Base: corectx.Base{Password: corecredstore.EncodeRef("encrypted-file"), CredentialBackend: "encrypted-file"}, Engine: "mysql", Host: "127.0.0.1", Port: 3306}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbgovctx.SetContext("empty", dbgovctx.Context{Engine: "mysql", Host: "127.0.0.1", Port: 3306}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "migrate-credentials", "--to", "encrypted-file")
+	if err != nil {
+		t.Fatalf("ctx migrate-credentials error = %v", err)
+	}
+	if !strings.Contains(out, `"migrated": 1`) || !strings.Contains(out, `"backend": "encrypted-file"`) {
+		t.Fatalf("migrate output = %s", out)
+	}
+	cfg, err := dbgovctx.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Contexts["literal"].Password != corecredstore.EncodeRef("encrypted-file") || cfg.Contexts["literal"].CredentialBackend != "encrypted-file" {
+		t.Fatalf("literal context after migration = %+v", cfg.Contexts["literal"])
+	}
+	if cfg.Contexts["ref"].Password != corecredstore.EncodeRef("encrypted-file") || cfg.Contexts["empty"].Password != "" {
+		t.Fatalf("non-candidates changed: ref=%+v empty=%+v", cfg.Contexts["ref"], cfg.Contexts["empty"])
+	}
+	resolved, err := cfg.Contexts["literal"].ResolvePasswordContext(commandContext(&cliFlags{}), "literal")
+	if err != nil {
+		t.Fatalf("resolve migrated password: %v", err)
+	}
+	if resolved != "secret" {
+		t.Fatalf("resolved migrated password = %q", resolved)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeCredentialMigrate || evt.Context.Name != "literal" || evt.Target.Object != "encrypted-file" {
+		t.Fatalf("credential migrate audit event = %+v", evt)
+	}
+}
+
+func TestCtxMigrateCredentialsContextFilterAndNoCandidates(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("DBGOV_MASTER_PASSWORD", "test-passphrase")
+	configPath := filepath.Join(home, "config.yaml")
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	if err := dbgovctx.SetContext("prod", dbgovctx.Context{Base: corectx.Base{Password: "prod-secret"}, Engine: "mysql", Host: "127.0.0.1", Port: 3306}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbgovctx.SetContext("dev", dbgovctx.Context{Base: corectx.Base{Password: "dev-secret"}, Engine: "mysql", Host: "127.0.0.1", Port: 3306}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := executeCommandForTest("--config", configPath, "ctx", "migrate-credentials", "--to", "encrypted-file", "--context", "prod")
+	if err != nil {
+		t.Fatalf("filtered migrate error = %v", err)
+	}
+	cfg, err := dbgovctx.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Contexts["prod"].Password != corecredstore.EncodeRef("encrypted-file") || cfg.Contexts["dev"].Password != "dev-secret" {
+		t.Fatalf("context filter changed wrong contexts: prod=%+v dev=%+v", cfg.Contexts["prod"], cfg.Contexts["dev"])
+	}
+
+	out, _, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "migrate-credentials", "--to", "encrypted-file", "--context", "prod")
+	if err != nil {
+		t.Fatalf("no-candidate migrate error = %v", err)
+	}
+	if !strings.Contains(out, `"migrated": 0`) {
+		t.Fatalf("no-candidate output = %s", out)
+	}
+}
+
+func TestCtxMigrateCredentialsValidationAndBackendUnavailable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	if err := dbgovctx.SetContext("local", dbgovctx.Context{Base: corectx.Base{Password: "secret"}, Engine: "mysql", Host: "127.0.0.1", Port: 3306}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"--config", configPath, "ctx", "migrate-credentials"},
+		{"--config", configPath, "ctx", "migrate-credentials", "--to", "plain-yaml"},
+		{"--config", configPath, "ctx", "migrate-credentials", "--to", "vault"},
+		{"--config", configPath, "ctx", "migrate-credentials", "--to", "unknown"},
+	} {
+		if _, _, err := executeCommandForTest(args...); err == nil {
+			t.Fatalf("expected args %v to fail", args)
+		}
+	}
+	if _, _, err := executeCommandForTest("--config", configPath, "ctx", "migrate-credentials", "--to", "encrypted-file"); err == nil {
+		t.Fatal("expected encrypted-file without master password to fail")
+	}
+	cfg, err := dbgovctx.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Contexts["local"].Password != "secret" || cfg.Contexts["local"].CredentialBackend != "" {
+		t.Fatalf("context changed despite unavailable backend: %+v", cfg.Contexts["local"])
 	}
 }
 
