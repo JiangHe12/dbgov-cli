@@ -1,0 +1,124 @@
+version: "2"
+
+# golangci-lint configuration for dbgov-cli
+# Pinned version: v2.12.2 (also pinned in .github/workflows/ci.yml lint job)
+
+run:
+  timeout: 5m
+
+output:
+  formats:
+    text: {}
+
+linters:
+  default: none
+  enable:
+    # correctness / bug detection
+    - errcheck
+    - errorlint
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - nilerr
+    - noctx
+    - bodyclose
+    - rowserrcheck
+    - sqlclosecheck
+    - tparallel
+    - wastedassign
+    - exhaustive
+    - predeclared
+    - copyloopvar
+    - forcetypeassert
+
+    # style / readability
+    - gocritic
+    - revive
+    - misspell
+    - unconvert
+    - unparam
+    - whitespace
+
+    # complexity / structure
+    - gocyclo
+    - nestif
+    - dupl
+    - prealloc
+    - nakedret
+
+    # security
+    - gosec
+    - gomodguard
+    - gomoddirectives
+
+    # logging
+    - sloglint
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+    gocyclo:
+      min-complexity: 15
+    nestif:
+      min-complexity: 5
+    dupl:
+      threshold: 100
+    misspell:
+      locale: US
+    gosec:
+      excludes:
+        - G104  # unhandled errors — covered by errcheck with finer control
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+          disabled: true   # often required by interface signatures; case-by-case via //nolint
+        - name: var-declaration
+        - name: var-naming
+
+  exclusions:
+    rules:
+      # Test files allow longer functions and table-driven data
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - dupl
+          - gosec
+      # Cobra command construction is long by nature
+      - path: cmd/.*\.go
+        linters:
+          - gocyclo
+        text: "cyclomatic complexity .* of func .*new.*Cmd"
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/JiangHe12/dbgov-cli
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -1,9 +1,9 @@
 <!--
 Thanks for contributing to dbgov-cli.
 
-Before opening this PR, please check the design documents under docs/ when the
-change affects command behavior, governance, audit, safety, schema planning, or
-rollback semantics.
+Before opening this PR, keep README.md, README_zh.md, and CHANGELOG.md in sync
+when the change affects command behavior, governance, audit, safety, schema
+planning, or rollback semantics.
 -->
 
 ## Summary
@@ -23,15 +23,14 @@ rollback semantics.
 
 ## Documentation sync checklist
 
-- [ ] I checked whether `docs/DESIGN.md` needs updates.
-- [ ] I checked whether `docs/CORE_EXTRACTION_PLAN.md` needs updates.
-- [ ] Command, flag, schema, output, error, safety, audit, or compatibility changes are reflected in the relevant docs.
+- [ ] Command, flag, schema, output, error, safety, audit, or compatibility changes are reflected in `README.md` and `README_zh.md`.
+- [ ] `CHANGELOG.md` is updated for user-facing changes.
 - [ ] This PR does not require documentation changes, or the reason is explained below.
 
 ## Implementation checklist
 
-- [ ] `gofmt -w main.go cmd internal` is clean.
-- [ ] `go vet ./...` is clean.
+- [ ] `gofmt -l main.go cmd internal` is clean.
+- [ ] `go vet ./...` and `golangci-lint run --timeout=5m` are clean.
 - [ ] `go build ./...` succeeds.
 - [ ] `go test -count=1 ./...` passes locally on at least one OS.
 - [ ] If this PR changes MySQL behavior, the env-gated integration path was considered with `DBGOV_TEST_MYSQL_DSN`.

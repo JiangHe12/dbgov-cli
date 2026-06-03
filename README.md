@@ -80,12 +80,13 @@ Set `DBGOV_OPERATOR` in CI to make audit and RBAC identity stable.
 
 Schema mutations capture a pre-change DDL snapshot before execution. `rollback --to <snapshot>` restores structure only; MySQL data dropped by table or column deletion is not recovered. dbgov prints this warning during rollback planning and execution.
 
-## CI/CD
+## Build from Source
 
 ```bash
 go build ./...
 go test -count=1 ./...
 gofmt -l main.go cmd internal
+golangci-lint run --timeout=5m
 ```
 
 MySQL integration tests are opt-in with `DBGOV_TEST_MYSQL_DSN`.

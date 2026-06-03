@@ -80,12 +80,13 @@ CI 中建议设置 `DBGOV_OPERATOR`,让审计和 RBAC 身份稳定。
 
 schema 变更执行前会捕获变更前 DDL 快照。`rollback --to <snapshot>` 只恢复结构;MySQL 中已经因删表/删列丢失的数据不会恢复。dbgov 在 rollback plan 和执行时都会明确提示该有损限制。
 
-## CI/CD
+## 从源码构建
 
 ```bash
 go build ./...
 go test -count=1 ./...
 gofmt -l main.go cmd internal
+golangci-lint run --timeout=5m
 ```
 
 MySQL 集成测试通过 `DBGOV_TEST_MYSQL_DSN` 显式启用。

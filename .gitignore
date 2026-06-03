@@ -1,5 +1,26 @@
-.claude
+# Build artifacts
+/dbgov
+/dbgov.exe
+*.test
+*.test.exe
+dist/
 bin/*
 !bin/dbgov-cli.js
-dist/
-*.exe
+
+# Dependencies
+node_modules/
+vendor/
+
+# Local config (may contain credentials)
+.dbgov/
+
+# Editor / agent
+.claude/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
