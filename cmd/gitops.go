@@ -242,7 +242,7 @@ func runReconcile(f *cliFlags, opts reconcileOptions) error {
 
 func newImportAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbgaudit.Event {
 	event := dbgaudit.New(dbgaudit.EventTypeImport, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "import"))
-	event.Risk = plan.OverallRisk
+	event.Risk = effectiveRiskLabel(plan.OverallRisk, meta)
 	event.Destructive = plan.Destructive
 	event.Statement = schemaPlanSQL(plan)
 	return event
@@ -250,7 +250,7 @@ func newImportAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbgaudi
 
 func newReconcileAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbgaudit.Event {
 	event := dbgaudit.New(dbgaudit.EventTypeReconcile, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "reconcile"))
-	event.Risk = plan.OverallRisk
+	event.Risk = effectiveRiskLabel(plan.OverallRisk, meta)
 	event.Destructive = plan.Destructive
 	event.Statement = schemaPlanSQL(plan)
 	return event

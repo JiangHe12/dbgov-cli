@@ -571,7 +571,7 @@ func requiredAuthorization(risk schema.Risk) string {
 
 func newSchemaApplyAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbgaudit.Event {
 	event := dbgaudit.New(dbgaudit.EventTypeSchemaApply, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "apply"))
-	event.Risk = plan.OverallRisk
+	event.Risk = effectiveRiskLabel(plan.OverallRisk, meta)
 	event.Destructive = plan.Destructive
 	event.Statement = schemaPlanSQL(plan)
 	return event

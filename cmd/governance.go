@@ -83,6 +83,16 @@ func authorizeWrite(f *cliFlags, base safety.Risk, meta contextMeta, requiredAll
 	})
 }
 
+func effectiveRiskLabel(baseLabel string, meta contextMeta) string {
+	return safetyRiskLabel(safety.EffectiveRisk(safetyRisk(baseLabel), safety.ContextMeta{
+		Name:          meta.Name,
+		Env:           meta.Env,
+		Protected:     meta.Protected,
+		TicketPattern: meta.TicketPattern,
+		Roles:         meta.Roles,
+	}))
+}
+
 func emitAudit(f *cliFlags, event dbgaudit.Event, opErr error) {
 	if opErr != nil {
 		event.Status = dbgaudit.StatusFailed

@@ -81,19 +81,19 @@ func runRollbackList(f *cliFlags) error {
 func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 	baseDir, err := snapshotBaseDir()
 	if err != nil {
-		event := rollbackAuditEvent(f, opts.to, schemaPlan{})
+		event := rollbackAuditEvent(f, contextMeta{}, opts.to, schemaPlan{})
 		emitAudit(f, event, err)
 		return err
 	}
 	snap, err := dbgsnapshot.Load(baseDir, opts.to)
 	if err != nil {
-		event := rollbackAuditEvent(f, opts.to, schemaPlan{})
+		event := rollbackAuditEvent(f, contextMeta{}, opts.to, schemaPlan{})
 		emitAudit(f, event, err)
 		return err
 	}
 	desired, err := schema.SchemaFromDDLMap(snap.Tables)
 	if err != nil {
-		event := rollbackAuditEvent(f, opts.to, schemaPlan{})
+		event := rollbackAuditEvent(f, contextMeta{}, opts.to, schemaPlan{})
 		emitAudit(f, event, err)
 		return err
 	}
@@ -103,7 +103,7 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 	}
 	current, err := b.IntrospectSchema(commandContext(f))
 	if err != nil {
-		event := rollbackAuditEvent(f, opts.to, schemaPlan{})
+		event := rollbackAuditEvent(f, meta, opts.to, schemaPlan{})
 		emitAudit(f, event, err)
 		return err
 	}
@@ -112,12 +112,12 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 	plan, err := buildSchemaPlanFromDiff(b, diff)
 	applyRollbackPlanMetadata(&plan)
 	if err != nil {
-		event := rollbackAuditEvent(f, opts.to, plan)
+		event := rollbackAuditEvent(f, meta, opts.to, plan)
 		emitAudit(f, event, err)
 		return err
 	}
 	if opts.dryRun {
-		event := rollbackAuditEvent(f, opts.to, plan)
+		event := rollbackAuditEvent(f, meta, opts.to, plan)
 		event.DryRun = true
 		emitAudit(f, event, nil)
 		return printSchemaPlan(f, plan)
@@ -126,7 +126,7 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 	requiredAllows, granted := planAllowFlags(plan, opts.allowDestructive, opts.allowProductionPrune)
 	risk := safetyRisk(plan.OverallRisk)
 	if err := authorizeWrite(f, risk, meta, requiredAllows, granted); err != nil {
-		event := rollbackAuditEvent(f, opts.to, plan)
+		event := rollbackAuditEvent(f, meta, opts.to, plan)
 		event.Status = dbgaudit.StatusDenied
 		setAuditError(&event, err)
 		emitAudit(f, event, nil)
@@ -134,14 +134,14 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 	}
 	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "rollback")
 	if err != nil {
-		event := rollbackAuditEvent(f, opts.to, plan)
+		event := rollbackAuditEvent(f, meta, opts.to, plan)
 		emitAudit(f, event, err)
 		return err
 	}
 
 	statements := schemaPlanStatements(plan)
 	executed, err := b.ExecDDL(commandContext(f), statements)
-	event := rollbackAuditEvent(f, opts.to, plan)
+	event := rollbackAuditEvent(f, meta, opts.to, plan)
 	event.SnapshotID = snapshotID
 	event.Executed = executed
 	if err != nil && executed < len(statements) {
@@ -158,9 +158,9 @@ func rollbackListAuditEvent(f *cliFlags) dbgaudit.Event {
 	return dbgaudit.New(dbgaudit.EventTypeRollback, currentOperator(f), dbgaudit.Context{}, dbgaudit.Target{ObjectType: "rollback", Object: "list"})
 }
 
-func rollbackAuditEvent(f *cliFlags, snapshotID string, plan schemaPlan) dbgaudit.Event {
+func rollbackAuditEvent(f *cliFlags, meta contextMeta, snapshotID string, plan schemaPlan) dbgaudit.Event {
 	event := dbgaudit.New(dbgaudit.EventTypeRollback, currentOperator(f), dbgaudit.Context{}, dbgaudit.Target{ObjectType: "rollback", Object: snapshotID})
-	event.Risk = plan.OverallRisk
+	event.Risk = effectiveRiskLabel(plan.OverallRisk, meta)
 	event.Destructive = plan.Destructive
 	event.Statement = schemaPlanSQL(plan)
 	return event

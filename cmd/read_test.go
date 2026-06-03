@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
@@ -15,6 +16,7 @@ import (
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
+	coreaudit "github.com/JiangHe12/opskit-core/audit"
 	corectx "github.com/JiangHe12/opskit-core/ctx"
 )
 
@@ -463,7 +465,7 @@ func TestDataExecProtectedContextCommandRequiresTicket(t *testing.T) {
 	if len(backend.ExecutedDML) != 0 {
 		t.Fatalf("executed protected denied update: %+v", backend.ExecutedDML)
 	}
-	if evt := lastAuditEvent(t, home); evt.Status != dbgaudit.StatusDenied || evt.Risk != "R1" {
+	if evt := lastAuditEvent(t, home); evt.Status != dbgaudit.StatusDenied || evt.Risk != "R2" {
 		t.Fatalf("protected denied audit event = %+v", evt)
 	}
 }
@@ -1110,6 +1112,150 @@ func TestRollbackToRejectsInvalidSnapshotID(t *testing.T) {
 	}
 }
 
+func TestAuditQueryFiltersDbgovEventsAndPreservesFields(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	path := filepath.Join(home, "audit.jsonl")
+	now := time.Now().UTC()
+	appendAuditRecordForTest(t, path, dbgaudit.Event{
+		Timestamp:  now.Add(-2 * time.Hour),
+		EventType:  dbgaudit.EventTypeDataExec,
+		Operator:   "alice",
+		Context:    dbgaudit.Context{Name: "prod"},
+		Target:     dbgaudit.Target{ObjectType: "data", Object: "exec"},
+		Risk:       "R2",
+		Status:     dbgaudit.StatusDenied,
+		SnapshotID: "snap-before",
+		ImpactRows: intPtr(5000),
+	})
+	appendAuditRecordForTest(t, path, dbgaudit.Event{
+		Timestamp: now.Add(-time.Hour),
+		EventType: dbgaudit.EventTypeQuery,
+		Operator:  "bob",
+		Context:   dbgaudit.Context{Name: "dev"},
+		Target:    dbgaudit.Target{ObjectType: "database"},
+		Risk:      "R0",
+		Status:    dbgaudit.StatusSucceeded,
+	})
+	appendBadAuditLineForTest(t, path)
+
+	out, _, err := executeCommandForTest("-o", "json", "audit", "query",
+		"--path", path,
+		"--operator", "alice",
+		"--type", "data.exec",
+		"--status", "denied",
+		"--risk", "R2",
+		"--context", "prod",
+		"--since", "3h",
+		"--limit", "1",
+	)
+	if err != nil {
+		t.Fatalf("audit query error = %v", err)
+	}
+	for _, want := range []string{`"kind": "AuditQueryResult"`, `"eventType": "data.exec"`, `"snapshotId": "snap-before"`, `"impactRows": 5000`, `"malformed": 1`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("audit query output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `"operator": "bob"`) {
+		t.Fatalf("audit query output included filtered event:\n%s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeAuditQuery {
+		t.Fatalf("audit query audit event = %+v", evt)
+	}
+}
+
+func TestAuditQueryReverseAndLimitAfterFiltering(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	path := filepath.Join(home, "audit.jsonl")
+	base := time.Now().UTC().Add(-3 * time.Hour)
+	for i, name := range []string{"first", "second", "third"} {
+		appendAuditRecordForTest(t, path, dbgaudit.Event{
+			Timestamp: base.Add(time.Duration(i) * time.Minute),
+			EventType: dbgaudit.EventTypeDataExec,
+			Operator:  "alice",
+			Context:   dbgaudit.Context{Name: name},
+			Target:    dbgaudit.Target{ObjectType: "data", Object: "exec"},
+			Risk:      "R2",
+			Status:    dbgaudit.StatusSucceeded,
+		})
+	}
+	appendAuditRecordForTest(t, path, dbgaudit.Event{
+		Timestamp: base.Add(10 * time.Minute),
+		EventType: dbgaudit.EventTypeQuery,
+		Operator:  "alice",
+		Context:   dbgaudit.Context{Name: "filtered-out"},
+		Risk:      "R0",
+		Status:    dbgaudit.StatusSucceeded,
+	})
+
+	out, _, err := executeCommandForTest("-o", "json", "audit", "query", "--path", path, "--risk", "R2", "--reverse", "--limit", "2")
+	if err != nil {
+		t.Fatalf("audit query reverse error = %v", err)
+	}
+	if strings.Contains(out, `"name": "first"`) || strings.Contains(out, "filtered-out") {
+		t.Fatalf("audit query reverse/limit output = %s", out)
+	}
+	if !strings.Contains(out, `"name": "third"`) || !strings.Contains(out, `"name": "second"`) {
+		t.Fatalf("audit query reverse/limit missing newest filtered events:\n%s", out)
+	}
+	if strings.Index(out, `"name": "third"`) > strings.Index(out, `"name": "second"`) {
+		t.Fatalf("audit query reverse order wrong:\n%s", out)
+	}
+}
+
+func TestAuditQueryEmptyLog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	out, _, err := executeCommandForTest("-o", "json", "audit", "query", "--path", filepath.Join(home, "missing.log"))
+	if err != nil {
+		t.Fatalf("audit query empty error = %v", err)
+	}
+	if !strings.Contains(out, `"events": []`) {
+		t.Fatalf("audit query empty output = %s", out)
+	}
+}
+
+func TestAuditVerifyReportsMalformedAndStrictFails(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	path := filepath.Join(home, "audit.jsonl")
+	appendAuditRecordForTest(t, path, dbgaudit.Event{
+		Timestamp: time.Now().UTC().Add(-time.Minute),
+		EventType: dbgaudit.EventTypeQuery,
+		Operator:  "alice",
+		Risk:      "R0",
+		Status:    dbgaudit.StatusSucceeded,
+	})
+	out, _, err := executeCommandForTest("-o", "json", "audit", "verify", "--path", path)
+	if err != nil {
+		t.Fatalf("audit verify clean error = %v", err)
+	}
+	if !strings.Contains(out, `"kind": "AuditVerifyResult"`) || !strings.Contains(out, `"malformed": 0`) {
+		t.Fatalf("audit verify clean output = %s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeAuditVerify {
+		t.Fatalf("audit verify audit event = %+v", evt)
+	}
+
+	appendBadAuditLineForTest(t, path)
+	out, _, err = executeCommandForTest("-o", "json", "audit", "verify", "--path", path)
+	if err != nil {
+		t.Fatalf("audit verify non-strict malformed error = %v", err)
+	}
+	if !strings.Contains(out, `"malformed": 1`) {
+		t.Fatalf("audit verify malformed output = %s", out)
+	}
+	if _, _, err = executeCommandForTest("audit", "verify", "--path", path, "--strict"); err == nil {
+		t.Fatal("expected strict audit verify to fail on malformed log")
+	}
+}
+
 func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1173,4 +1319,36 @@ func captureSnapshotForTest(t *testing.T, home, command string, tables map[strin
 		t.Fatal(err)
 	}
 	return id
+}
+
+func appendAuditRecordForTest(t *testing.T, path string, event dbgaudit.Event) {
+	t.Helper()
+	if event.Operator == "" {
+		event.Operator = "tester"
+	}
+	if event.Risk == "" {
+		event.Risk = "R0"
+	}
+	if event.Status == "" {
+		event.Status = dbgaudit.StatusSucceeded
+	}
+	if err := coreaudit.AppendRecord(path, event, coreaudit.Options{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendBadAuditLineForTest(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	if _, err := f.WriteString("{bad json\n"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func intPtr(v int) *int {
+	return &v
 }

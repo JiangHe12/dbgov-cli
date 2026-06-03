@@ -213,7 +213,7 @@ func printDataExecResult(f *cliFlags, result dataExecResult) error {
 func newDataExecAuditEvent(f *cliFlags, meta contextMeta, plan dataExecPlan) dbgaudit.Event {
 	event := dbgaudit.New(dbgaudit.EventTypeDataExec, currentOperator(f), auditContext(meta), auditTarget(meta, "data", "exec"))
 	event.Statement = plan.SQL
-	event.Risk = plan.Risk
+	event.Risk = effectiveRiskLabel(plan.Risk, meta)
 	event.Destructive = plan.Destructive
 	if plan.ImpactRows != nil {
 		impact := int(*plan.ImpactRows)

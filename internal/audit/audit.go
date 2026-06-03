@@ -31,6 +31,8 @@ const (
 	EventTypeReconcile      EventType = "reconcile"
 	EventTypeRollback       EventType = "rollback"
 	EventTypeDoctor         EventType = "doctor"
+	EventTypeAuditQuery     EventType = "audit.query"
+	EventTypeAuditVerify    EventType = "audit.verify"
 	EventTypeAuditPrune     EventType = "audit.prune"
 )
 
