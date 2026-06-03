@@ -20,6 +20,11 @@ type schemaDiffOptions struct {
 	fake bool
 }
 
+type schemaPlanOptions struct {
+	file string
+	fake bool
+}
+
 type schemaReadOptions struct {
 	fake bool
 	dir  string
@@ -47,12 +52,29 @@ type schemaDumpTable struct {
 	DDL  string `json:"ddl"`
 }
 
+type schemaPlan struct {
+	Statements            []schemaPlanStatement `json:"statements"`
+	OverallRisk           string                `json:"overallRisk"`
+	Destructive           bool                  `json:"destructive"`
+	Warnings              []string              `json:"warnings,omitempty"`
+	RequiredAuthorization string                `json:"requiredAuthorization,omitempty"`
+}
+
+type schemaPlanStatement struct {
+	SQL         string        `json:"sql"`
+	Action      schema.Action `json:"action"`
+	Table       string        `json:"table"`
+	Column      string        `json:"column,omitempty"`
+	Risk        string        `json:"risk"`
+	Destructive bool          `json:"destructive"`
+}
+
 func newSchemaCmd(f *cliFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "schema",
 		Short: "Inspect database schema",
 	}
-	cmd.AddCommand(schemaListCmd(f), schemaDescribeCmd(f), schemaDumpCmd(f), schemaDiffCmd(f))
+	cmd.AddCommand(schemaListCmd(f), schemaDescribeCmd(f), schemaDumpCmd(f), schemaPlanCmd(f), schemaDiffCmd(f))
 	return cmd
 }
 
@@ -99,6 +121,21 @@ func schemaDumpCmd(f *cliFlags) *cobra.Command {
 	return cmd
 }
 
+func schemaPlanCmd(f *cliFlags) *cobra.Command {
+	var opts schemaPlanOptions
+	cmd := &cobra.Command{
+		Use:   "plan -f desired.sql",
+		Short: "Plan schema changes without executing them",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSchemaPlan(f, opts)
+		},
+	}
+	cmd.Flags().StringVarP(&opts.file, "file", "f", "", "Desired schema SQL file")
+	cmd.Flags().BoolVar(&opts.fake, "fake", false, "Use in-memory fake backend")
+	_ = cmd.MarkFlagRequired("file")
+	return cmd
+}
+
 func schemaDiffCmd(f *cliFlags) *cobra.Command {
 	var opts schemaDiffOptions
 	cmd := &cobra.Command{
@@ -137,6 +174,40 @@ func runSchemaDiff(f *cliFlags, opts schemaDiffOptions) error {
 	diff := schema.Diff(current, desired)
 	writeSchemaDiffAudit(f, meta, diff, nil)
 	return printSchemaDiff(f, diff)
+}
+
+func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) error {
+	if err := authorizeRead(f); err != nil {
+		return err
+	}
+	desiredBytes, err := os.ReadFile(opts.file)
+	if err != nil {
+		return err
+	}
+	desired, err := schema.ParseDesiredSQL(string(desiredBytes))
+	if err != nil {
+		return err
+	}
+	b, meta, err := buildBackend(f, backendOptions{Fake: opts.fake})
+	if err != nil {
+		return err
+	}
+	current, err := b.IntrospectSchema(commandContext(f))
+	if err != nil {
+		event := dbgaudit.New(dbgaudit.EventTypeSchemaPlan, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "plan"))
+		emitAudit(f, event, err)
+		return err
+	}
+	plan, err := buildSchemaPlan(b, current, desired)
+	event := dbgaudit.New(dbgaudit.EventTypeSchemaPlan, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "plan"))
+	event.Risk = plan.OverallRisk
+	event.Destructive = plan.Destructive
+	event.Statement = schemaPlanSQL(plan)
+	emitAudit(f, event, err)
+	if err != nil {
+		return err
+	}
+	return printSchemaPlan(f, plan)
 }
 
 func runSchemaList(f *cliFlags, opts schemaReadOptions) error {
@@ -234,19 +305,74 @@ func runSchemaDump(f *cliFlags, opts schemaReadOptions) error {
 func printSchemaDiff(f *cliFlags, diff schema.DiffResult) error {
 	rows := make([][]string, 0, len(diff.Changes))
 	for _, change := range diff.Changes {
-		risk := "R0"
+		risk, destructive := schema.ClassifyChange(change)
 		marker := ""
-		if change.Destructive {
-			risk = "R3"
+		if destructive {
 			marker = "DESTRUCTIVE"
 		}
-		rows = append(rows, []string{string(change.Action), change.Table, change.Column, change.Type, risk, marker})
+		rows = append(rows, []string{string(change.Action), change.Table, change.Column, change.Type, string(risk), marker})
 	}
 	p := newPrinter(f)
 	if f.Output == "json" {
 		return p.JSONData("SchemaDiff", diff)
 	}
 	p.Table([]string{"ACTION", "TABLE", "COLUMN", "TYPE", "RISK", "NOTE"}, rows)
+	return nil
+}
+
+func buildSchemaPlan(b interface {
+	RenderDDL([]schema.Change) ([]string, error)
+}, current, desired schema.Schema) (schemaPlan, error) {
+	diff := schema.Diff(current, desired)
+	risk := schema.ClassifyDiff(diff)
+	statements, err := b.RenderDDL(diff.Changes)
+	if err != nil {
+		return schemaPlan{OverallRisk: string(risk.OverallRisk), Destructive: risk.Destructive, Warnings: diff.Warnings, RequiredAuthorization: requiredAuthorization(risk.OverallRisk)}, err
+	}
+	plan := schemaPlan{
+		Statements:            make([]schemaPlanStatement, 0, len(diff.Changes)),
+		OverallRisk:           string(risk.OverallRisk),
+		Destructive:           risk.Destructive,
+		Warnings:              diff.Warnings,
+		RequiredAuthorization: requiredAuthorization(risk.OverallRisk),
+	}
+	for i, change := range diff.Changes {
+		changeRisk, destructive := schema.ClassifyChange(change)
+		plan.Statements = append(plan.Statements, schemaPlanStatement{
+			SQL:         statements[i],
+			Action:      change.Action,
+			Table:       change.Table,
+			Column:      change.Column,
+			Risk:        string(changeRisk),
+			Destructive: destructive,
+		})
+	}
+	return plan, nil
+}
+
+func printSchemaPlan(f *cliFlags, plan schemaPlan) error {
+	p := newPrinter(f)
+	if f.Output == "json" {
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaPlan", Data: plan})
+	}
+	rows := make([][]string, 0, len(plan.Statements))
+	for _, stmt := range plan.Statements {
+		note := ""
+		if stmt.Destructive {
+			note = "DESTRUCTIVE"
+		}
+		rows = append(rows, []string{stmt.SQL, string(stmt.Action), stmt.Table, stmt.Column, stmt.Risk, note})
+	}
+	p.Table([]string{"SQL", "ACTION", "TABLE", "COLUMN", "RISK", "NOTE"}, rows)
+	if len(plan.Warnings) > 0 {
+		_, _ = fmt.Fprintf(p.Out, "\nWarnings:\n")
+		for _, warning := range plan.Warnings {
+			_, _ = fmt.Fprintf(p.Out, "- %s\n", warning)
+		}
+	}
+	if plan.RequiredAuthorization != "" {
+		_, _ = fmt.Fprintf(p.Out, "\nRequired authorization: %s\n", plan.RequiredAuthorization)
+	}
 	return nil
 }
 
@@ -314,6 +440,27 @@ func formatDDLStatement(ddl string) string {
 	return text + "\n"
 }
 
+func schemaPlanSQL(plan schemaPlan) string {
+	statements := make([]string, 0, len(plan.Statements))
+	for _, stmt := range plan.Statements {
+		statements = append(statements, stmt.SQL)
+	}
+	return strings.Join(statements, "\n")
+}
+
+func requiredAuthorization(risk schema.Risk) string {
+	switch risk {
+	case schema.RiskR3:
+		return "R3 requires --yes or interactive confirmation, --ticket, and --allow-destructive when applied"
+	case schema.RiskR2:
+		return "R2 requires --yes or interactive confirmation and --ticket when applied"
+	case schema.RiskR1:
+		return "R1 requires --yes or interactive confirmation when applied"
+	default:
+		return ""
+	}
+}
+
 func sortedTableNames(current schema.Schema) []string {
 	names := make([]string, 0, len(current.Tables))
 	for name := range current.Tables {
@@ -325,10 +472,8 @@ func sortedTableNames(current schema.Schema) []string {
 
 func writeSchemaDiffAudit(f *cliFlags, meta contextMeta, diff schema.DiffResult, opErr error) {
 	event := dbgaudit.New(dbgaudit.EventTypeSchemaDiff, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "diff"))
-	event.Risk = "R0"
-	if diff.Destructive {
-		event.Risk = "R3"
-		event.Destructive = true
-	}
+	risk := schema.ClassifyDiff(diff)
+	event.Risk = string(risk.OverallRisk)
+	event.Destructive = risk.Destructive
 	emitAudit(f, event, opErr)
 }

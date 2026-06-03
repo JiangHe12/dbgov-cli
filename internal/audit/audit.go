@@ -22,6 +22,7 @@ const (
 	EventTypeSchemaDump     EventType = "schema.dump"
 	EventTypeSchemaList     EventType = "schema.list"
 	EventTypeSchemaDescribe EventType = "schema.describe"
+	EventTypeSchemaPlan     EventType = "schema.plan"
 	EventTypeSchemaDiff     EventType = "schema.diff"
 	EventTypeSchemaApply    EventType = "schema.apply"
 	EventTypeDataExec       EventType = "data.exec"

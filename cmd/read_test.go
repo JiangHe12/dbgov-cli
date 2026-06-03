@@ -138,6 +138,34 @@ func TestSchemaDumpWritesDirectory(t *testing.T) {
 	}
 }
 
+func TestSchemaPlanFakeBackendShowsRiskDDLAndAudit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100));`)
+
+	out, _, err := executeCommandForTest("-o", "json", "schema", "plan", "-f", desired, "--fake")
+	if err != nil {
+		t.Fatalf("schema plan error = %v", err)
+	}
+	for _, want := range []string{
+		`"kind": "SchemaPlan"`,
+		`"overallRisk": "R3"`,
+		`"destructive": true`,
+		"ALTER TABLE `users` ADD COLUMN `name` VARCHAR(100);",
+		"ALTER TABLE `users` DROP COLUMN `legacy`;",
+		"possible column rename",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("schema plan output missing %q:\n%s", want, out)
+		}
+	}
+	evt := lastAuditEvent(t, home)
+	if evt.EventType != dbgaudit.EventTypeSchemaPlan || evt.Risk != "R3" || !evt.Destructive {
+		t.Fatalf("schema plan audit event = %+v", evt)
+	}
+}
+
 func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

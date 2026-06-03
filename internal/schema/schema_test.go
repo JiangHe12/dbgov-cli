@@ -52,6 +52,62 @@ func TestDiffSchemaFindsAddAndDropColumns(t *testing.T) {
 	}
 }
 
+func TestDiffSchemaFindsModifyColumnAndCreateTable(t *testing.T) {
+	current := Schema{Tables: map[string]Table{
+		"users": {Name: "users", Columns: []Column{{Name: "id", Type: "BIGINT"}, {Name: "name", Type: "VARCHAR(100)"}}},
+	}}
+	desired := Schema{Tables: map[string]Table{
+		"users":  {Name: "users", Columns: []Column{{Name: "id", Type: "BIGINT"}, {Name: "name", Type: "TEXT"}}},
+		"orders": {Name: "orders", Columns: []Column{{Name: "id", Type: "BIGINT"}, {Name: "user_id", Type: "BIGINT"}}},
+	}}
+
+	diff := Diff(current, desired)
+	if len(diff.Changes) != 2 {
+		t.Fatalf("changes = %+v, want 2", diff.Changes)
+	}
+	if diff.Changes[0].Action != ActionCreateTable || diff.Changes[0].Table != "orders" || len(diff.Changes[0].Columns) != 2 {
+		t.Fatalf("create table change = %+v", diff.Changes[0])
+	}
+	if diff.Changes[1].Action != ActionModifyColumn || diff.Changes[1].Column != "name" || diff.Changes[1].Type != "TEXT" || !diff.Changes[1].Destructive {
+		t.Fatalf("modify column change = %+v", diff.Changes[1])
+	}
+	if !diff.Destructive {
+		t.Fatal("DiffResult.Destructive = false, want true")
+	}
+}
+
+func TestDiffSchemaWarnsAboutPossibleRename(t *testing.T) {
+	current := Schema{Tables: map[string]Table{
+		"users": {Name: "users", Columns: []Column{{Name: "id", Type: "BIGINT"}, {Name: "legacy", Type: "TEXT"}}},
+	}}
+	desired := Schema{Tables: map[string]Table{
+		"users": {Name: "users", Columns: []Column{{Name: "id", Type: "BIGINT"}, {Name: "display_name", Type: "TEXT"}}},
+	}}
+
+	diff := Diff(current, desired)
+	if len(diff.Warnings) != 1 || diff.Warnings[0] == "" {
+		t.Fatalf("warnings = %+v, want possible rename warning", diff.Warnings)
+	}
+	if diff.Changes[1].Action != ActionDropColumn || !diff.Changes[1].Destructive {
+		t.Fatalf("drop side of possible rename = %+v", diff.Changes[1])
+	}
+}
+
+func TestClassifyDiffRisk(t *testing.T) {
+	add := Change{Action: ActionAddColumn, Table: "users", Column: "name", Type: "VARCHAR(100)"}
+	if risk, destructive := ClassifyChange(add); risk != RiskR1 || destructive {
+		t.Fatalf("ClassifyChange(add) = %s/%t", risk, destructive)
+	}
+	modify := Change{Action: ActionModifyColumn, Table: "users", Column: "name", Type: "TEXT", Destructive: true}
+	if risk, destructive := ClassifyChange(modify); risk != RiskR3 || !destructive {
+		t.Fatalf("ClassifyChange(modify) = %s/%t", risk, destructive)
+	}
+	diff := DiffResult{Changes: []Change{add, modify}, Destructive: true}
+	if classified := ClassifyDiff(diff); classified.OverallRisk != RiskR3 || !classified.Destructive {
+		t.Fatalf("ClassifyDiff() = %+v", classified)
+	}
+}
+
 func TestSchemaModelCarriesIntrospectionDetails(t *testing.T) {
 	def := "CURRENT_TIMESTAMP"
 	table := Table{

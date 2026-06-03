@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/JiangHe12/dbgov-cli/internal/schema"
 )
 
 func TestIntrospectSchemaQueriesInformationSchema(t *testing.T) {
@@ -72,6 +74,33 @@ func TestTableDDLUsesShowCreateTable(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
+	backend := NewWithDB(nil, "appdb")
+	statements, err := backend.RenderDDL([]schema.Change{
+		{Action: schema.ActionCreateTable, Table: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}, {Name: "user_id", Type: "BIGINT"}}},
+		{Action: schema.ActionAddColumn, Table: "users", Column: "name", Type: "VARCHAR(100)"},
+		{Action: schema.ActionModifyColumn, Table: "users", Column: "name", Type: "TEXT"},
+		{Action: schema.ActionDropColumn, Table: "users", Column: "legacy"},
+	})
+	if err != nil {
+		t.Fatalf("RenderDDL() error = %v", err)
+	}
+	want := []string{
+		"CREATE TABLE `orders` (`id` BIGINT, `user_id` BIGINT);",
+		"ALTER TABLE `users` ADD COLUMN `name` VARCHAR(100);",
+		"ALTER TABLE `users` MODIFY COLUMN `name` TEXT;",
+		"ALTER TABLE `users` DROP COLUMN `legacy`;",
+	}
+	if len(statements) != len(want) {
+		t.Fatalf("statements = %+v", statements)
+	}
+	for i := range want {
+		if statements[i] != want[i] {
+			t.Fatalf("statement[%d] = %q, want %q", i, statements[i], want[i])
+		}
 	}
 }
 

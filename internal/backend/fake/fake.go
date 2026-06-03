@@ -49,3 +49,22 @@ func (b *Backend) Explain(context.Context, string) (dbbackend.ExplainResult, err
 func (b *Backend) TableDDL(context.Context, string) (string, error) {
 	return "CREATE TABLE `users` (`id` BIGINT, `legacy` TEXT);", nil
 }
+
+func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
+	statements := make([]string, 0, len(changes))
+	for _, change := range changes {
+		switch change.Action {
+		case schema.ActionCreateTable:
+			statements = append(statements, "CREATE TABLE `"+change.Table+"` (`id` BIGINT);")
+		case schema.ActionAddColumn:
+			statements = append(statements, "ALTER TABLE `"+change.Table+"` ADD COLUMN `"+change.Column+"` "+change.Type+";")
+		case schema.ActionModifyColumn:
+			statements = append(statements, "ALTER TABLE `"+change.Table+"` MODIFY COLUMN `"+change.Column+"` "+change.Type+";")
+		case schema.ActionDropColumn:
+			statements = append(statements, "ALTER TABLE `"+change.Table+"` DROP COLUMN `"+change.Column+"`;")
+		case schema.ActionDropTable:
+			statements = append(statements, "DROP TABLE `"+change.Table+"`;")
+		}
+	}
+	return statements, nil
+}

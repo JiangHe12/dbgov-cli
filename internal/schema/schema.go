@@ -3,6 +3,7 @@ package schema
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -41,21 +42,40 @@ type ForeignKey struct {
 type Action string
 
 const (
-	ActionAddColumn  Action = "ADD_COLUMN"
-	ActionDropColumn Action = "DROP_COLUMN"
+	ActionCreateTable  Action = "CREATE_TABLE"
+	ActionDropTable    Action = "DROP_TABLE"
+	ActionAddColumn    Action = "ADD_COLUMN"
+	ActionDropColumn   Action = "DROP_COLUMN"
+	ActionModifyColumn Action = "MODIFY_COLUMN"
 )
 
 type Change struct {
-	Action      Action `json:"action"`
-	Table       string `json:"table"`
-	Column      string `json:"column"`
-	Type        string `json:"type,omitempty"`
-	Destructive bool   `json:"destructive"`
+	Action      Action   `json:"action"`
+	Table       string   `json:"table"`
+	Column      string   `json:"column,omitempty"`
+	Type        string   `json:"type,omitempty"`
+	Columns     []Column `json:"columns,omitempty"`
+	Destructive bool     `json:"destructive"`
 }
 
 type DiffResult struct {
 	Changes     []Change `json:"changes"`
 	Destructive bool     `json:"destructive"`
+	Warnings    []string `json:"warnings,omitempty"`
+}
+
+type Risk string
+
+const (
+	RiskR0 Risk = "R0"
+	RiskR1 Risk = "R1"
+	RiskR2 Risk = "R2"
+	RiskR3 Risk = "R3"
+)
+
+type RiskSummary struct {
+	OverallRisk Risk `json:"overallRisk"`
+	Destructive bool `json:"destructive"`
 }
 
 var createTableRE = regexp.MustCompile(`(?is)^\s*CREATE\s+TABLE\s+` + "`?" + `([a-zA-Z_][a-zA-Z0-9_]*)` + "`?" + `\s*\((.*)\)\s*;?\s*$`)
@@ -126,34 +146,74 @@ func splitColumnParts(body string) []string {
 
 func Diff(current, desired Schema) DiffResult {
 	var result DiffResult
-	for tableName, desiredTable := range desired.Tables {
+	for _, tableName := range sortedTableNames(desired.Tables) {
+		desiredTable := desired.Tables[tableName]
 		currentTable, ok := current.Tables[tableName]
 		if !ok {
-			for _, col := range desiredTable.Columns {
-				result.Changes = append(result.Changes, Change{
-					Action: ActionAddColumn,
-					Table:  tableName,
-					Column: col.Name,
-					Type:   col.Type,
-				})
-			}
+			result.Changes = append(result.Changes, Change{Action: ActionCreateTable, Table: tableName, Columns: desiredTable.Columns})
 			continue
 		}
 		currentCols := columnMap(currentTable.Columns)
 		desiredCols := columnMap(desiredTable.Columns)
+		added := false
+		dropped := false
 		for _, col := range desiredTable.Columns {
 			if _, ok := currentCols[col.Name]; !ok {
 				result.Changes = append(result.Changes, Change{Action: ActionAddColumn, Table: tableName, Column: col.Name, Type: col.Type})
+				added = true
+				continue
+			}
+			if !sameColumnType(currentCols[col.Name].Type, col.Type) {
+				result.Changes = append(result.Changes, Change{Action: ActionModifyColumn, Table: tableName, Column: col.Name, Type: col.Type, Destructive: true})
+				result.Destructive = true
 			}
 		}
 		for _, col := range currentTable.Columns {
 			if _, ok := desiredCols[col.Name]; !ok {
 				result.Changes = append(result.Changes, Change{Action: ActionDropColumn, Table: tableName, Column: col.Name, Type: col.Type, Destructive: true})
 				result.Destructive = true
+				dropped = true
 			}
+		}
+		if added && dropped {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("possible column rename in table %s: add+drop detected; drop will lose data, please confirm manually", tableName))
+		}
+	}
+	for _, tableName := range sortedTableNames(current.Tables) {
+		if _, ok := desired.Tables[tableName]; !ok {
+			result.Changes = append(result.Changes, Change{Action: ActionDropTable, Table: tableName, Destructive: true})
+			result.Destructive = true
 		}
 	}
 	return result
+}
+
+func ClassifyChange(change Change) (Risk, bool) {
+	switch change.Action {
+	case ActionCreateTable, ActionAddColumn:
+		return RiskR1, false
+	case ActionDropTable, ActionDropColumn, ActionModifyColumn:
+		return RiskR3, true
+	default:
+		if change.Destructive {
+			return RiskR3, true
+		}
+		return RiskR0, false
+	}
+}
+
+func ClassifyDiff(diff DiffResult) RiskSummary {
+	summary := RiskSummary{OverallRisk: RiskR0, Destructive: diff.Destructive}
+	for _, change := range diff.Changes {
+		risk, destructive := ClassifyChange(change)
+		if riskRank(risk) > riskRank(summary.OverallRisk) {
+			summary.OverallRisk = risk
+		}
+		if destructive {
+			summary.Destructive = true
+		}
+	}
+	return summary
 }
 
 func columnMap(columns []Column) map[string]Column {
@@ -162,4 +222,30 @@ func columnMap(columns []Column) map[string]Column {
 		out[col.Name] = col
 	}
 	return out
+}
+
+func sameColumnType(left, right string) bool {
+	return strings.EqualFold(strings.TrimSpace(left), strings.TrimSpace(right))
+}
+
+func riskRank(risk Risk) int {
+	switch risk {
+	case RiskR1:
+		return 1
+	case RiskR2:
+		return 2
+	case RiskR3:
+		return 3
+	default:
+		return 0
+	}
+}
+
+func sortedTableNames(tables map[string]Table) []string {
+	names := make([]string, 0, len(tables))
+	for name := range tables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

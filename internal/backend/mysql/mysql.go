@@ -215,6 +215,34 @@ func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
 	return ddl, nil
 }
 
+func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
+	statements := make([]string, 0, len(changes))
+	for _, change := range changes {
+		switch change.Action {
+		case schema.ActionCreateTable:
+			columns := make([]string, 0, len(change.Columns))
+			for _, column := range change.Columns {
+				columns = append(columns, renderColumn(column))
+			}
+			if len(columns) == 0 {
+				return nil, fmt.Errorf("CREATE_TABLE %s has no columns", change.Table)
+			}
+			statements = append(statements, fmt.Sprintf("CREATE TABLE `%s` (%s);", escapeIdent(change.Table), strings.Join(columns, ", ")))
+		case schema.ActionAddColumn:
+			statements = append(statements, fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN `%s` %s;", escapeIdent(change.Table), escapeIdent(change.Column), change.Type))
+		case schema.ActionModifyColumn:
+			statements = append(statements, fmt.Sprintf("ALTER TABLE `%s` MODIFY COLUMN `%s` %s;", escapeIdent(change.Table), escapeIdent(change.Column), change.Type))
+		case schema.ActionDropColumn:
+			statements = append(statements, fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`;", escapeIdent(change.Table), escapeIdent(change.Column)))
+		case schema.ActionDropTable:
+			statements = append(statements, fmt.Sprintf("DROP TABLE `%s`;", escapeIdent(change.Table)))
+		default:
+			return nil, fmt.Errorf("unsupported schema change action %s", change.Action)
+		}
+	}
+	return statements, nil
+}
+
 func scanRows(rows *sql.Rows) (dbbackend.QueryResult, error) {
 	columns, err := rows.Columns()
 	if err != nil {
@@ -279,4 +307,8 @@ func estimateRows(result dbbackend.QueryResult) int64 {
 
 func escapeIdent(value string) string {
 	return strings.ReplaceAll(value, "`", "``")
+}
+
+func renderColumn(column schema.Column) string {
+	return fmt.Sprintf("`%s` %s", escapeIdent(column.Name), column.Type)
 }
