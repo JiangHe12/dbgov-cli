@@ -52,6 +52,8 @@ dbgov version -o json
 dbgov capabilities -o json
 dbgov doctor config -o json
 dbgov ctx list -o json
+dbgov ctx export local > local.ctx.yaml
+dbgov ctx import -f local.ctx.yaml --rename local-copy -o json
 dbgov query --sql "SELECT * FROM users" -o json
 dbgov explain --sql "SELECT * FROM users WHERE active = 1" -o json
 dbgov schema dump --dir ./schema -o json
@@ -70,9 +72,13 @@ dbgov audit query --since 24h -o json
 Contexts live under `~/.dbgov`. Use `ctx set`, `ctx use`, `ctx current`, and `ctx list` to manage them. Credentials may be literal during setup, read from `DBGOV_PASSWORD`, or migrated to secure backends:
 
 ```bash
+dbgov ctx export prod > prod.ctx.yaml
+dbgov ctx import -f prod.ctx.yaml --rename prod-copy -o json
 dbgov ctx migrate-credentials --to encrypted-file -o json
 dbgov ctx role set prod --target-operator alice --role writer -o json
 ```
+
+Portable context export redacts passwords by default. `--include-credentials` is only allowed for `plain-yaml` or empty credential backends; secure backend credentials must be shared out of band.
 
 Set `DBGOV_OPERATOR` in CI to make audit and RBAC identity stable.
 

@@ -102,6 +102,8 @@ func TestSkillCommandsExistInCobraTree(t *testing.T) {
 		"ctx set",
 		"ctx use",
 		"ctx delete",
+		"ctx export",
+		"ctx import",
 		"ctx role",
 		"ctx migrate-credentials",
 		"schema list",

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/JiangHe12/opskit-core/apperrors"
 	coreaudit "github.com/JiangHe12/opskit-core/audit"
 	corecredstore "github.com/JiangHe12/opskit-core/credstore"
 	corectx "github.com/JiangHe12/opskit-core/ctx"
@@ -643,6 +644,164 @@ func TestCtxMigrateCredentialsValidationAndBackendUnavailable(t *testing.T) {
 	}
 	if cfg.Contexts["local"].Password != "secret" || cfg.Contexts["local"].CredentialBackend != "" {
 		t.Fatalf("context changed despite unavailable backend: %+v", cfg.Contexts["local"])
+	}
+}
+
+func TestCtxExportRedactsCredentialByDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	if err := dbgovctx.SetContext("local", dbgovctx.Context{
+		Base:   corectx.Base{Password: "secret", CredentialBackend: "plain-yaml", Env: "dev"},
+		Engine: "mysql",
+		Host:   "127.0.0.1",
+		Port:   3306,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := executeCommandForTest("--config", configPath, "ctx", "export", "local")
+	if err != nil {
+		t.Fatalf("ctx export error = %v", err)
+	}
+	if strings.Contains(out, "secret") {
+		t.Fatalf("ctx export leaked password:\n%s", out)
+	}
+	for _, want := range []string{
+		"apiVersion: dbgov.io/ctx-export/v1",
+		"name: local",
+		"password: <REDACTED>",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("ctx export output missing %q:\n%s", want, out)
+		}
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeContextExport || evt.Context.Name != "local" {
+		t.Fatalf("ctx export audit event = %+v", evt)
+	}
+}
+
+func TestCtxExportIncludeCredentialsRejectsNonPlainBackend(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	if err := dbgovctx.SetContext("prod", dbgovctx.Context{
+		Base:   corectx.Base{Password: corecredstore.EncodeRef("keychain"), CredentialBackend: "keychain"},
+		Engine: "mysql",
+		Host:   "127.0.0.1",
+		Port:   3306,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := executeCommandForTest("--config", configPath, "ctx", "export", "prod", "--include-credentials")
+	if err == nil {
+		t.Fatal("expected ctx export --include-credentials to reject secure backend")
+	}
+	if appErr := apperrors.AsAppError(err); appErr.Code != apperrors.CodeCredentialStoreError {
+		t.Fatalf("error code = %s, want %s", appErr.Code, apperrors.CodeCredentialStoreError)
+	}
+	if !strings.Contains(err.Error(), "migrate to plain-yaml first or share out-of-band") {
+		t.Fatalf("error missing operator hint: %v", err)
+	}
+}
+
+func TestCtxImportRedactedCredentialClearsPasswordAndAudits(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	importPath := writeTestFile(t, home, "ctx.yaml", `apiVersion: dbgov.io/ctx-export/v1
+name: dev
+context:
+    engine: mysql
+    host: 127.0.0.1
+    port: 3306
+    database: appdb
+    username: root
+    password: <REDACTED>
+    credentialBackend: plain-yaml
+    env: dev
+`)
+
+	out, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "import", "-f", importPath)
+	if err != nil {
+		t.Fatalf("ctx import error = %v", err)
+	}
+	if !strings.Contains(out, `"name": "dev"`) || !strings.Contains(out, `"credentialRedacted": true`) {
+		t.Fatalf("ctx import output = %s", out)
+	}
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	cfg, err := dbgovctx.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Contexts["dev"].Password; got != "" {
+		t.Fatalf("imported password = %q, want empty", got)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeContextImport || evt.Context.Name != "dev" {
+		t.Fatalf("ctx import audit event = %+v", evt)
+	}
+}
+
+func TestCtxImportVersionRenameForceAndNonInteractive(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	badPath := writeTestFile(t, home, "bad.yaml", "apiVersion: wrong/v1\nname: dev\ncontext: {}\n")
+	_, err := executeCommandForTest("--config", configPath, "ctx", "import", "-f", badPath)
+	if err == nil {
+		t.Fatal("expected unsupported apiVersion")
+	}
+	if appErr := apperrors.AsAppError(err); appErr.Code != apperrors.CodeUnsupportedProtocol {
+		t.Fatalf("error code = %s, want %s", appErr.Code, apperrors.CodeUnsupportedProtocol)
+	}
+
+	importPath := writeTestFile(t, home, "good.yaml", `apiVersion: dbgov.io/ctx-export/v1
+name: dev
+context:
+    engine: mysql
+    host: 127.0.0.1
+    port: 3306
+    password: secret
+    credentialBackend: plain-yaml
+`)
+	_, err = executeCommandForTest("--config", configPath, "ctx", "import", "-f", importPath, "--rename", "copy")
+	if err != nil {
+		t.Fatalf("ctx import --rename error = %v", err)
+	}
+	_, err = executeCommandForTest("--config", configPath, "ctx", "import", "-f", importPath, "--rename", "copy")
+	if err == nil {
+		t.Fatal("expected existing context import to require --force")
+	}
+	_, err = executeCommandForTest("--config", configPath, "ctx", "import", "-f", importPath, "--rename", "copy", "--force")
+	if err != nil {
+		t.Fatalf("ctx import --force error = %v", err)
+	}
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	cfg, err := dbgovctx.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Contexts["copy"].Password; got != "secret" {
+		t.Fatalf("renamed context password = %q, want secret", got)
+	}
+
+	_, err = executeCommandForTest("--non-interactive", "--config", filepath.Join(home, "other.yaml"), "ctx", "import", "-f", importPath)
+	if err == nil {
+		t.Fatal("expected non-interactive import without --yes to fail")
+	}
+	if appErr := apperrors.AsAppError(err); appErr.Code != apperrors.CodeAuthorizationRequired {
+		t.Fatalf("error code = %s, want %s", appErr.Code, apperrors.CodeAuthorizationRequired)
 	}
 }
 

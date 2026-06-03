@@ -34,6 +34,8 @@ const (
 	EventTypeAuditQuery        EventType = "audit.query"
 	EventTypeAuditVerify       EventType = "audit.verify"
 	EventTypeAuditPrune        EventType = "audit.prune"
+	EventTypeContextExport     EventType = "context.export"
+	EventTypeContextImport     EventType = "context.import"
 	EventTypeRoleAssign        EventType = "role.assign"
 	EventTypeRoleRevoke        EventType = "role.revoke"
 	EventTypeCredentialMigrate EventType = "credential.migrate" //nolint:gosec // Audit event type name, not a credential.

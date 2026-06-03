@@ -28,7 +28,7 @@ func newContextCmd(f *cliFlags) *cobra.Command {
 		Aliases: []string{"context"},
 		Short:   "Manage database contexts",
 	}
-	cmd.AddCommand(ctxSetCmd(f), ctxUseCmd(f), ctxListCmd(f), ctxCurrentCmd(f), ctxDeleteCmd(f), ctxRoleCmd(f), ctxMigrateCredentialsCmd(f))
+	cmd.AddCommand(ctxSetCmd(f), ctxUseCmd(f), ctxListCmd(f), ctxCurrentCmd(f), ctxDeleteCmd(f), ctxExportCmd(f), ctxImportCmd(f), ctxRoleCmd(f), ctxMigrateCredentialsCmd(f))
 	return cmd
 }
 

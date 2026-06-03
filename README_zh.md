@@ -52,6 +52,8 @@ dbgov version -o json
 dbgov capabilities -o json
 dbgov doctor config -o json
 dbgov ctx list -o json
+dbgov ctx export local > local.ctx.yaml
+dbgov ctx import -f local.ctx.yaml --rename local-copy -o json
 dbgov query --sql "SELECT * FROM users" -o json
 dbgov explain --sql "SELECT * FROM users WHERE active = 1" -o json
 dbgov schema dump --dir ./schema -o json
@@ -70,9 +72,13 @@ dbgov audit query --since 24h -o json
 Context 存在 `~/.dbgov`。通过 `ctx set/use/current/list` 管理。凭据可在初始化时使用字面量,也可从 `DBGOV_PASSWORD` 读取,并迁移到安全后端:
 
 ```bash
+dbgov ctx export prod > prod.ctx.yaml
+dbgov ctx import -f prod.ctx.yaml --rename prod-copy -o json
 dbgov ctx migrate-credentials --to encrypted-file -o json
 dbgov ctx role set prod --target-operator alice --role writer -o json
 ```
+
+可移植 context 导出默认会脱敏 password。`--include-credentials` 仅允许 `plain-yaml` 或空凭据后端;安全后端凭据必须通过带外方式共享。
 
 CI 中建议设置 `DBGOV_OPERATOR`,让审计和 RBAC 身份稳定。
 

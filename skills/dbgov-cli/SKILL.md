@@ -124,8 +124,13 @@ dbgov ctx delete <name> -o json
 dbgov ctx role set <context> --target-operator alice --role writer -o json
 dbgov ctx role unset <context> --target-operator alice -o json
 dbgov ctx role list <context> -o json
+dbgov ctx export <name> -o json
+dbgov ctx export <name> --include-credentials -o json
+dbgov ctx import -f ctx.yaml --rename <new-name> --force -o json
 dbgov ctx migrate-credentials --to encrypted-file --context <name> -o json
 ```
+
+`ctx export` redacts `password` by default. `--include-credentials` is only valid for `plain-yaml` or empty credential backends; encrypted-file, keychain, and vault credentials must be shared out of band. `ctx import` accepts portable context YAML, supports `--rename` and `--force`, and leaves redacted credentials empty so the operator can run `dbgov ctx set <name> --password=...`.
 
 ### Read Queries
 
