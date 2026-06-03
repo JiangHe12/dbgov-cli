@@ -257,17 +257,21 @@ func newReconcileAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbga
 }
 
 func reconcileAllowFlags(plan schemaPlan, opts reconcileOptions) ([]safety.AllowFlag, map[safety.AllowFlag]bool) {
+	return planAllowFlags(plan, opts.allowDestructive, opts.allowProductionPrune)
+}
+
+func planAllowFlags(plan schemaPlan, allowDestructive, allowProductionPrune bool) ([]safety.AllowFlag, map[safety.AllowFlag]bool) {
 	var required []safety.AllowFlag
 	granted := map[safety.AllowFlag]bool{}
 	if planRequiresDestructiveAllow(plan) {
 		required = append(required, safety.AllowDestructive)
-		if opts.allowDestructive {
+		if allowDestructive {
 			granted[safety.AllowDestructive] = true
 		}
 	}
 	if planRequiresPruneAllow(plan) {
 		required = append(required, safety.AllowProductionPrune)
-		if opts.allowProductionPrune {
+		if allowProductionPrune {
 			granted[safety.AllowProductionPrune] = true
 		}
 	}

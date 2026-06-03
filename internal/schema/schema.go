@@ -131,6 +131,23 @@ func LoadDesiredDir(dir string) (Schema, error) {
 	return result, nil
 }
 
+func SchemaFromDDLMap(tables map[string]string) (Schema, error) {
+	result := Schema{Tables: map[string]Table{}}
+	for _, tableName := range sortedTableNamesFromDDLMap(tables) {
+		parsed, err := ParseDesiredSQL(tables[tableName])
+		if err != nil {
+			return Schema{}, err
+		}
+		for name, table := range parsed.Tables {
+			if _, exists := result.Tables[name]; exists {
+				return Schema{}, fmt.Errorf("duplicate table %q in DDL map", name)
+			}
+			result.Tables[name] = table
+		}
+	}
+	return result, nil
+}
+
 func parseColumns(body string) ([]Column, error) {
 	parts := splitColumnParts(body)
 	columns := make([]Column, 0, len(parts))
@@ -290,6 +307,15 @@ func riskRank(risk Risk) int {
 }
 
 func sortedTableNames(tables map[string]Table) []string {
+	names := make([]string, 0, len(tables))
+	for name := range tables {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func sortedTableNamesFromDDLMap(tables map[string]string) []string {
 	names := make([]string, 0, len(tables))
 	for name := range tables {
 		names = append(names, name)

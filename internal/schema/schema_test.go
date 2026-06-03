@@ -168,6 +168,28 @@ func TestLoadDesiredDirRejectsDuplicateTablesAndEmptyDirs(t *testing.T) {
 	}
 }
 
+func TestSchemaFromDDLMapMergesTablesAndRejectsInvalidInput(t *testing.T) {
+	got, err := SchemaFromDDLMap(map[string]string{
+		"users":  "CREATE TABLE users (id BIGINT);",
+		"orders": "CREATE TABLE orders (id BIGINT, user_id BIGINT);",
+	})
+	if err != nil {
+		t.Fatalf("SchemaFromDDLMap() error = %v", err)
+	}
+	if len(got.Tables) != 2 || got.Tables["orders"].Columns[1].Name != "user_id" {
+		t.Fatalf("schema = %+v", got)
+	}
+	if _, err := SchemaFromDDLMap(map[string]string{"bad": "ALTER TABLE users ADD COLUMN name TEXT;"}); err == nil {
+		t.Fatal("expected invalid DDL to be rejected")
+	}
+	if _, err := SchemaFromDDLMap(map[string]string{
+		"a": "CREATE TABLE users (id BIGINT);",
+		"b": "CREATE TABLE users (name TEXT);",
+	}); err == nil {
+		t.Fatal("expected duplicate table to be rejected")
+	}
+}
+
 func TestClassifyDiffRisk(t *testing.T) {
 	add := Change{Action: ActionAddColumn, Table: "users", Column: "name", Type: "VARCHAR(100)"}
 	if risk, destructive := ClassifyChange(add); risk != RiskR1 || destructive {

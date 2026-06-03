@@ -919,6 +919,197 @@ func TestRollbackListEmpty(t *testing.T) {
 	}
 }
 
+func TestMaxRisk(t *testing.T) {
+	if got := maxRisk(safety.R1, safety.R2); got != safety.R2 {
+		t.Fatalf("maxRisk(R1,R2) = %v, want R2", got)
+	}
+	if got := maxRisk(safety.R3, safety.R2); got != safety.R3 {
+		t.Fatalf("maxRisk(R3,R2) = %v, want R3", got)
+	}
+}
+
+func TestRollbackToIncrementalRestoreHasR2FloorAndAuditsSnapshot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+		"users":  "CREATE TABLE users (id BIGINT, legacy TEXT);",
+		"orders": "CREATE TABLE orders (id BIGINT);",
+	})
+
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	_, _, err := executeCommandForTest("--yes", "rollback", "--to", sourceID, "--fake")
+	restore()
+	if err == nil {
+		t.Fatal("expected rollback R2 floor to require --ticket")
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed denied rollback: %+v", backend.Executed)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeRollback || evt.Status != dbgaudit.StatusDenied || evt.Target.Object != sourceID || evt.Risk != "R2" {
+		t.Fatalf("denied rollback audit event = %+v", evt)
+	}
+
+	backend = fake.New()
+	restore = stubFakeBackend(t, backend)
+	defer restore()
+	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
+	if err != nil {
+		t.Fatalf("authorized rollback error = %v", err)
+	}
+	if len(backend.Executed) != 1 || !strings.Contains(backend.Executed[0], "CREATE TABLE `orders`") {
+		t.Fatalf("executed = %+v, want CREATE TABLE orders", backend.Executed)
+	}
+	evt := lastAuditEvent(t, home)
+	if evt.EventType != dbgaudit.EventTypeRollback || evt.Target.Object != sourceID || evt.SnapshotID == "" || evt.Risk != "R2" {
+		t.Fatalf("rollback audit event = %+v", evt)
+	}
+}
+
+func TestRollbackToDestructiveRestoreRequiresAllowDestructive(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+		"users": "CREATE TABLE users (id BIGINT);",
+	})
+
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
+	restore()
+	if err == nil {
+		t.Fatal("expected destructive rollback without --allow-destructive to be denied")
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed denied destructive rollback: %+v", backend.Executed)
+	}
+
+	backend = fake.New()
+	restore = stubFakeBackend(t, backend)
+	defer restore()
+	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-destructive")
+	if err != nil {
+		t.Fatalf("destructive rollback error = %v", err)
+	}
+	if len(backend.Executed) != 1 || !strings.Contains(backend.Executed[0], "DROP COLUMN `legacy`") {
+		t.Fatalf("executed = %+v, want DROP COLUMN legacy", backend.Executed)
+	}
+}
+
+func TestRollbackToPruneRestoreRequiresAllowProductionPrune(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+		"users": "CREATE TABLE users (id BIGINT, legacy TEXT);",
+	})
+	backend := fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	restore := stubFakeBackend(t, backend)
+	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
+	restore()
+	if err == nil {
+		t.Fatal("expected prune rollback without --allow-production-prune to be denied")
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed denied prune rollback: %+v", backend.Executed)
+	}
+
+	backend = fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	restore = stubFakeBackend(t, backend)
+	defer restore()
+	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-production-prune")
+	if err != nil {
+		t.Fatalf("prune rollback error = %v", err)
+	}
+	if len(backend.Executed) != 1 || !strings.Contains(backend.Executed[0], "DROP TABLE `orders`") {
+		t.Fatalf("executed = %+v, want DROP TABLE orders", backend.Executed)
+	}
+}
+
+func TestRollbackToRequiresBothAllowFlagsForDropColumnAndDropTable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+		"users": "CREATE TABLE users (id BIGINT);",
+	})
+	cases := [][]string{
+		{"--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-production-prune"},
+		{"--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-destructive"},
+	}
+	for _, args := range cases {
+		backend := fake.New()
+		backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+		restore := stubFakeBackend(t, backend)
+		_, _, err := executeCommandForTest(args...)
+		restore()
+		if err == nil {
+			t.Fatalf("expected rollback args %v to be denied", args)
+		}
+		if len(backend.Executed) != 0 {
+			t.Fatalf("executed denied rollback args %v: %+v", args, backend.Executed)
+		}
+	}
+
+	backend := fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake", "--allow-destructive", "--allow-production-prune")
+	if err != nil {
+		t.Fatalf("rollback with both allow flags error = %v", err)
+	}
+	if joined := strings.Join(backend.Executed, "\n"); !strings.Contains(joined, "DROP COLUMN `legacy`") || !strings.Contains(joined, "DROP TABLE `orders`") {
+		t.Fatalf("executed = %+v, want drop column and drop table", backend.Executed)
+	}
+}
+
+func TestRollbackToDryRunWarnsAndDoesNotCaptureOrExecute(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	sourceID := captureSnapshotForTest(t, home, "apply", map[string]string{
+		"users": "CREATE TABLE users (id BIGINT);",
+	})
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	out, _, err := executeCommandForTest("-o", "json", "rollback", "--to", sourceID, "--fake", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry-run rollback error = %v", err)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("dry-run executed rollback: %+v", backend.Executed)
+	}
+	if !strings.Contains(out, "data in dropped tables/columns is NOT recovered") {
+		t.Fatalf("dry-run rollback output missing data-loss warning:\n%s", out)
+	}
+	metas, err := dbgsnapshot.List(snapshotDirForTest(home))
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(metas) != 1 {
+		t.Fatalf("dry-run snapshot count = %d, want only source snapshot: %+v", len(metas), metas)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeRollback || !evt.DryRun {
+		t.Fatalf("dry-run rollback audit event = %+v", evt)
+	}
+}
+
+func TestRollbackToRejectsInvalidSnapshotID(t *testing.T) {
+	if _, _, err := executeCommandForTest("rollback", "--to", "..\\evil", "--fake", "--dry-run"); err == nil {
+		t.Fatal("expected invalid snapshot id to be rejected")
+	}
+	if _, _, err := executeCommandForTest("rollback", "--to", "missing-snapshot", "--fake", "--dry-run"); err == nil {
+		t.Fatal("expected missing snapshot id to be rejected")
+	}
+}
+
 func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -973,4 +1164,13 @@ func lastAuditEvent(t *testing.T, home string) dbgaudit.Event {
 
 func snapshotDirForTest(home string) string {
 	return filepath.Join(home, ".dbgov", "snapshots")
+}
+
+func captureSnapshotForTest(t *testing.T, home, command string, tables map[string]string) string {
+	t.Helper()
+	id, err := dbgsnapshot.Capture(snapshotDirForTest(home), dbgsnapshot.Meta{Operator: "tester", Command: command, Context: "fake"}, tables)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
 }
