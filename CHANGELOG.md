@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## v0.1.0
+
+_First public release. MySQL only; PostgreSQL is the fast-follow._
+
 ### Added
 
 - Query and explain commands for governed read-only MySQL inspection.
