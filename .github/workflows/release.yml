@@ -202,8 +202,6 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           npm version "$VERSION" --no-git-tag-version --allow-same-version
