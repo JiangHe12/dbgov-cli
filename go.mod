@@ -4,7 +4,7 @@ go 1.25.0
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/JiangHe12/opskit-core v0.0.0
+	github.com/JiangHe12/opskit-core v1.0.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/spf13/cobra v1.9.1
 )
@@ -50,5 +50,3 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/JiangHe12/opskit-core => ../opskit-core
