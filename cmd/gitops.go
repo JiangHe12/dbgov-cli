@@ -151,10 +151,17 @@ func runImport(f *cliFlags, opts importOptions) error {
 		emitAudit(f, event, nil)
 		return err
 	}
+	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "import")
+	if err != nil {
+		event := newImportAuditEvent(f, meta, plan)
+		emitAudit(f, event, err)
+		return err
+	}
 
 	statements := schemaPlanStatements(plan)
 	executed, err := b.ExecDDL(commandContext(f), statements)
 	event := newImportAuditEvent(f, meta, plan)
+	event.SnapshotID = snapshotID
 	event.Executed = executed
 	if err != nil && executed < len(statements) {
 		event.FailedStatement = statements[executed]
@@ -211,10 +218,17 @@ func runReconcile(f *cliFlags, opts reconcileOptions) error {
 		emitAudit(f, event, nil)
 		return err
 	}
+	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "reconcile")
+	if err != nil {
+		event := newReconcileAuditEvent(f, meta, plan)
+		emitAudit(f, event, err)
+		return err
+	}
 
 	statements := schemaPlanStatements(plan)
 	executed, err := b.ExecDDL(commandContext(f), statements)
 	event := newReconcileAuditEvent(f, meta, plan)
+	event.SnapshotID = snapshotID
 	event.Executed = executed
 	if err != nil && executed < len(statements) {
 		event.FailedStatement = statements[executed]

@@ -283,10 +283,17 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) error {
 		emitAudit(f, event, nil)
 		return err
 	}
+	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "apply")
+	if err != nil {
+		event := newSchemaApplyAuditEvent(f, meta, plan)
+		emitAudit(f, event, err)
+		return err
+	}
 
 	statements := schemaPlanStatements(plan)
 	executed, err := b.ExecDDL(commandContext(f), statements)
 	event := newSchemaApplyAuditEvent(f, meta, plan)
+	event.SnapshotID = snapshotID
 	event.Executed = executed
 	if err != nil && executed < len(statements) {
 		event.FailedStatement = statements[executed]

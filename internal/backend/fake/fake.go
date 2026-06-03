@@ -18,6 +18,7 @@ type Backend struct {
 	DMLErr      error
 	ExecutedDML []string
 	DDLs        map[string]string
+	TableDDLErr error
 }
 
 func New() *Backend {
@@ -63,6 +64,9 @@ func (b *Backend) Explain(context.Context, string) (dbbackend.ExplainResult, err
 }
 
 func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
+	if b.TableDDLErr != nil {
+		return "", b.TableDDLErr
+	}
 	if b.DDLs != nil {
 		if ddl, ok := b.DDLs[table]; ok {
 			return ddl, nil

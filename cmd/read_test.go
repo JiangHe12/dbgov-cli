@@ -14,6 +14,7 @@ import (
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
+	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
 	corectx "github.com/JiangHe12/opskit-core/ctx"
 )
 
@@ -770,6 +771,154 @@ func TestReconcileDryRunDoesNotAuthorizeOrExecute(t *testing.T) {
 	}
 }
 
+func TestSchemaApplyCapturesSnapshotBeforeDDLAndAuditsID(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));`)
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, _, err := executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
+	if err != nil {
+		t.Fatalf("schema apply error = %v", err)
+	}
+	evt := lastAuditEvent(t, home)
+	if evt.EventType != dbgaudit.EventTypeSchemaApply || evt.SnapshotID == "" {
+		t.Fatalf("schema apply audit event = %+v, want snapshot id", evt)
+	}
+	snap, err := dbgsnapshot.Load(snapshotDirForTest(home), evt.SnapshotID)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	if snap.Meta.Command != "apply" || snap.Meta.Context != "fake" || snap.Meta.TableCount != 1 || !strings.Contains(snap.Tables["users"], "CREATE TABLE") {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+}
+
+func TestSchemaApplyDryRunDoesNotCaptureSnapshot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100));`)
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, _, err := executeCommandForTest("schema", "apply", "-f", desired, "--fake", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry-run schema apply error = %v", err)
+	}
+	metas, err := dbgsnapshot.List(snapshotDirForTest(home))
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(metas) != 0 {
+		t.Fatalf("dry-run snapshots = %+v, want none", metas)
+	}
+}
+
+func TestSchemaApplySnapshotFailureStopsBeforeDDL(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));`)
+	backend := fake.New()
+	backend.TableDDLErr = errors.New("snapshot DDL failure")
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, _, err := executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
+	if err == nil {
+		t.Fatal("expected snapshot capture failure")
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed despite snapshot failure: %+v", backend.Executed)
+	}
+	evt := lastAuditEvent(t, home)
+	if evt.EventType != dbgaudit.EventTypeSchemaApply || evt.Status != dbgaudit.StatusFailed || evt.SnapshotID != "" {
+		t.Fatalf("snapshot failure audit event = %+v", evt)
+	}
+}
+
+func TestImportAndReconcileCaptureSnapshots(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	importDir := t.TempDir()
+	writeTestFile(t, importDir, "users.sql", "CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));")
+	reconcileDir := t.TempDir()
+	writeTestFile(t, reconcileDir, "users.sql", "CREATE TABLE users (id BIGINT);")
+
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	_, _, err := executeCommandForTest("--yes", "import", importDir, "--fake")
+	restore()
+	if err != nil {
+		t.Fatalf("import error = %v", err)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeImport || evt.SnapshotID == "" {
+		t.Fatalf("import audit event = %+v, want snapshot id", evt)
+	}
+
+	backend = fake.New()
+	restore = stubFakeBackend(t, backend)
+	defer restore()
+	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", reconcileDir, "--fake", "--allow-destructive")
+	if err != nil {
+		t.Fatalf("reconcile error = %v", err)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeReconcile || evt.SnapshotID == "" {
+		t.Fatalf("reconcile audit event = %+v, want snapshot id", evt)
+	}
+	metas, err := dbgsnapshot.List(snapshotDirForTest(home))
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(metas) != 2 {
+		t.Fatalf("snapshot count = %d, want 2: %+v", len(metas), metas)
+	}
+}
+
+func TestRollbackListOutputsSnapshotsAndAudits(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	_, err := dbgsnapshot.Capture(snapshotDirForTest(home), dbgsnapshot.Meta{Operator: "alice", Command: "apply", Ticket: "CHG-1", Context: "dev", TableCount: 1}, map[string]string{"users": "CREATE TABLE `users` (`id` BIGINT);"})
+	if err != nil {
+		t.Fatalf("capture first snapshot: %v", err)
+	}
+	_, err = dbgsnapshot.Capture(snapshotDirForTest(home), dbgsnapshot.Meta{Operator: "bob", Command: "reconcile", Ticket: "CHG-2", Context: "prod", TableCount: 2}, map[string]string{"users": "CREATE TABLE `users` (`id` BIGINT);"})
+	if err != nil {
+		t.Fatalf("capture second snapshot: %v", err)
+	}
+
+	out, _, err := executeCommandForTest("-o", "json", "rollback", "list")
+	if err != nil {
+		t.Fatalf("rollback list error = %v", err)
+	}
+	if !strings.Contains(out, `"kind": "RollbackSnapshotList"`) || !strings.Contains(out, `"command": "reconcile"`) || !strings.Contains(out, `"command": "apply"`) {
+		t.Fatalf("rollback list output = %s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeRollback || evt.Target.Object != "list" {
+		t.Fatalf("rollback list audit event = %+v", evt)
+	}
+}
+
+func TestRollbackListEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	out, _, err := executeCommandForTest("-o", "json", "rollback", "list")
+	if err != nil {
+		t.Fatalf("empty rollback list error = %v", err)
+	}
+	if !strings.Contains(out, `"snapshots": []`) {
+		t.Fatalf("empty rollback list output = %s", out)
+	}
+}
+
 func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -820,4 +969,8 @@ func lastAuditEvent(t *testing.T, home string) dbgaudit.Event {
 		t.Fatalf("unmarshal audit event: %v\n%s", err, lines[len(lines)-1])
 	}
 	return evt
+}
+
+func snapshotDirForTest(home string) string {
+	return filepath.Join(home, ".dbgov", "snapshots")
 }

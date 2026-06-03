@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"context"
+	"path/filepath"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/backend/fake"
 	"github.com/JiangHe12/dbgov-cli/internal/backend/mysql"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
+	"github.com/JiangHe12/dbgov-cli/internal/schema"
+	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
 	"github.com/JiangHe12/opskit-core/apperrors"
 	coreaudit "github.com/JiangHe12/opskit-core/audit"
 )
@@ -94,6 +97,37 @@ func emitAudit(f *cliFlags, event dbgaudit.Event, opErr error) {
 		return
 	}
 	_ = coreaudit.AppendRecord(path, event, coreaudit.Options{})
+}
+
+func snapshotBaseDir() (string, error) {
+	path, err := coreaudit.DefaultPath()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(filepath.Dir(path), "snapshots"), nil
+}
+
+func captureSchemaSnapshot(f *cliFlags, b interface {
+	TableDDL(context.Context, string) (string, error)
+}, current schema.Schema, meta contextMeta, command string) (string, error) {
+	baseDir, err := snapshotBaseDir()
+	if err != nil {
+		return "", err
+	}
+	tables := make(map[string]string, len(current.Tables))
+	for _, table := range sortedTableNames(current) {
+		ddl, err := b.TableDDL(commandContext(f), table)
+		if err != nil {
+			return "", err
+		}
+		tables[table] = ddl
+	}
+	return dbgsnapshot.Capture(baseDir, dbgsnapshot.Meta{
+		Operator: currentOperator(f),
+		Command:  command,
+		Ticket:   f.Ticket,
+		Context:  meta.Name,
+	}, tables)
 }
 
 func auditContext(meta contextMeta) dbgaudit.Context {

@@ -55,6 +55,7 @@ type Event struct {
 	Risk            string     `json:"risk"`
 	ImpactRows      *int       `json:"impactRows,omitempty"`
 	AffectedRows    *int64     `json:"affectedRows,omitempty"`
+	SnapshotID      string     `json:"snapshotId,omitempty"`
 	Executed        int        `json:"executed,omitempty"`
 	FailedStatement string     `json:"failedStatement,omitempty"`
 	Destructive     bool       `json:"destructive,omitempty"`
