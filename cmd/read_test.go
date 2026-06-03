@@ -8,7 +8,10 @@ import (
 	"testing"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
+	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
+	"github.com/JiangHe12/dbgov-cli/internal/backend/fake"
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
+	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	corectx "github.com/JiangHe12/opskit-core/ctx"
 )
 
@@ -166,6 +169,135 @@ func TestSchemaPlanFakeBackendShowsRiskDDLAndAudit(t *testing.T) {
 	}
 }
 
+func TestSchemaApplyR1RequiresYesAndExecutesWhenAuthorized(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));`)
+
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, _, err := executeCommandForTest("--non-interactive", "schema", "apply", "-f", desired, "--fake")
+	if err == nil {
+		t.Fatal("expected R1 apply without --yes to be denied")
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed without authorization: %+v", backend.Executed)
+	}
+	if evt := lastAuditEvent(t, home); evt.Status != dbgaudit.StatusDenied || evt.EventType != dbgaudit.EventTypeSchemaApply {
+		t.Fatalf("denied audit event = %+v", evt)
+	}
+
+	_, _, err = executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
+	if err != nil {
+		t.Fatalf("schema apply R1 error = %v", err)
+	}
+	if len(backend.Executed) != 1 || !strings.Contains(backend.Executed[0], "ADD COLUMN `name`") {
+		t.Fatalf("executed = %+v", backend.Executed)
+	}
+	if evt := lastAuditEvent(t, home); evt.Status != dbgaudit.StatusSucceeded || evt.Risk != "R1" || evt.Executed != 1 {
+		t.Fatalf("success audit event = %+v", evt)
+	}
+}
+
+func TestSchemaApplyR3RequiresTicketAllowFlagAndYes(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100));`)
+
+	cases := [][]string{
+		{"--yes", "--allow-destructive"},
+		{"--yes", "--ticket", "CHG-1"},
+		{"--non-interactive", "--ticket", "CHG-1", "--allow-destructive"},
+	}
+	for _, args := range cases {
+		backend := fake.New()
+		restore := stubFakeBackend(t, backend)
+		fullArgs := append([]string{}, args...)
+		fullArgs = append(fullArgs, "schema", "apply", "-f", desired, "--fake")
+		_, _, err := executeCommandForTest(fullArgs...)
+		restore()
+		if err == nil {
+			t.Fatalf("expected R3 apply with args %v to be denied", args)
+		}
+		if len(backend.Executed) != 0 {
+			t.Fatalf("executed for denied args %v: %+v", args, backend.Executed)
+		}
+	}
+
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "schema", "apply", "-f", desired, "--fake", "--allow-destructive")
+	if err != nil {
+		t.Fatalf("schema apply R3 error = %v", err)
+	}
+	if len(backend.Executed) != 2 {
+		t.Fatalf("executed = %+v", backend.Executed)
+	}
+	if evt := lastAuditEvent(t, home); evt.Risk != "R3" || !evt.Destructive || evt.Executed != 2 {
+		t.Fatalf("R3 audit event = %+v", evt)
+	}
+}
+
+func TestAuthorizeWriteRaisesProtectedR1ToR2(t *testing.T) {
+	flags := &cliFlags{Yes: true, NonInteractive: true, Operator: "alice"}
+	err := authorizeWrite(flags, safety.R1, contextMeta{Protected: true}, "", nil)
+	if err == nil {
+		t.Fatal("expected protected R1 to require ticket after risk upgrade")
+	}
+}
+
+func TestSchemaApplyDryRunDoesNotAuthorizeOrExecute(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100));`)
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	out, _, err := executeCommandForTest("-o", "json", "schema", "apply", "-f", desired, "--fake", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry-run apply error = %v", err)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("dry-run executed statements: %+v", backend.Executed)
+	}
+	if !strings.Contains(out, `"kind": "SchemaPlan"`) || !strings.Contains(out, `"overallRisk": "R3"`) {
+		t.Fatalf("dry-run output = %s", out)
+	}
+	if evt := lastAuditEvent(t, home); !evt.DryRun || evt.Status != dbgaudit.StatusSucceeded {
+		t.Fatalf("dry-run audit event = %+v", evt)
+	}
+}
+
+func TestSchemaApplyAuditsPartialFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100));`)
+	backend := fake.New()
+	backend.FailAt = 2
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "schema", "apply", "-f", desired, "--fake", "--allow-destructive")
+	if err == nil {
+		t.Fatal("expected partial failure")
+	}
+	if len(backend.Executed) != 1 {
+		t.Fatalf("executed = %+v, want one successful statement", backend.Executed)
+	}
+	evt := lastAuditEvent(t, home)
+	if evt.Status != dbgaudit.StatusFailed || evt.Executed != 1 || !strings.Contains(evt.FailedStatement, "DROP COLUMN") {
+		t.Fatalf("partial failure audit event = %+v", evt)
+	}
+}
+
 func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -195,6 +327,13 @@ func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	if !strings.Contains(err.Error(), "missing-backend") {
 		t.Fatalf("expected credstore backend error, got %v", err)
 	}
+}
+
+func stubFakeBackend(t *testing.T, backend *fake.Backend) func() {
+	t.Helper()
+	old := newFakeBackend
+	newFakeBackend = func() dbbackend.Backend { return backend }
+	return func() { newFakeBackend = old }
 }
 
 func lastAuditEvent(t *testing.T, home string) dbgaudit.Event {

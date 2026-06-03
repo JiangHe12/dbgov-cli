@@ -13,6 +13,7 @@ type Backend interface {
 	Explain(ctx context.Context, sql string) (ExplainResult, error)
 	TableDDL(ctx context.Context, table string) (string, error)
 	RenderDDL(changes []schema.Change) ([]string, error)
+	ExecDDL(ctx context.Context, statements []string) (executed int, err error)
 }
 
 type QueryResult struct {

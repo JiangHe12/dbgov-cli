@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"testing"
 
@@ -101,6 +102,34 @@ func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 		if statements[i] != want[i] {
 			t.Fatalf("statement[%d] = %q, want %q", i, statements[i], want[i])
 		}
+	}
+}
+
+func TestExecDDLStopsAtFirstError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE `users` ADD COLUMN `name` VARCHAR(100);")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("ALTER TABLE `users` DROP COLUMN `legacy`;")).
+		WillReturnError(errors.New("boom"))
+
+	executed, err := backend.ExecDDL(context.Background(), []string{
+		"ALTER TABLE `users` ADD COLUMN `name` VARCHAR(100);",
+		"ALTER TABLE `users` DROP COLUMN `legacy`;",
+		"ALTER TABLE `users` ADD COLUMN `after` BIGINT;",
+	})
+	if err == nil {
+		t.Fatal("ExecDDL() error = nil, want failure")
+	}
+	if executed != 1 {
+		t.Fatalf("executed = %d, want 1", executed)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
 	}
 }
 

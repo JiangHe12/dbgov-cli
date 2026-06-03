@@ -12,6 +12,7 @@ import (
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
+	"github.com/JiangHe12/opskit-core/apperrors"
 	"github.com/JiangHe12/opskit-core/printer"
 )
 
@@ -23,6 +24,13 @@ type schemaDiffOptions struct {
 type schemaPlanOptions struct {
 	file string
 	fake bool
+}
+
+type schemaApplyOptions struct {
+	file             string
+	fake             bool
+	dryRun           bool
+	allowDestructive bool
 }
 
 type schemaReadOptions struct {
@@ -74,7 +82,7 @@ func newSchemaCmd(f *cliFlags) *cobra.Command {
 		Use:   "schema",
 		Short: "Inspect database schema",
 	}
-	cmd.AddCommand(schemaListCmd(f), schemaDescribeCmd(f), schemaDumpCmd(f), schemaPlanCmd(f), schemaDiffCmd(f))
+	cmd.AddCommand(schemaListCmd(f), schemaDescribeCmd(f), schemaDumpCmd(f), schemaPlanCmd(f), schemaApplyCmd(f), schemaDiffCmd(f))
 	return cmd
 }
 
@@ -132,6 +140,23 @@ func schemaPlanCmd(f *cliFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVarP(&opts.file, "file", "f", "", "Desired schema SQL file")
 	cmd.Flags().BoolVar(&opts.fake, "fake", false, "Use in-memory fake backend")
+	_ = cmd.MarkFlagRequired("file")
+	return cmd
+}
+
+func schemaApplyCmd(f *cliFlags) *cobra.Command {
+	var opts schemaApplyOptions
+	cmd := &cobra.Command{
+		Use:   "apply -f desired.sql",
+		Short: "Apply schema changes from desired SQL",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSchemaApply(f, opts)
+		},
+	}
+	cmd.Flags().StringVarP(&opts.file, "file", "f", "", "Desired schema SQL file")
+	cmd.Flags().BoolVar(&opts.fake, "fake", false, "Use in-memory fake backend")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Print the plan without executing DDL")
+	cmd.Flags().BoolVar(&opts.allowDestructive, "allow-destructive", false, "Allow destructive schema changes")
 	_ = cmd.MarkFlagRequired("file")
 	return cmd
 }
@@ -203,6 +228,68 @@ func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) error {
 	event.Risk = plan.OverallRisk
 	event.Destructive = plan.Destructive
 	event.Statement = schemaPlanSQL(plan)
+	emitAudit(f, event, err)
+	if err != nil {
+		return err
+	}
+	return printSchemaPlan(f, plan)
+}
+
+func runSchemaApply(f *cliFlags, opts schemaApplyOptions) error {
+	desiredBytes, err := os.ReadFile(opts.file)
+	if err != nil {
+		return err
+	}
+	desired, err := schema.ParseDesiredSQL(string(desiredBytes))
+	if err != nil {
+		return err
+	}
+	b, meta, err := buildBackend(f, backendOptions{Fake: opts.fake})
+	if err != nil {
+		return err
+	}
+	current, err := b.IntrospectSchema(commandContext(f))
+	if err != nil {
+		event := newSchemaApplyAuditEvent(f, meta, schemaPlan{})
+		emitAudit(f, event, err)
+		return err
+	}
+	plan, err := buildSchemaPlan(b, current, desired)
+	if err != nil {
+		event := newSchemaApplyAuditEvent(f, meta, plan)
+		emitAudit(f, event, err)
+		return err
+	}
+	if opts.dryRun {
+		event := newSchemaApplyAuditEvent(f, meta, plan)
+		event.DryRun = true
+		emitAudit(f, event, nil)
+		return printSchemaPlan(f, plan)
+	}
+
+	requiredAllow := safety.AllowFlag("")
+	granted := map[safety.AllowFlag]bool{}
+	if plan.Destructive {
+		requiredAllow = safety.AllowDestructive
+		if opts.allowDestructive {
+			granted[safety.AllowDestructive] = true
+		}
+	}
+	if err := authorizeWrite(f, safetyRisk(plan.OverallRisk), meta, requiredAllow, granted); err != nil {
+		event := newSchemaApplyAuditEvent(f, meta, plan)
+		event.Status = dbgaudit.StatusDenied
+		setAuditError(&event, err)
+		emitAudit(f, event, nil)
+		return err
+	}
+
+	statements := schemaPlanStatements(plan)
+	executed, err := b.ExecDDL(commandContext(f), statements)
+	event := newSchemaApplyAuditEvent(f, meta, plan)
+	event.Executed = executed
+	if err != nil && executed < len(statements) {
+		event.FailedStatement = statements[executed]
+	}
 	emitAudit(f, event, err)
 	if err != nil {
 		return err
@@ -441,11 +528,15 @@ func formatDDLStatement(ddl string) string {
 }
 
 func schemaPlanSQL(plan schemaPlan) string {
+	return strings.Join(schemaPlanStatements(plan), "\n")
+}
+
+func schemaPlanStatements(plan schemaPlan) []string {
 	statements := make([]string, 0, len(plan.Statements))
 	for _, stmt := range plan.Statements {
 		statements = append(statements, stmt.SQL)
 	}
-	return strings.Join(statements, "\n")
+	return statements
 }
 
 func requiredAuthorization(risk schema.Risk) string {
@@ -458,6 +549,32 @@ func requiredAuthorization(risk schema.Risk) string {
 		return "R1 requires --yes or interactive confirmation when applied"
 	default:
 		return ""
+	}
+}
+
+func newSchemaApplyAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbgaudit.Event {
+	event := dbgaudit.New(dbgaudit.EventTypeSchemaApply, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "apply"))
+	event.Risk = plan.OverallRisk
+	event.Destructive = plan.Destructive
+	event.Statement = schemaPlanSQL(plan)
+	return event
+}
+
+func setAuditError(event *dbgaudit.Event, err error) {
+	appErr := apperrors.AsAppError(err)
+	event.Error = &dbgaudit.ErrorInfo{Code: string(appErr.Code), Message: appErr.Message}
+}
+
+func safetyRisk(risk string) safety.Risk {
+	switch risk {
+	case "R1":
+		return safety.R1
+	case "R2":
+		return safety.R2
+	case "R3":
+		return safety.R3
+	default:
+		return safety.R0
 	}
 }
 

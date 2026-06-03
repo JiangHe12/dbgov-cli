@@ -243,6 +243,15 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 	return statements, nil
 }
 
+func (b *Backend) ExecDDL(ctx context.Context, statements []string) (int, error) {
+	for i, statement := range statements {
+		if _, err := b.db.ExecContext(ctx, statement); err != nil {
+			return i, fmt.Errorf("execute DDL statement %d: %w", i+1, err)
+		}
+	}
+	return len(statements), nil
+}
+
 func scanRows(rows *sql.Rows) (dbbackend.QueryResult, error) {
 	columns, err := rows.Columns()
 	if err != nil {

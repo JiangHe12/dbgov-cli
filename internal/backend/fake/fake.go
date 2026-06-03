@@ -2,13 +2,16 @@ package fake
 
 import (
 	"context"
+	"fmt"
 
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 )
 
 type Backend struct {
-	Schema schema.Schema
+	Schema   schema.Schema
+	Executed []string
+	FailAt   int
 }
 
 func New() *Backend {
@@ -67,4 +70,14 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 		}
 	}
 	return statements, nil
+}
+
+func (b *Backend) ExecDDL(ctx context.Context, statements []string) (int, error) {
+	for i, statement := range statements {
+		if b.FailAt == i+1 {
+			return i, fmt.Errorf("fake DDL failure at statement %d: %s", i+1, statement)
+		}
+		b.Executed = append(b.Executed, statement)
+	}
+	return len(statements), nil
 }

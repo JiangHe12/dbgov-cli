@@ -41,23 +41,25 @@ const (
 )
 
 type Event struct {
-	APIVersion  string     `json:"apiVersion"`
-	Kind        string     `json:"kind"`
-	EventID     string     `json:"eventId"`
-	Timestamp   time.Time  `json:"timestamp"`
-	EventType   EventType  `json:"eventType"`
-	Operator    string     `json:"operator"`
-	Context     Context    `json:"context"`
-	Ticket      string     `json:"ticket,omitempty"`
-	Reason      string     `json:"reason,omitempty"`
-	Target      Target     `json:"target"`
-	Statement   string     `json:"statement,omitempty"`
-	Risk        string     `json:"risk"`
-	ImpactRows  *int       `json:"impactRows,omitempty"`
-	Destructive bool       `json:"destructive,omitempty"`
-	DryRun      bool       `json:"dryRun,omitempty"`
-	Status      string     `json:"status"`
-	Error       *ErrorInfo `json:"error,omitempty"`
+	APIVersion      string     `json:"apiVersion"`
+	Kind            string     `json:"kind"`
+	EventID         string     `json:"eventId"`
+	Timestamp       time.Time  `json:"timestamp"`
+	EventType       EventType  `json:"eventType"`
+	Operator        string     `json:"operator"`
+	Context         Context    `json:"context"`
+	Ticket          string     `json:"ticket,omitempty"`
+	Reason          string     `json:"reason,omitempty"`
+	Target          Target     `json:"target"`
+	Statement       string     `json:"statement,omitempty"`
+	Risk            string     `json:"risk"`
+	ImpactRows      *int       `json:"impactRows,omitempty"`
+	Executed        int        `json:"executed,omitempty"`
+	FailedStatement string     `json:"failedStatement,omitempty"`
+	Destructive     bool       `json:"destructive,omitempty"`
+	DryRun          bool       `json:"dryRun,omitempty"`
+	Status          string     `json:"status"`
+	Error           *ErrorInfo `json:"error,omitempty"`
 }
 
 type Context struct {
