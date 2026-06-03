@@ -4,6 +4,8 @@
 > 关联:见 `DESIGN.md`(dbgov 设计)。本施工单是 dbgov 编码前的前置工程。
 > 状态:已执行完毕(行为收敛至 5c)。
 
+> **完成状态(2026-06-04)**:抽取与家族收敛已完成。`opskit-core` 已作为 public/MIT module 发布到 <https://github.com/JiangHe12/opskit-core>,当前基线为 `v1.0.1`;sentinel-cli、nacos-cli、dbgov-cli 均已切到版本化 `require github.com/JiangHe12/opskit-core v1.0.1`。dbgov 已在共享治理脊椎上建成 query/explain、schema dump/diff/plan/apply、data exec、export/import/reconcile、rollback、audit query/verify、ctx role/migrate,并接入 R0-R3 授权、审计、凭据、上下文与输出基础设施。
+
 ---
 
 ## 1. 原则
@@ -182,4 +184,4 @@ Phase 6  core 收口 v1.0.0;dbgov 正式开发
 - **ctx**:实际收敛为共享 Store 持久化引擎 + 可选 Base。sentinel/dbgov 继续嵌入 `ctx.Base`;nacos 因配置 schema 不同,使用 `NewStoreWithoutBase` 接入 Store,保留自己的 Context 类型和 yaml 字段。
 - **Phase 5 实际拆分**:5b-1(audit 引擎支持外来 Event) → 5b-2a~2f(apperrors/credstore/telemetry/printer/ctx/audit 逐包迁 nacos) → 5b-3(兼容债清理:删除 nacos 重复 encrypted-file、keychain 统一 bare contextName、nacos ctx `otel*` 收敛为 `otlp*`) → 5c(nacos 迁 core safety,R1/R2/R3 收紧为均需 `--yes` 或交互确认)。
 - **贯穿原则**:共享引擎在 core,各工具领域类型/命令壳/文案/字段名通过本工具保留或注入;分叉行为取更正确者为家族标准,例如 apperrors 退出码采用 nacos 精细映射、vault 错误分类采用精细映射、safety 采用更严格的 R1/R2/R3 授权规则。
-- **家族目标**:opskit-core 已被 sentinel-cli、nacos-cli、dbgov 复用;未来 es-cli / mq-cli 等治理工具按同一契约接入,避免再复制治理外壳。
+- **家族目标**:opskit-core 已发布为 `v1.0.1`,并被 sentinel-cli、nacos-cli、dbgov-cli 通过版本化 `require` 复用;dbgov 已完成正式治理能力建设。未来 es-cli / mq-cli 等治理工具按同一契约接入,避免再复制治理外壳。
