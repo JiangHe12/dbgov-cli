@@ -29,7 +29,7 @@ allowed-tools: Bash(dbgov:*), Bash(go:*)
 | R2 | Requires `--ticket` plus `--yes` | `data exec` with `WHERE` but EXPLAIN estimated rows over the threshold, default 1000; R1 operations in a protected context |
 | R3 | Requires `--ticket`, the relevant `--allow-*` flag, and `--yes` | destructive schema changes, no-WHERE UPDATE/DELETE, production prune, destructive rollback |
 
-`--yes` only confirms R1. It does not satisfy R2 or R3 by itself. Never auto-supply `--ticket`, `--allow-*`, or high-risk `--yes`; surface the missing authorization to the user. `--ticket` must match the active context `ticketPattern`, default `^[A-Z]+-[0-9]+$`.
+`--yes` only confirms R1. It does not satisfy R2 or R3 by itself. Never auto-supply `--ticket`, `--allow-*`, or high-risk `--yes`; surface the missing authorization to the user. `--ticket` must be non-empty for R2/R3. If the active context sets a `ticketPattern` via `ctx set --ticket-pattern`, the ticket must match it; by default no pattern is enforced.
 
 ### R3 Allow Flags
 
@@ -277,4 +277,3 @@ Use `--path` only when inspecting a non-default audit log:
 dbgov audit query --path ./audit.log --limit 50 --reverse -o json
 dbgov audit prune --path ./audit.log --before 2026-06-01 --confirm -o json
 ```
-

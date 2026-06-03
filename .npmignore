@@ -1,0 +1,46 @@
+# Go source files
+cmd/
+pkg/
+main.go
+go.mod
+go.sum
+*.go
+skills_embed.go
+
+# skills/ no longer needed in the npm package — content is embedded in the
+# binary via //go:embed (see cmd/install.go + skills_embed.go).
+skills/
+
+# GitHub
+.github/
+
+# Git
+.git/
+.gitignore
+
+# Claude
+.claude/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docs
+docs/
+DESIGN.md
+AGENTS.md
+CHANGELOG.md
+LICENSE
+docker-compose.integration.yml
+
+# Build artifacts
+dbgov
+dbgov.exe
+*.test
+*.test.exe
+
+# OS
+.DS_Store
+Thumbs.db
