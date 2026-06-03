@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"fmt"
+
 	"github.com/spf13/cobra"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
@@ -18,6 +20,15 @@ type importOptions struct {
 	fake             bool
 	dryRun           bool
 	allowDestructive bool
+}
+
+type reconcileOptions struct {
+	dir                  string
+	fake                 bool
+	prune                bool
+	dryRun               bool
+	allowDestructive     bool
+	allowProductionPrune bool
 }
 
 func newExportCmd(f *cliFlags) *cobra.Command {
@@ -50,6 +61,25 @@ func newImportCmd(f *cliFlags) *cobra.Command {
 	cmd.Flags().BoolVar(&opts.fake, "fake", false, "Use in-memory fake backend")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Print the plan without executing DDL")
 	cmd.Flags().BoolVar(&opts.allowDestructive, "allow-destructive", false, "Allow destructive schema changes")
+	return cmd
+}
+
+func newReconcileCmd(f *cliFlags) *cobra.Command {
+	var opts reconcileOptions
+	cmd := &cobra.Command{
+		Use:   "reconcile <schema-dir>",
+		Short: "Reconcile desired schema directory with the database",
+		Args:  requireExactArgs("reconcile", 1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.dir = args[0]
+			return runReconcile(f, opts)
+		},
+	}
+	cmd.Flags().BoolVar(&opts.fake, "fake", false, "Use in-memory fake backend")
+	cmd.Flags().BoolVar(&opts.prune, "prune", false, "Drop database tables missing from desired schema")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Print the plan without executing DDL")
+	cmd.Flags().BoolVar(&opts.allowDestructive, "allow-destructive", false, "Allow destructive column changes")
+	cmd.Flags().BoolVar(&opts.allowProductionPrune, "allow-production-prune", false, "Allow pruning extra database tables")
 	return cmd
 }
 
@@ -136,10 +166,114 @@ func runImport(f *cliFlags, opts importOptions) error {
 	return printSchemaPlan(f, plan)
 }
 
+func runReconcile(f *cliFlags, opts reconcileOptions) error {
+	desired, err := schema.LoadDesiredDir(opts.dir)
+	if err != nil {
+		return err
+	}
+	b, meta, err := buildBackend(f, backendOptions{Fake: opts.fake})
+	if err != nil {
+		return err
+	}
+	current, err := b.IntrospectSchema(commandContext(f))
+	if err != nil {
+		event := newReconcileAuditEvent(f, meta, schemaPlan{})
+		emitAudit(f, event, err)
+		return err
+	}
+	diff := schema.Diff(current, desired)
+	extra := schema.ExtraTables(current, desired)
+	if opts.prune {
+		diff.Changes = append(diff.Changes, schema.PruneChanges(current, desired)...)
+	} else {
+		for _, table := range extra {
+			diff.Warnings = append(diff.Warnings, fmt.Sprintf("drift: table %s exists in database but not in desired schema; not pruned (use --prune)", table))
+		}
+	}
+	plan, err := buildSchemaPlanFromDiff(b, diff)
+	if err != nil {
+		event := newReconcileAuditEvent(f, meta, plan)
+		emitAudit(f, event, err)
+		return err
+	}
+	if opts.dryRun {
+		event := newReconcileAuditEvent(f, meta, plan)
+		event.DryRun = true
+		emitAudit(f, event, nil)
+		return printSchemaPlan(f, plan)
+	}
+
+	requiredAllows, granted := reconcileAllowFlags(plan, opts)
+	if err := authorizeWrite(f, safetyRisk(plan.OverallRisk), meta, requiredAllows, granted); err != nil {
+		event := newReconcileAuditEvent(f, meta, plan)
+		event.Status = dbgaudit.StatusDenied
+		setAuditError(&event, err)
+		emitAudit(f, event, nil)
+		return err
+	}
+
+	statements := schemaPlanStatements(plan)
+	executed, err := b.ExecDDL(commandContext(f), statements)
+	event := newReconcileAuditEvent(f, meta, plan)
+	event.Executed = executed
+	if err != nil && executed < len(statements) {
+		event.FailedStatement = statements[executed]
+	}
+	emitAudit(f, event, err)
+	if err != nil {
+		return err
+	}
+	return printSchemaPlan(f, plan)
+}
+
 func newImportAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbgaudit.Event {
 	event := dbgaudit.New(dbgaudit.EventTypeImport, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "import"))
 	event.Risk = plan.OverallRisk
 	event.Destructive = plan.Destructive
 	event.Statement = schemaPlanSQL(plan)
 	return event
+}
+
+func newReconcileAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbgaudit.Event {
+	event := dbgaudit.New(dbgaudit.EventTypeReconcile, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "reconcile"))
+	event.Risk = plan.OverallRisk
+	event.Destructive = plan.Destructive
+	event.Statement = schemaPlanSQL(plan)
+	return event
+}
+
+func reconcileAllowFlags(plan schemaPlan, opts reconcileOptions) ([]safety.AllowFlag, map[safety.AllowFlag]bool) {
+	var required []safety.AllowFlag
+	granted := map[safety.AllowFlag]bool{}
+	if planRequiresDestructiveAllow(plan) {
+		required = append(required, safety.AllowDestructive)
+		if opts.allowDestructive {
+			granted[safety.AllowDestructive] = true
+		}
+	}
+	if planRequiresPruneAllow(plan) {
+		required = append(required, safety.AllowProductionPrune)
+		if opts.allowProductionPrune {
+			granted[safety.AllowProductionPrune] = true
+		}
+	}
+	return required, granted
+}
+
+func planRequiresDestructiveAllow(plan schemaPlan) bool {
+	for _, stmt := range plan.Statements {
+		if stmt.Action == schema.ActionDropColumn || stmt.Action == schema.ActionModifyColumn {
+			return true
+		}
+	}
+	return false
+}
+
+func planRequiresPruneAllow(plan schemaPlan) bool {
+	for _, stmt := range plan.Statements {
+		if stmt.Action == schema.ActionDropTable {
+			return true
+		}
+	}
+	return false
 }

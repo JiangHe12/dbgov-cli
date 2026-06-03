@@ -415,6 +415,12 @@ func buildSchemaPlan(b interface {
 	RenderDDL([]schema.Change) ([]string, error)
 }, current, desired schema.Schema) (schemaPlan, error) {
 	diff := schema.Diff(current, desired)
+	return buildSchemaPlanFromDiff(b, diff)
+}
+
+func buildSchemaPlanFromDiff(b interface {
+	RenderDDL([]schema.Change) ([]string, error)
+}, diff schema.DiffResult) (schemaPlan, error) {
 	risk := schema.ClassifyDiff(diff)
 	statements, err := b.RenderDDL(diff.Changes)
 	if err != nil {
@@ -546,7 +552,7 @@ func schemaPlanStatements(plan schemaPlan) []string {
 func requiredAuthorization(risk schema.Risk) string {
 	switch risk {
 	case schema.RiskR3:
-		return "R3 requires --yes or interactive confirmation, --ticket, and --allow-destructive when applied"
+		return "R3 requires --yes or interactive confirmation, --ticket, and required allow flag(s) when applied"
 	case schema.RiskR2:
 		return "R2 requires --yes or interactive confirmation and --ticket when applied"
 	case schema.RiskR1:

@@ -636,6 +636,140 @@ func TestImportDryRunAndNoDropTableForMissingDesiredTable(t *testing.T) {
 	}
 }
 
+func TestReconcileWithoutPruneReportsDriftAndExecutesInTableChanges(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	writeTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));")
+	backend := fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	out, _, err := executeCommandForTest("-o", "json", "--yes", "reconcile", dir, "--fake")
+	if err != nil {
+		t.Fatalf("reconcile without prune error = %v", err)
+	}
+	if len(backend.Executed) != 1 || !strings.Contains(backend.Executed[0], "ADD COLUMN `name`") {
+		t.Fatalf("executed = %+v, want only in-table add column", backend.Executed)
+	}
+	if strings.Contains(out, "DROP TABLE") || strings.Contains(out, "DROP_TABLE") {
+		t.Fatalf("reconcile without prune planned table deletion:\n%s", out)
+	}
+	if !strings.Contains(out, "not pruned") || !strings.Contains(out, "orders") {
+		t.Fatalf("reconcile without prune output missing drift warning:\n%s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeReconcile || evt.Status != dbgaudit.StatusSucceeded || evt.Risk != "R1" {
+		t.Fatalf("reconcile audit event = %+v", evt)
+	}
+}
+
+func TestReconcilePruneRequiresProductionPruneAllowFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	writeTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT, legacy TEXT);")
+
+	backend := fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	restore := stubFakeBackend(t, backend)
+	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune")
+	restore()
+	if err == nil {
+		t.Fatal("expected prune reconcile without --allow-production-prune to be denied")
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed denied prune: %+v", backend.Executed)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeReconcile || evt.Status != dbgaudit.StatusDenied || evt.Risk != "R3" {
+		t.Fatalf("denied prune audit event = %+v", evt)
+	}
+
+	backend = fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	restore = stubFakeBackend(t, backend)
+	defer restore()
+	_, _, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune", "--allow-production-prune")
+	if err != nil {
+		t.Fatalf("authorized prune reconcile error = %v", err)
+	}
+	if len(backend.Executed) != 1 || !strings.Contains(backend.Executed[0], "DROP TABLE `orders`") {
+		t.Fatalf("executed = %+v, want DROP TABLE orders", backend.Executed)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeReconcile || evt.Risk != "R3" || !evt.Destructive || evt.Executed != 1 {
+		t.Fatalf("authorized prune audit event = %+v", evt)
+	}
+}
+
+func TestReconcilePruneAndDestructiveColumnRequireBothAllowFlags(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	writeTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT);")
+
+	cases := [][]string{
+		{"--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune", "--allow-production-prune"},
+		{"--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune", "--allow-destructive"},
+	}
+	for _, args := range cases {
+		backend := fake.New()
+		backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+		restore := stubFakeBackend(t, backend)
+		_, _, err := executeCommandForTest(args...)
+		restore()
+		if err == nil {
+			t.Fatalf("expected reconcile with args %v to be denied", args)
+		}
+		if len(backend.Executed) != 0 {
+			t.Fatalf("executed denied reconcile with args %v: %+v", args, backend.Executed)
+		}
+	}
+
+	backend := fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+	_, _, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "reconcile", dir, "--fake", "--prune", "--allow-destructive", "--allow-production-prune")
+	if err != nil {
+		t.Fatalf("reconcile with both allow flags error = %v", err)
+	}
+	if len(backend.Executed) != 2 {
+		t.Fatalf("executed = %+v, want drop column and drop table", backend.Executed)
+	}
+	if !strings.Contains(strings.Join(backend.Executed, "\n"), "DROP COLUMN `legacy`") || !strings.Contains(strings.Join(backend.Executed, "\n"), "DROP TABLE `orders`") {
+		t.Fatalf("executed = %+v, want both destructive statements", backend.Executed)
+	}
+}
+
+func TestReconcileDryRunDoesNotAuthorizeOrExecute(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	writeTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT);")
+	backend := fake.New()
+	backend.Schema.Tables["orders"] = schema.Table{Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	out, _, err := executeCommandForTest("-o", "json", "reconcile", dir, "--fake", "--prune", "--dry-run")
+	if err != nil {
+		t.Fatalf("dry-run reconcile error = %v", err)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("dry-run executed reconcile: %+v", backend.Executed)
+	}
+	if !strings.Contains(out, "DROP TABLE `orders`") || !strings.Contains(out, "DROP COLUMN `legacy`") {
+		t.Fatalf("dry-run reconcile output missing prune/destructive statements:\n%s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeReconcile || !evt.DryRun || evt.Status != dbgaudit.StatusSucceeded {
+		t.Fatalf("dry-run reconcile audit event = %+v", evt)
+	}
+}
+
 func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

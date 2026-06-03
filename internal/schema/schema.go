@@ -217,6 +217,25 @@ func Diff(current, desired Schema) DiffResult {
 	return result
 }
 
+func ExtraTables(current, desired Schema) []string {
+	var extra []string
+	for _, tableName := range sortedTableNames(current.Tables) {
+		if _, ok := desired.Tables[tableName]; !ok {
+			extra = append(extra, tableName)
+		}
+	}
+	return extra
+}
+
+func PruneChanges(current, desired Schema) []Change {
+	extra := ExtraTables(current, desired)
+	changes := make([]Change, 0, len(extra))
+	for _, tableName := range extra {
+		changes = append(changes, Change{Action: ActionDropTable, Table: tableName, Destructive: true})
+	}
+	return changes
+}
+
 func ClassifyChange(change Change) (Risk, bool) {
 	switch change.Action {
 	case ActionCreateTable, ActionAddColumn:

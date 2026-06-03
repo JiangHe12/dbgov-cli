@@ -114,6 +114,31 @@ func TestDiffDoesNotDropTablesMissingFromDesired(t *testing.T) {
 	}
 }
 
+func TestExtraTablesAndPruneChanges(t *testing.T) {
+	current := Schema{Tables: map[string]Table{
+		"users":  {Name: "users", Columns: []Column{{Name: "id", Type: "BIGINT"}}},
+		"orders": {Name: "orders", Columns: []Column{{Name: "id", Type: "BIGINT"}}},
+		"logs":   {Name: "logs", Columns: []Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+	desired := Schema{Tables: map[string]Table{
+		"users": {Name: "users", Columns: []Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+
+	extra := ExtraTables(current, desired)
+	if len(extra) != 2 || extra[0] != "logs" || extra[1] != "orders" {
+		t.Fatalf("ExtraTables() = %+v, want sorted logs/orders", extra)
+	}
+	prune := PruneChanges(current, desired)
+	if len(prune) != 2 {
+		t.Fatalf("PruneChanges() = %+v, want 2", prune)
+	}
+	for i, name := range extra {
+		if prune[i].Action != ActionDropTable || prune[i].Table != name || !prune[i].Destructive {
+			t.Fatalf("prune[%d] = %+v, want DROP_TABLE %s destructive", i, prune[i], name)
+		}
+	}
+}
+
 func TestLoadDesiredDirMergesSQLFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeSchemaTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT);")
