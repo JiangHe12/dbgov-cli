@@ -41,7 +41,7 @@ func newAuditCmd(f *cliFlags) *cobra.Command {
 		Use:   "audit",
 		Short: "Query and verify audit logs",
 	}
-	cmd.AddCommand(auditQueryCmd(f), auditVerifyCmd(f))
+	cmd.AddCommand(auditQueryCmd(f), auditPruneCmd(f), auditVerifyCmd(f))
 	return cmd
 }
 

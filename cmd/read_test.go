@@ -1466,6 +1466,98 @@ func TestAuditVerifyReportsMalformedAndStrictFails(t *testing.T) {
 	}
 }
 
+func TestAuditPruneBeforeDryRunAndConfirm(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	path := filepath.Join(home, "audit.log")
+	active := writeTestFile(t, home, "audit.log", "active\n")
+	old := writeTestFile(t, home, "audit.log.20260101-000000.log", "old\n")
+	newer := writeTestFile(t, home, "audit.log.20260201-000000.log", "newer\n")
+
+	out, _, err := executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--before", "2026-01-15T00:00:00Z")
+	if err != nil {
+		t.Fatalf("audit prune dry-run error = %v", err)
+	}
+	if !strings.Contains(out, `"kind": "AuditPruneResult"`) || !strings.Contains(out, `"dryRun": true`) || !strings.Contains(out, filepath.Base(old)) {
+		t.Fatalf("audit prune dry-run output = %s", out)
+	}
+	for _, filePath := range []string{active, old, newer} {
+		if _, err := os.Stat(filePath); err != nil {
+			t.Fatalf("dry-run should keep %s: %v", filePath, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".dbgov", "audit.log")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run should not write prune audit event, stat err = %v", err)
+	}
+
+	out, _, err = executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--before", "2026-01-15", "--confirm")
+	if err != nil {
+		t.Fatalf("audit prune confirm error = %v", err)
+	}
+	if !strings.Contains(out, `"dryRun": false`) || !strings.Contains(out, `"count": 1`) {
+		t.Fatalf("audit prune confirm output = %s", out)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("old rotated log should be deleted, stat err = %v", err)
+	}
+	for _, filePath := range []string{active, newer} {
+		if _, err := os.Stat(filePath); err != nil {
+			t.Fatalf("confirm should keep %s: %v", filePath, err)
+		}
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeAuditPrune || evt.Target.ObjectType != "audit" || evt.Target.Object != "prune" || evt.Status != dbgaudit.StatusSucceeded || !strings.Contains(evt.Statement, "pruned 1 rotated audit logs") {
+		t.Fatalf("audit prune event = %+v", evt)
+	}
+}
+
+func TestAuditPruneKeepLastNeverDeletesActiveLog(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	path := filepath.Join(home, "audit.log")
+	active := writeTestFile(t, home, "audit.log", "active\n")
+	first := writeTestFile(t, home, "audit.log.20260101-000000.log", "first\n")
+	second := writeTestFile(t, home, "audit.log.20260201-000000.log", "second\n")
+	third := writeTestFile(t, home, "audit.log.20260301-000000.log", "third\n")
+
+	out, _, err := executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--keep-last", "1", "--confirm")
+	if err != nil {
+		t.Fatalf("audit prune keep-last error = %v", err)
+	}
+	if !strings.Contains(out, `"count": 2`) || !strings.Contains(out, filepath.Base(first)) || !strings.Contains(out, filepath.Base(second)) || strings.Contains(out, filepath.Base(third)) {
+		t.Fatalf("audit prune keep-last output = %s", out)
+	}
+	for _, filePath := range []string{first, second} {
+		if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+			t.Fatalf("%s should be deleted, stat err = %v", filePath, err)
+		}
+	}
+	for _, filePath := range []string{active, third} {
+		if _, err := os.Stat(filePath); err != nil {
+			t.Fatalf("%s should remain: %v", filePath, err)
+		}
+	}
+}
+
+func TestAuditPruneRejectsInvalidSelection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	path := filepath.Join(home, "audit.log")
+
+	cases := [][]string{
+		{"audit", "prune", "--path", path},
+		{"audit", "prune", "--path", path, "--before", "30d", "--keep-last", "1"},
+		{"audit", "prune", "--path", path, "--keep-last", "-2"},
+	}
+	for _, args := range cases {
+		if _, _, err := executeCommandForTest(args...); err == nil {
+			t.Fatalf("expected audit prune args to fail: %v", args)
+		}
+	}
+}
+
 func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
