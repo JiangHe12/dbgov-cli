@@ -36,8 +36,9 @@ func NewRootCmd() *cobra.Command {
 
 func newRootCmdWith(f *cliFlags) *cobra.Command {
 	root := &cobra.Command{
-		Use:           "dbgov",
+		Use:           "dbgov-cli",
 		Short:         "Governed database operations for AI agents",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {

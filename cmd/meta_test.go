@@ -39,6 +39,23 @@ func TestVersionJSON(t *testing.T) {
 	}
 }
 
+func TestRootVersionFlag(t *testing.T) {
+	SetVersionInfo("v0.0.0-test", "deadbeef", "2026-06-02")
+	defer SetVersionInfo("dev", "", "")
+
+	var out, errOut bytes.Buffer
+	cmd := NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"--version"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v, stderr=%s", err, errOut.String())
+	}
+	if got := out.String(); got != "dbgov-cli version v0.0.0-test\n" {
+		t.Fatalf("unexpected --version output: %q", got)
+	}
+}
+
 func TestGoldenCapabilities(t *testing.T) {
 	var out, errOut bytes.Buffer
 	cmd := NewRootCmd()

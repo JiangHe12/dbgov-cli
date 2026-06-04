@@ -1,7 +1,7 @@
 ---
 name: dbgov-cli
 description: Governed database operations via CLI — query, schema diff/plan/apply, governed DML, GitOps import/reconcile/rollback, audit. MySQL.
-allowed-tools: Bash(dbgov:*), Bash(go:*)
+allowed-tools: Bash(dbgov-cli:*), Bash(go:*)
 ---
 
 # dbgov-cli — AI Agent Reference
@@ -12,9 +12,9 @@ allowed-tools: Bash(dbgov:*), Bash(go:*)
 
 **Always use `-o json` for agent-consumed output.** stdout is clean JSON/table/plain output; errors go to stderr.
 
-**MySQL only in the current release.** PostgreSQL is planned as a fast-follow, but do not assume PG support unless `dbgov capabilities -o json` says it is available.
+**MySQL only in the current release.** PostgreSQL is planned as a fast-follow, but do not assume PG support unless `dbgov-cli capabilities -o json` says it is available.
 
-**Never estimate blast radius yourself.** Impact must come from dbgov commands such as `dbgov explain`, `dbgov schema plan`, or command `--dry-run` output. If dbgov cannot measure impact, it fails closed instead of guessing.
+**Never estimate blast radius yourself.** Impact must come from dbgov commands such as `dbgov-cli explain`, `dbgov-cli schema plan`, or command `--dry-run` output. If dbgov cannot measure impact, it fails closed instead of guessing.
 
 ---
 
@@ -35,11 +35,11 @@ allowed-tools: Bash(dbgov:*), Bash(go:*)
 
 | Operation | Required allow flag |
 |---|---|
-| `dbgov schema apply` or `dbgov import` with DROP COLUMN or MODIFY COLUMN | `--allow-destructive` |
-| `dbgov data exec` with no-WHERE UPDATE/DELETE | `--allow-no-where` |
-| `dbgov reconcile --prune` dropping tables | `--allow-production-prune` |
-| `dbgov rollback --to` restoring structure with dropped columns | `--allow-destructive` |
-| `dbgov rollback --to` restoring structure with dropped tables | `--allow-production-prune` |
+| `dbgov-cli schema apply` or `dbgov-cli import` with DROP COLUMN or MODIFY COLUMN | `--allow-destructive` |
+| `dbgov-cli data exec` with no-WHERE UPDATE/DELETE | `--allow-no-where` |
+| `dbgov-cli reconcile --prune` dropping tables | `--allow-production-prune` |
+| `dbgov-cli rollback --to` restoring structure with dropped columns | `--allow-destructive` |
+| `dbgov-cli rollback --to` restoring structure with dropped tables | `--allow-production-prune` |
 
 Rollback has an R2 floor even when the generated plan is incremental. If rollback includes both dropped columns and dropped tables, both allow flags are required.
 
@@ -53,7 +53,7 @@ RBAC applies to write paths only. If roles are configured for a context:
 | writer | R2 |
 | admin | R3 |
 
-Use `dbgov ctx role set`, `dbgov ctx role unset`, and `dbgov ctx role list` to manage local context roles.
+Use `dbgov-cli ctx role set`, `dbgov-cli ctx role unset`, and `dbgov-cli ctx role list` to manage local context roles.
 
 ### Snapshots and Rollback
 
@@ -64,10 +64,10 @@ Before schema mutations (`schema apply`, `import`, `reconcile`, `rollback`), dbg
 Every operation, including denied and failed operations, appends a JSON audit event to `~/.dbgov/audit.log`. Use:
 
 ```bash
-dbgov audit query -o json
-dbgov audit verify -o json
-dbgov audit prune --before 30d -o json
-dbgov audit prune --keep-last 10 --confirm -o json
+dbgov-cli audit query -o json
+dbgov-cli audit verify -o json
+dbgov-cli audit prune --before 30d -o json
+dbgov-cli audit prune --keep-last 10 --confirm -o json
 ```
 
 `audit prune` only deletes rotated audit logs. It never deletes the active `audit.log`; it is dry-run by default and requires `--confirm` to remove files.
@@ -77,8 +77,8 @@ dbgov audit prune --keep-last 10 --confirm -o json
 Contexts resolve credentials through literal passwords, credstore references, or `DBGOV_PASSWORD`. Prefer secure backends:
 
 ```bash
-dbgov ctx migrate-credentials --to encrypted-file -o json
-dbgov ctx migrate-credentials --to keychain --context prod -o json
+dbgov-cli ctx migrate-credentials --to encrypted-file -o json
+dbgov-cli ctx migrate-credentials --to keychain --context prod -o json
 ```
 
 ---
@@ -88,15 +88,15 @@ dbgov ctx migrate-credentials --to keychain --context prod -o json
 Check capabilities and active context first:
 
 ```bash
-dbgov capabilities -o json
-dbgov ctx current -o json
+dbgov-cli capabilities -o json
+dbgov-cli ctx current -o json
 ```
 
 If no context exists, ask the user for MySQL host, database, username, and credential handling, then create and select one:
 
 ```bash
-DBGOV_PASSWORD='<password>' dbgov ctx set prod --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected -o json
-dbgov ctx use prod -o json
+DBGOV_PASSWORD='<password>' dbgov-cli ctx set prod --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected -o json
+dbgov-cli ctx use prod -o json
 ```
 
 ---
@@ -106,38 +106,38 @@ dbgov ctx use prod -o json
 ### Metadata and Diagnostics
 
 ```bash
-dbgov version -o json
-dbgov capabilities -o json
-dbgov doctor config -o json
-dbgov doctor network -o json
-dbgov doctor auth -o json
+dbgov-cli version -o json
+dbgov-cli capabilities -o json
+dbgov-cli doctor config -o json
+dbgov-cli doctor network -o json
+dbgov-cli doctor auth -o json
 ```
 
 ### Contexts and Roles
 
 ```bash
-dbgov ctx list -o json
-dbgov ctx current -o json
-dbgov ctx set <name> --engine mysql --host <host> --port 3306 --database <db> --username <user> -o json
-dbgov ctx use <name> -o json
-dbgov ctx delete <name> -o json
-dbgov ctx role set <context> --target-operator alice --role writer -o json
-dbgov ctx role unset <context> --target-operator alice -o json
-dbgov ctx role list <context> -o json
-dbgov ctx export <name> -o json
-dbgov ctx export <name> --include-credentials -o json
-dbgov ctx import -f ctx.yaml --rename <new-name> --force -o json
-dbgov ctx migrate-credentials --to encrypted-file --context <name> -o json
+dbgov-cli ctx list -o json
+dbgov-cli ctx current -o json
+dbgov-cli ctx set <name> --engine mysql --host <host> --port 3306 --database <db> --username <user> -o json
+dbgov-cli ctx use <name> -o json
+dbgov-cli ctx delete <name> -o json
+dbgov-cli ctx role set <context> --target-operator alice --role writer -o json
+dbgov-cli ctx role unset <context> --target-operator alice -o json
+dbgov-cli ctx role list <context> -o json
+dbgov-cli ctx export <name> -o json
+dbgov-cli ctx export <name> --include-credentials -o json
+dbgov-cli ctx import -f ctx.yaml --rename <new-name> --force -o json
+dbgov-cli ctx migrate-credentials --to encrypted-file --context <name> -o json
 ```
 
-`ctx export` redacts `password` by default. `--include-credentials` is only valid for `plain-yaml` or empty credential backends; encrypted-file, keychain, and vault credentials must be shared out of band. `ctx import` accepts portable context YAML, supports `--rename` and `--force`, and leaves redacted credentials empty so the operator can run `dbgov ctx set <name> --password=...`.
+`ctx export` redacts `password` by default. `--include-credentials` is only valid for `plain-yaml` or empty credential backends; encrypted-file, keychain, and vault credentials must be shared out of band. `ctx import` accepts portable context YAML, supports `--rename` and `--force`, and leaves redacted credentials empty so the operator can run `dbgov-cli ctx set <name> --password=...`.
 
 ### Read Queries
 
 Read-only SQL:
 
 ```bash
-dbgov query --sql "SELECT id, name FROM users" -o json
+dbgov-cli query --sql "SELECT id, name FROM users" -o json
 ```
 
 `query` rejects writes. Use `data exec` for DML and `schema apply` for DDL.
@@ -145,17 +145,17 @@ dbgov query --sql "SELECT id, name FROM users" -o json
 Execution plan and estimated impact:
 
 ```bash
-dbgov explain --sql "SELECT * FROM users WHERE active = 1" -o json
+dbgov-cli explain --sql "SELECT * FROM users WHERE active = 1" -o json
 ```
 
 ### Schema Read and Planning
 
 ```bash
-dbgov schema list -o json
-dbgov schema describe users -o json
-dbgov schema dump --dir ./schema -o json
-dbgov schema diff -f desired.sql -o json
-dbgov schema plan -f desired.sql -o json
+dbgov-cli schema list -o json
+dbgov-cli schema describe users -o json
+dbgov-cli schema dump --dir ./schema -o json
+dbgov-cli schema diff -f desired.sql -o json
+dbgov-cli schema plan -f desired.sql -o json
 ```
 
 Use `schema plan` before `schema apply`. Treat plan risk and warnings as authoritative.
@@ -165,19 +165,19 @@ Use `schema plan` before `schema apply`. Treat plan risk and warnings as authori
 Preview:
 
 ```bash
-dbgov schema apply -f desired.sql --dry-run -o json
+dbgov-cli schema apply -f desired.sql --dry-run -o json
 ```
 
 Incremental R1 apply:
 
 ```bash
-dbgov schema apply -f desired.sql --yes -o json
+dbgov-cli schema apply -f desired.sql --yes -o json
 ```
 
 Destructive R3 apply:
 
 ```bash
-dbgov schema apply -f desired.sql --ticket DB-123 --allow-destructive --yes -o json
+dbgov-cli schema apply -f desired.sql --ticket DB-123 --allow-destructive --yes -o json
 ```
 
 ### Governed DML
@@ -185,31 +185,31 @@ dbgov schema apply -f desired.sql --ticket DB-123 --allow-destructive --yes -o j
 Preview impact and authorization:
 
 ```bash
-dbgov data exec --sql "UPDATE users SET active = 0 WHERE last_seen < '2025-01-01'" --dry-run -o json
+dbgov-cli data exec --sql "UPDATE users SET active = 0 WHERE last_seen < '2025-01-01'" --dry-run -o json
 ```
 
 Small-impact R1 DML:
 
 ```bash
-dbgov data exec --sql "UPDATE users SET active = 0 WHERE id = 42" --yes -o json
+dbgov-cli data exec --sql "UPDATE users SET active = 0 WHERE id = 42" --yes -o json
 ```
 
 Large-impact R2 DML:
 
 ```bash
-dbgov data exec --sql "UPDATE users SET active = 0 WHERE last_seen < '2025-01-01'" --ticket DB-123 --yes -o json
+dbgov-cli data exec --sql "UPDATE users SET active = 0 WHERE last_seen < '2025-01-01'" --ticket DB-123 --yes -o json
 ```
 
 No-WHERE R3 UPDATE/DELETE:
 
 ```bash
-dbgov data exec --sql "DELETE FROM sessions" --ticket DB-123 --allow-no-where --yes -o json
+dbgov-cli data exec --sql "DELETE FROM sessions" --ticket DB-123 --allow-no-where --yes -o json
 ```
 
 You may also read DML from a file:
 
 ```bash
-dbgov data exec -f change.sql --dry-run -o json
+dbgov-cli data exec -f change.sql --dry-run -o json
 ```
 
 ### GitOps Schema
@@ -217,29 +217,29 @@ dbgov data exec -f change.sql --dry-run -o json
 Export current schema:
 
 ```bash
-dbgov export --dir ./schema -o json
+dbgov-cli export --dir ./schema -o json
 ```
 
 Import desired schema directory:
 
 ```bash
-dbgov import ./schema --dry-run -o json
-dbgov import ./schema --yes -o json
-dbgov import ./schema --ticket DB-123 --allow-destructive --yes -o json
+dbgov-cli import ./schema --dry-run -o json
+dbgov-cli import ./schema --yes -o json
+dbgov-cli import ./schema --ticket DB-123 --allow-destructive --yes -o json
 ```
 
 Reconcile with drift detection:
 
 ```bash
-dbgov reconcile ./schema --dry-run -o json
-dbgov reconcile ./schema --yes -o json
+dbgov-cli reconcile ./schema --dry-run -o json
+dbgov-cli reconcile ./schema --yes -o json
 ```
 
 Prune extra database tables only when the user explicitly authorizes it:
 
 ```bash
-dbgov reconcile ./schema --prune --dry-run -o json
-dbgov reconcile ./schema --prune --ticket DB-123 --allow-production-prune --yes -o json
+dbgov-cli reconcile ./schema --prune --dry-run -o json
+dbgov-cli reconcile ./schema --prune --ticket DB-123 --allow-production-prune --yes -o json
 ```
 
 If the same reconcile plan also drops or modifies columns, add `--allow-destructive` too.
@@ -249,20 +249,20 @@ If the same reconcile plan also drops or modifies columns, add `--allow-destruct
 List snapshots:
 
 ```bash
-dbgov rollback list -o json
+dbgov-cli rollback list -o json
 ```
 
 Preview structure-level restore:
 
 ```bash
-dbgov rollback --to <snapshot-id> --dry-run -o json
+dbgov-cli rollback --to <snapshot-id> --dry-run -o json
 ```
 
 Execute rollback:
 
 ```bash
-dbgov rollback --to <snapshot-id> --ticket DB-123 --yes -o json
-dbgov rollback --to <snapshot-id> --ticket DB-123 --allow-destructive --allow-production-prune --yes -o json
+dbgov-cli rollback --to <snapshot-id> --ticket DB-123 --yes -o json
+dbgov-cli rollback --to <snapshot-id> --ticket DB-123 --allow-destructive --allow-production-prune --yes -o json
 ```
 
 Rollback restores schema structure only. Dropped table/column data is not recovered.
@@ -270,15 +270,15 @@ Rollback restores schema structure only. Dropped table/column data is not recove
 ### Audit
 
 ```bash
-dbgov audit query --since 24h --risk R2 -o json
-dbgov audit verify -o json
-dbgov audit prune --before 30d -o json
-dbgov audit prune --keep-last 20 --confirm -o json
+dbgov-cli audit query --since 24h --risk R2 -o json
+dbgov-cli audit verify -o json
+dbgov-cli audit prune --before 30d -o json
+dbgov-cli audit prune --keep-last 20 --confirm -o json
 ```
 
 Use `--path` only when inspecting a non-default audit log:
 
 ```bash
-dbgov audit query --path ./audit.log --limit 50 --reverse -o json
-dbgov audit prune --path ./audit.log --before 2026-06-01 --confirm -o json
+dbgov-cli audit query --path ./audit.log --limit 50 --reverse -o json
+dbgov-cli audit prune --path ./audit.log --before 2026-06-01 --confirm -o json
 ```

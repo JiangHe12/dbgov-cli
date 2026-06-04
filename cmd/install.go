@@ -48,10 +48,10 @@ Preset agents:
   aider       -> ~/.aider/skills/
 
 Custom path:
-  dbgov install /my/path --skills  -> /my/path/dbgov-cli/`,
-		Example: `  dbgov install claude --skills
-  dbgov install codex --skills
-  dbgov install /custom/path --skills`,
+  dbgov-cli install /my/path --skills  -> /my/path/dbgov-cli/`,
+		Example: `  dbgov-cli install claude --skills
+  dbgov-cli install codex --skills
+  dbgov-cli install /custom/path --skills`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			skills, _ := cmd.Flags().GetBool("skills")

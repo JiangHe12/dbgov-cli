@@ -21,11 +21,11 @@ GitHub Releases 提供多平台二进制。npm 安装会下载匹配平台的二
 ## 快速开始
 
 ```bash
-DBGOV_PASSWORD='<password>' dbgov ctx set local --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser -o json
-dbgov ctx use local -o json
-dbgov query --sql "SELECT 1" -o json
-dbgov explain --sql "SELECT * FROM users WHERE id = 1" -o json
-dbgov schema list -o json
+DBGOV_PASSWORD='<password>' dbgov-cli ctx set local --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser -o json
+dbgov-cli ctx use local -o json
+dbgov-cli query --sql "SELECT 1" -o json
+dbgov-cli explain --sql "SELECT * FROM users WHERE id = 1" -o json
+dbgov-cli schema list -o json
 ```
 
 自动化和 AI agent 始终使用 `-o json`。
@@ -41,30 +41,30 @@ dbgov schema list -o json
 
 allow flag 精确按类别:删列/改类型用 `--allow-destructive`,无 WHERE DML 用 `--allow-no-where`,删表 prune 用 `--allow-production-prune`。rollback 至少 R2,并可能同时需要 destructive/prune 两类 allow flag。若 context 设置了 `ticketPattern`,ticket 必须匹配;默认不强制正则。
 
-RBAC 只作用于写路径:`reader` 为 R0,`writer` 最高 R2,`admin` 最高 R3。AI 和自动化绝不能自动填 `--ticket`、`--allow-*` 或高风险 `--yes`。影响面必须来自 `dbgov explain`、`schema plan` 或 `--dry-run`,不能由模型猜测。
+RBAC 只作用于写路径:`reader` 为 R0,`writer` 最高 R2,`admin` 最高 R3。AI 和自动化绝不能自动填 `--ticket`、`--allow-*` 或高风险 `--yes`。影响面必须来自 `dbgov-cli explain`、`schema plan` 或 `--dry-run`,不能由模型猜测。
 
 所有操作,包括 denied/failed,都会追加到 `~/.dbgov/audit.log`。使用 `audit query`、`audit verify`、`audit prune` 检视、校验和清理轮转日志。
 
 ## 常用命令
 
 ```bash
-dbgov version -o json
-dbgov capabilities -o json
-dbgov doctor config -o json
-dbgov ctx list -o json
-dbgov ctx export local > local.ctx.yaml
-dbgov ctx import -f local.ctx.yaml --rename local-copy -o json
-dbgov query --sql "SELECT * FROM users" -o json
-dbgov explain --sql "SELECT * FROM users WHERE active = 1" -o json
-dbgov schema dump --dir ./schema -o json
-dbgov schema plan -f desired.sql -o json
-dbgov schema apply -f desired.sql --dry-run -o json
-dbgov data exec --sql "UPDATE users SET active=0 WHERE id=1" --dry-run -o json
-dbgov export --dir ./schema -o json
-dbgov import ./schema --dry-run -o json
-dbgov reconcile ./schema --dry-run -o json
-dbgov rollback list -o json
-dbgov audit query --since 24h -o json
+dbgov-cli version -o json
+dbgov-cli capabilities -o json
+dbgov-cli doctor config -o json
+dbgov-cli ctx list -o json
+dbgov-cli ctx export local > local.ctx.yaml
+dbgov-cli ctx import -f local.ctx.yaml --rename local-copy -o json
+dbgov-cli query --sql "SELECT * FROM users" -o json
+dbgov-cli explain --sql "SELECT * FROM users WHERE active = 1" -o json
+dbgov-cli schema dump --dir ./schema -o json
+dbgov-cli schema plan -f desired.sql -o json
+dbgov-cli schema apply -f desired.sql --dry-run -o json
+dbgov-cli data exec --sql "UPDATE users SET active=0 WHERE id=1" --dry-run -o json
+dbgov-cli export --dir ./schema -o json
+dbgov-cli import ./schema --dry-run -o json
+dbgov-cli reconcile ./schema --dry-run -o json
+dbgov-cli rollback list -o json
+dbgov-cli audit query --since 24h -o json
 ```
 
 ## 配置和 Context
@@ -72,10 +72,10 @@ dbgov audit query --since 24h -o json
 Context 存在 `~/.dbgov`。通过 `ctx set/use/current/list` 管理。凭据可在初始化时使用字面量,也可从 `DBGOV_PASSWORD` 读取,并迁移到安全后端:
 
 ```bash
-dbgov ctx export prod > prod.ctx.yaml
-dbgov ctx import -f prod.ctx.yaml --rename prod-copy -o json
-dbgov ctx migrate-credentials --to encrypted-file -o json
-dbgov ctx role set prod --target-operator alice --role writer -o json
+dbgov-cli ctx export prod > prod.ctx.yaml
+dbgov-cli ctx import -f prod.ctx.yaml --rename prod-copy -o json
+dbgov-cli ctx migrate-credentials --to encrypted-file -o json
+dbgov-cli ctx role set prod --target-operator alice --role writer -o json
 ```
 
 可移植 context 导出默认会脱敏 password。`--include-credentials` 仅允许 `plain-yaml` 或空凭据后端;安全后端凭据必须通过带外方式共享。
@@ -100,8 +100,8 @@ MySQL 集成测试通过 `DBGOV_TEST_MYSQL_DSN` 显式启用。
 ## AI Skill
 
 ```bash
-dbgov install claude --skills
-dbgov install codex --skills
+dbgov-cli install claude --skills
+dbgov-cli install codex --skills
 ```
 
 ## 贡献、安全、许可证

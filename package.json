@@ -3,7 +3,8 @@
   "version": "0.1.2",
   "description": "Governed MySQL operations CLI for AI agents",
   "bin": {
-    "dbgov": "bin/dbgov-cli.js"
+    "dbgov": "bin/dbgov-cli.js",
+    "dbgov-cli": "bin/dbgov-cli.js"
   },
   "files": [
     "bin/",

@@ -54,7 +54,7 @@ func TestSkillFrontmatter(t *testing.T) {
 	for _, want := range []string{
 		"---\nname: dbgov-cli",
 		"description: Governed database operations via CLI",
-		"allowed-tools: Bash(dbgov:*), Bash(go:*)",
+		"allowed-tools: Bash(dbgov-cli:*), Bash(go:*)",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("SKILL.md frontmatter missing %q", want)
@@ -74,7 +74,7 @@ func TestSkillGovernanceRules(t *testing.T) {
 		"writer | R2",
 		"admin | R3",
 		"Rollback is structure-level only",
-		"dbgov audit prune",
+		"dbgov-cli audit prune",
 		"`--allow-destructive`",
 		"`--allow-no-where`",
 		"`--allow-production-prune`",
@@ -119,7 +119,7 @@ func TestSkillCommandsExistInCobraTree(t *testing.T) {
 		"audit prune",
 	} {
 		if !known[path] {
-			t.Errorf("SKILL.md command path `dbgov %s` is not in the cobra command tree", path)
+			t.Errorf("SKILL.md command path `dbgov-cli %s` is not in the cobra command tree", path)
 		}
 	}
 }
