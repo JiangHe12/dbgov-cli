@@ -1,6 +1,6 @@
 {
   "name": "dbgov-cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Governed MySQL operations CLI for AI agents",
   "bin": {
     "dbgov": "bin/dbgov-cli.js"

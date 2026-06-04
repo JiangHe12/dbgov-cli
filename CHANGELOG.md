@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## v0.1.2
+
+### Changed
+
+- Updated opskit-core dependency to v1.0.2.
+- Bumped Go minor and patch dependencies.
+
 ## v0.1.1
 
 ### Fixed
