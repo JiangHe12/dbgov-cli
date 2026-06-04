@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Honor the opskit-core exit-code contract at the process boundary (previously every error exited 1; now AUTHORIZATION_REQUIRED -> 8, VALIDATION_FAILED -> 9, etc.).
+
 ## v0.1.3
 
 ### Fixed
