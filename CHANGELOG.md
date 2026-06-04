@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## v0.1.1
+
+### Fixed
+
+- Enforced LF line endings via `.gitattributes` to fix Windows CI failures.
+- Normalized CRLF line endings in skill frontmatter test for cross-platform compatibility.
+
 ## v0.1.0
 
 _First public release. MySQL only; PostgreSQL is the fast-follow._
