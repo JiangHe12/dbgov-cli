@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## v0.1.3
+
+### Fixed
+
+- Exposed `dbgov-cli` npm command as the primary entry point.
+- Kept `dbgov` alias for backward compatibility.
+- Added root `--version` flag.
+- Updated install/skill docs to use `dbgov-cli install ... --skills`.
+
 ## v0.1.2
 
 ### Changed
