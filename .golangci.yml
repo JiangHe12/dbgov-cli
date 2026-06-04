@@ -59,6 +59,11 @@ linters:
     errcheck:
       check-type-assertions: true
       check-blank: false
+      # Console/status writes cannot be usefully recovered; real non-print errors remain checked.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
     gocyclo:
       min-complexity: 15
     nestif:
@@ -103,6 +108,8 @@ linters:
           - gocyclo
           - dupl
           - gosec
+          - errcheck
+          - forcetypeassert
       # Cobra command construction is long by nature
       - path: cmd/.*\.go
         linters:
