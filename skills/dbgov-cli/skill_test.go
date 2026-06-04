@@ -46,7 +46,7 @@ func loadSkillBody(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("read SKILL.md: %v", err)
 	}
-	return string(data)
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
 }
 
 func TestSkillFrontmatter(t *testing.T) {
