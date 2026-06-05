@@ -341,7 +341,7 @@ func runSchemaDescribe(f *cliFlags, opts schemaReadOptions, table string) error 
 	}
 	tbl, ok := current.Tables[table]
 	if !ok {
-		err := fmt.Errorf("table not found: %s", table)
+		err := apperrors.New(apperrors.CodeResourceNotFound, fmt.Sprintf("table not found: %s", table), nil)
 		emitAudit(f, event, err)
 		return err
 	}

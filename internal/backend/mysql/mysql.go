@@ -67,9 +67,6 @@ ORDER BY table_name, ordinal_position`, b.database)
 	if err := rows.Err(); err != nil {
 		return schema.Schema{}, err
 	}
-	if len(result.Tables) == 0 {
-		return result, fmt.Errorf("no tables found in database %q", b.database)
-	}
 	if err := b.loadIndexes(ctx, &result); err != nil {
 		return schema.Schema{}, err
 	}

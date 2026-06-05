@@ -134,6 +134,19 @@ func TestSchemaListDescribeDumpFakeBackend(t *testing.T) {
 	}
 }
 
+func TestSchemaDescribeMissingTableReturnsNotFoundExitCode(t *testing.T) {
+	_, err := executeCommandForTest("schema", "describe", "missing", "--fake")
+	if err == nil {
+		t.Fatal("schema describe missing table error = nil, want resource not found")
+	}
+	if code := apperrors.ExitCode(err); code != 4 {
+		t.Fatalf("ExitCode() = %d, want 4; err = %v", code, err)
+	}
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeResourceNotFound {
+		t.Fatalf("error code = %s, want %s", got, apperrors.CodeResourceNotFound)
+	}
+}
+
 func TestSchemaDumpWritesDirectory(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

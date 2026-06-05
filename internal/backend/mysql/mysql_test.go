@@ -56,6 +56,35 @@ func TestIntrospectSchemaQueriesInformationSchema(t *testing.T) {
 	}
 }
 
+func TestIntrospectSchemaAllowsEmptyDatabase(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "emptydb")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, column_name, column_type, is_nullable, column_default, column_key\nFROM information_schema.columns\nWHERE table_schema = ?\nORDER BY table_name, ordinal_position")).
+		WithArgs("emptydb").
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "is_nullable", "column_default", "column_key"}))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, index_name, column_name, non_unique, seq_in_index\nFROM information_schema.statistics\nWHERE table_schema = ?\nORDER BY table_name, index_name, seq_in_index")).
+		WithArgs("emptydb").
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "index_name", "column_name", "non_unique", "seq_in_index"}))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT kcu.table_name, kcu.constraint_name, kcu.column_name, kcu.referenced_table_name, kcu.referenced_column_name, kcu.ordinal_position\nFROM information_schema.key_column_usage kcu\nJOIN information_schema.referential_constraints rc\n  ON rc.constraint_schema = kcu.constraint_schema\n AND rc.constraint_name = kcu.constraint_name\nWHERE kcu.table_schema = ?\n  AND kcu.referenced_table_name IS NOT NULL\nORDER BY kcu.table_name, kcu.constraint_name, kcu.ordinal_position")).
+		WithArgs("emptydb").
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "constraint_name", "column_name", "referenced_table_name", "referenced_column_name", "ordinal_position"}))
+
+	got, err := backend.IntrospectSchema(context.Background())
+	if err != nil {
+		t.Fatalf("IntrospectSchema() error = %v", err)
+	}
+	if len(got.Tables) != 0 {
+		t.Fatalf("Tables = %+v, want empty", got.Tables)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestTableDDLUsesShowCreateTable(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
