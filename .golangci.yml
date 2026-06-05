@@ -55,6 +55,9 @@ linters:
     # logging
     - sloglint
 
+    # contract enforcement
+    - forbidigo
+
   settings:
     errcheck:
       check-type-assertions: true
@@ -72,6 +75,13 @@ linters:
       threshold: 100
     misspell:
       locale: US
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '^fmt\.Errorf$'
+          msg: "in cmd/, build errors with apperrors.New(code, msg, cause); bare fmt.Errorf falls back to LOCAL_IO_ERROR (exit 6) and breaks the exit-code contract"
+        - pattern: '^errors\.New$'
+          msg: "in cmd/, use apperrors.New(code, msg, nil) instead of errors.New"
     gosec:
       excludes:
         - G104  # unhandled errors — covered by errcheck with finer control
@@ -115,6 +125,13 @@ linters:
         linters:
           - gocyclo
         text: "cyclomatic complexity .* of func .*new.*Cmd"
+      # forbidigo only governs the user-facing command layer (cmd/)
+      - path: '(^|/)(internal|pkg|skills)/'
+        linters:
+          - forbidigo
+      - path: _test\.go
+        linters:
+          - forbidigo
 
 formatters:
   enable:

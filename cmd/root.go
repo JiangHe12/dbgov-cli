@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/JiangHe12/opskit-core/apperrors"
 	"github.com/JiangHe12/opskit-core/printer"
 	"github.com/JiangHe12/opskit-core/telemetry"
 
@@ -140,7 +141,7 @@ func commandContext(f *cliFlags) context.Context {
 func requireExactArgs(name string) cobra.PositionalArgs {
 	return func(cmd *cobra.Command, args []string) error {
 		if len(args) != 1 {
-			return fmt.Errorf("%s requires 1 argument(s)", name)
+			return apperrors.New(apperrors.CodeUsageError, fmt.Sprintf("%s requires 1 argument(s)", name), nil)
 		}
 		return nil
 	}

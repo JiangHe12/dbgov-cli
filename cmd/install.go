@@ -89,7 +89,7 @@ func resolveInstallDir(target string) (string, error) {
 	if skillsDir, ok := agentPaths[strings.ToLower(target)]; ok {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "", fmt.Errorf("failed to get home directory: %w", err)
+			return "", apperrors.New(apperrors.CodeLocalIOError, "failed to get home directory", err)
 		}
 		return filepath.Join(home, skillsDir), nil
 	}

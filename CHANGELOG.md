@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- chore(lint): forbid bare fmt.Errorf/errors.New in cmd/ so the apperrors exit-code contract is mechanically enforced in CI.
+
 ## v0.1.5
 
 ### Fixed
