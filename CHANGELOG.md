@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## v0.1.5
+
+### Fixed
+
+- fix(schema): introspect empty databases instead of failing, enabling greenfield apply/import.
+- fix(schema): return RESOURCE_NOT_FOUND (exit 4) when describing a missing table.
+
 ## v0.1.4
 
 ### Fixed
