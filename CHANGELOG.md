@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## v0.1.7
+
+### Changed
+
+- chore: bump opskit-core to v1.0.3 (hardens Cobra usage-error exit-code classification at the engine level).
+
+### Tests
+
+- add exit-code & `-o json` contract regression tests, incl. unknown-command → USAGE_ERROR/exit 1.
+
 ## v0.1.6
 
 ### Changed
