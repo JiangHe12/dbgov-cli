@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/JiangHe12/opskit-core/apperrors"
 
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 )
@@ -107,6 +108,22 @@ func TestTableDDLUsesShowCreateTable(t *testing.T) {
 	}
 }
 
+func TestTableDDLMissingTableIsResourceNotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	mock.ExpectQuery(regexp.QuoteMeta("SHOW CREATE TABLE `missing`")).
+		WillReturnRows(sqlmock.NewRows([]string{"Table", "Create Table"}))
+
+	_, err = backend.TableDDL(context.Background(), "missing")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeResourceNotFound {
+		t.Fatalf("error code = %s, want %s; err = %v", got, apperrors.CodeResourceNotFound, err)
+	}
+}
+
 func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 	backend := NewWithDB(nil, "appdb")
 	statements, err := backend.RenderDDL([]schema.Change{
@@ -134,6 +151,26 @@ func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 	}
 }
 
+func TestRenderDDLErrorCodes(t *testing.T) {
+	backend := NewWithDB(nil, "appdb")
+	tests := []struct {
+		name   string
+		change schema.Change
+		code   apperrors.ErrorCode
+	}{
+		{name: "create without columns", change: schema.Change{Action: schema.ActionCreateTable, Table: "empty"}, code: apperrors.CodeValidationFailed},
+		{name: "unsupported action", change: schema.Change{Action: schema.Action("UNKNOWN"), Table: "users"}, code: apperrors.CodeNotImplemented},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := backend.RenderDDL([]schema.Change{tc.change})
+			if got := apperrors.AsAppError(err).Code; got != tc.code {
+				t.Fatalf("error code = %s, want %s; err = %v", got, tc.code, err)
+			}
+		})
+	}
+}
+
 func TestExecDDLStopsAtFirstError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -156,6 +193,9 @@ func TestExecDDLStopsAtFirstError(t *testing.T) {
 	}
 	if executed != 1 {
 		t.Fatalf("executed = %d, want 1", executed)
+	}
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeBackendError {
+		t.Fatalf("error code = %s, want %s; err = %v", got, apperrors.CodeBackendError, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)

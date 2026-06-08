@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## v0.1.8
+
+### Fixed
+
+- `query` and `explain` now accept read-only `WITH [RECURSIVE]` CTE statements (previously rejected as non-read-only). CTEs that wrap a mutation (`WITH … DELETE/UPDATE/INSERT`) stay correctly blocked from the read path.
+- Internal errors now map to correct exit codes instead of LOCAL_IO_ERROR (exit 6): missing table → RESOURCE_NOT_FOUND (4), invalid schema input → VALIDATION_FAILED (9), unsupported DDL → NOT_IMPLEMENTED (12), DDL execution failure → BACKEND_ERROR (7).
+
+### Security
+
+- `query`, `explain`, and `data exec` now reject multi-statement SQL (e.g. `SELECT 1; DELETE …`) — a defense-in-depth guard that holds even when the connection DSN enables multiStatements.
+
 ## v0.1.7
 
 ### Changed

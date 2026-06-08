@@ -9,6 +9,8 @@ import (
 
 	_ "github.com/go-sql-driver/mysql" // Register MySQL database/sql driver.
 
+	"github.com/JiangHe12/opskit-core/apperrors"
+
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 )
@@ -200,7 +202,7 @@ func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
 	}
 	defer func() { _ = rows.Close() }()
 	if !rows.Next() {
-		return "", fmt.Errorf("table %q not found", table)
+		return "", apperrors.New(apperrors.CodeResourceNotFound, fmt.Sprintf("table %q not found", table), nil)
 	}
 	var tableName, ddl string
 	if err := rows.Scan(&tableName, &ddl); err != nil {
@@ -222,7 +224,7 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 				columns = append(columns, renderColumn(column))
 			}
 			if len(columns) == 0 {
-				return nil, fmt.Errorf("CREATE_TABLE %s has no columns", change.Table)
+				return nil, apperrors.New(apperrors.CodeValidationFailed, fmt.Sprintf("CREATE_TABLE %s has no columns", change.Table), nil)
 			}
 			statements = append(statements, fmt.Sprintf("CREATE TABLE `%s` (%s);", escapeIdent(change.Table), strings.Join(columns, ", ")))
 		case schema.ActionAddColumn:
@@ -234,7 +236,7 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 		case schema.ActionDropTable:
 			statements = append(statements, fmt.Sprintf("DROP TABLE `%s`;", escapeIdent(change.Table)))
 		default:
-			return nil, fmt.Errorf("unsupported schema change action %s", change.Action)
+			return nil, apperrors.New(apperrors.CodeNotImplemented, fmt.Sprintf("unsupported schema change action %s", change.Action), nil)
 		}
 	}
 	return statements, nil
@@ -243,7 +245,7 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 func (b *Backend) ExecDDL(ctx context.Context, statements []string) (int, error) {
 	for i, statement := range statements {
 		if _, err := b.db.ExecContext(ctx, statement); err != nil {
-			return i, fmt.Errorf("execute DDL statement %d: %w", i+1, err)
+			return i, apperrors.New(apperrors.CodeBackendError, fmt.Sprintf("execute DDL statement %d", i+1), err)
 		}
 	}
 	return len(statements), nil

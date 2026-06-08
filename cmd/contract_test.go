@@ -33,6 +33,24 @@ func TestContractExitCodes(t *testing.T) {
 			exit: 9,
 		},
 		{
+			name: "query rejects multiple statements",
+			args: []string{"query", "--sql", "SELECT 1; DELETE FROM users", "--fake"},
+			code: apperrors.CodeValidationFailed,
+			exit: 9,
+		},
+		{
+			name: "explain rejects multiple statements",
+			args: []string{"explain", "--sql", "SELECT 1; DELETE FROM users", "--fake"},
+			code: apperrors.CodeValidationFailed,
+			exit: 9,
+		},
+		{
+			name: "data exec rejects multiple statements",
+			args: []string{"data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1; DROP TABLE users", "--fake"},
+			code: apperrors.CodeValidationFailed,
+			exit: 9,
+		},
+		{
 			name: "R3 data exec without allow flag requires authorization",
 			args: []string{"--yes", "--ticket", "CHG-1", "data", "exec", "--sql", "DELETE FROM users", "--fake"},
 			code: apperrors.CodeAuthorizationRequired,
@@ -85,6 +103,14 @@ func TestContractPlainOutputIsNotJSON(t *testing.T) {
 	}
 	if json.Valid([]byte(out)) {
 		t.Fatalf("plain schema describe output unexpectedly valid JSON: %s", out)
+	}
+}
+
+func TestContractQueryAcceptsReadOnlyRecursiveCTE(t *testing.T) {
+	setContractHome(t)
+	sql := "WITH RECURSIVE t AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n<5) SELECT * FROM t"
+	if _, err := executeCommandForTest("query", "--sql", sql, "--fake"); err != nil {
+		t.Fatalf("query recursive CTE error = %v", err)
 	}
 }
 

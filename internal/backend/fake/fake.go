@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/JiangHe12/opskit-core/apperrors"
+
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 )
@@ -97,7 +99,7 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 func (b *Backend) ExecDDL(ctx context.Context, statements []string) (int, error) {
 	for i, statement := range statements {
 		if b.FailAt == i+1 {
-			return i, fmt.Errorf("fake DDL failure at statement %d: %s", i+1, statement)
+			return i, apperrors.New(apperrors.CodeBackendError, fmt.Sprintf("fake DDL failure at statement %d: %s", i+1, statement), nil)
 		}
 		b.Executed = append(b.Executed, statement)
 	}

@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/JiangHe12/opskit-core/apperrors"
 )
 
 func TestCaptureListLoadRoundTrip(t *testing.T) {
@@ -65,5 +67,12 @@ func TestListMissingDirectoryReturnsEmpty(t *testing.T) {
 	}
 	if len(metas) != 0 {
 		t.Fatalf("List(missing) = %+v, want empty", metas)
+	}
+}
+
+func TestLoadInvalidSnapshotIDIsValidationFailed(t *testing.T) {
+	_, err := Load(t.TempDir(), "../escape")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeValidationFailed {
+		t.Fatalf("error code = %s, want %s; err = %v", got, apperrors.CodeValidationFailed, err)
 	}
 }

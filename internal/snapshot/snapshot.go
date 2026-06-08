@@ -4,12 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/JiangHe12/opskit-core/apperrors"
 )
 
 type Meta struct {
@@ -81,7 +82,7 @@ func List(baseDir string) ([]Meta, error) {
 
 func Load(baseDir, id string) (Snapshot, error) {
 	if id == "" || id != filepath.Base(id) || filepath.Ext(id) != "" {
-		return Snapshot{}, fmt.Errorf("invalid snapshot id: %s", id)
+		return Snapshot{}, apperrors.New(apperrors.CodeValidationFailed, "invalid snapshot id: "+id, nil)
 	}
 	data, err := os.ReadFile(filepath.Join(baseDir, id+".json")) //nolint:gosec // id is validated as a base filename before joining with the snapshot directory.
 	if err != nil {

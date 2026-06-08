@@ -36,6 +36,9 @@ func newQueryCmd(f *cliFlags) *cobra.Command {
 }
 
 func runQuery(f *cliFlags, opts sqlCommandOptions) error {
+	if sqlclass.HasMultipleStatements(opts.SQL) {
+		return apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
+	}
 	if !sqlclass.IsReadOnly(opts.SQL) {
 		return apperrors.New(apperrors.CodeValidationFailed, "query only accepts read-only SQL", nil)
 	}
@@ -84,6 +87,9 @@ func newExplainCmd(f *cliFlags) *cobra.Command {
 }
 
 func runExplain(f *cliFlags, opts sqlCommandOptions) error {
+	if sqlclass.HasMultipleStatements(opts.SQL) {
+		return apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
+	}
 	if !sqlclass.IsReadOnly(opts.SQL) {
 		return apperrors.New(apperrors.CodeValidationFailed, "explain only accepts read-only SQL", nil)
 	}

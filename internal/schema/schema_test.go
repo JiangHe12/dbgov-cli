@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/JiangHe12/opskit-core/apperrors"
 )
 
 func TestParseCreateTablesMinimal(t *testing.T) {
@@ -30,6 +32,9 @@ func TestParseCreateTablesRejectsUnsupportedDDL(t *testing.T) {
 	_, err := ParseDesiredSQL(`ALTER TABLE users ADD COLUMN age INT;`)
 	if err == nil {
 		t.Fatal("ParseDesiredSQL() error = nil, want unsupported DDL error")
+	}
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s; err = %v", got, apperrors.CodeNotImplemented, err)
 	}
 }
 
@@ -160,11 +165,34 @@ func TestLoadDesiredDirRejectsDuplicateTablesAndEmptyDirs(t *testing.T) {
 	writeSchemaTestFile(t, dup, "also_users.sql", "CREATE TABLE users (name TEXT);")
 	if _, err := LoadDesiredDir(dup); err == nil {
 		t.Fatal("expected duplicate table error")
+	} else if got := apperrors.AsAppError(err).Code; got != apperrors.CodeValidationFailed {
+		t.Fatalf("duplicate error code = %s, want %s", got, apperrors.CodeValidationFailed)
 	}
 
 	empty := t.TempDir()
 	if _, err := LoadDesiredDir(empty); err == nil {
 		t.Fatal("expected empty directory error")
+	} else if got := apperrors.AsAppError(err).Code; got != apperrors.CodeValidationFailed {
+		t.Fatalf("empty error code = %s, want %s", got, apperrors.CodeValidationFailed)
+	}
+}
+
+func TestParseCreateTableColumnErrorCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		code apperrors.ErrorCode
+	}{
+		{name: "unsupported column definition", sql: "CREATE TABLE users (id);", code: apperrors.CodeNotImplemented},
+		{name: "no columns", sql: "CREATE TABLE users (PRIMARY KEY (id));", code: apperrors.CodeValidationFailed},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseDesiredSQL(tc.sql)
+			if got := apperrors.AsAppError(err).Code; got != tc.code {
+				t.Fatalf("error code = %s, want %s; err = %v", got, tc.code, err)
+			}
+		})
 	}
 }
 
@@ -187,6 +215,8 @@ func TestSchemaFromDDLMapMergesTablesAndRejectsInvalidInput(t *testing.T) {
 		"b": "CREATE TABLE users (name TEXT);",
 	}); err == nil {
 		t.Fatal("expected duplicate table to be rejected")
+	} else if got := apperrors.AsAppError(err).Code; got != apperrors.CodeValidationFailed {
+		t.Fatalf("duplicate error code = %s, want %s", got, apperrors.CodeValidationFailed)
 	}
 }
 

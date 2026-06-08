@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/JiangHe12/opskit-core/apperrors"
 )
 
 type Schema struct {
@@ -86,7 +88,7 @@ func ParseDesiredSQL(sqlText string) (Schema, error) {
 	trimmed := strings.TrimSpace(sqlText)
 	matches := createTableRE.FindStringSubmatch(trimmed)
 	if matches == nil {
-		return Schema{}, fmt.Errorf("unsupported DDL: only simple CREATE TABLE statements are supported")
+		return Schema{}, apperrors.New(apperrors.CodeNotImplemented, "unsupported DDL: only simple CREATE TABLE statements are supported", nil)
 	}
 	tableName := matches[1]
 	columns, err := parseColumns(matches[2])
@@ -120,13 +122,13 @@ func LoadDesiredDir(dir string) (Schema, error) {
 		}
 		for name, table := range parsed.Tables {
 			if _, exists := result.Tables[name]; exists {
-				return Schema{}, fmt.Errorf("duplicate table %q in desired schema directory", name)
+				return Schema{}, apperrors.New(apperrors.CodeValidationFailed, fmt.Sprintf("duplicate table %q in desired schema directory", name), nil)
 			}
 			result.Tables[name] = table
 		}
 	}
 	if !seenSQL {
-		return Schema{}, fmt.Errorf("desired schema directory contains no .sql files")
+		return Schema{}, apperrors.New(apperrors.CodeValidationFailed, "desired schema directory contains no .sql files", nil)
 	}
 	return result, nil
 }
@@ -140,7 +142,7 @@ func SchemaFromDDLMap(tables map[string]string) (Schema, error) {
 		}
 		for name, table := range parsed.Tables {
 			if _, exists := result.Tables[name]; exists {
-				return Schema{}, fmt.Errorf("duplicate table %q in DDL map", name)
+				return Schema{}, apperrors.New(apperrors.CodeValidationFailed, fmt.Sprintf("duplicate table %q in DDL map", name), nil)
 			}
 			result.Tables[name] = table
 		}
@@ -162,13 +164,13 @@ func parseColumns(body string) ([]Column, error) {
 			continue
 		}
 		if len(fields) < 2 {
-			return nil, fmt.Errorf("unsupported column definition: %s", strings.TrimSpace(part))
+			return nil, apperrors.New(apperrors.CodeNotImplemented, fmt.Sprintf("unsupported column definition: %s", strings.TrimSpace(part)), nil)
 		}
 		name := strings.Trim(fields[0], "`")
 		columns = append(columns, Column{Name: name, Type: fields[1]})
 	}
 	if len(columns) == 0 {
-		return nil, fmt.Errorf("unsupported DDL: CREATE TABLE must contain at least one column")
+		return nil, apperrors.New(apperrors.CodeValidationFailed, "unsupported DDL: CREATE TABLE must contain at least one column", nil)
 	}
 	return columns, nil
 }
