@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## v0.1.9
+
+### Fixed
+
+- Audit path resolution and append failures now emit a stderr warning without
+  replacing the governed command's original result or exit code.
+
 ## v0.1.8
 
 ### Fixed

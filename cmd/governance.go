@@ -105,9 +105,12 @@ func emitAudit(f *cliFlags, event dbgaudit.Event, opErr error) {
 	}
 	path, err := coreaudit.DefaultPath()
 	if err != nil {
+		warnAuditFailure(f, err)
 		return
 	}
-	_ = coreaudit.AppendRecord(path, event, coreaudit.Options{})
+	if err := coreaudit.AppendRecord(path, event, coreaudit.Options{}); err != nil {
+		warnAuditFailure(f, err)
+	}
 }
 
 func snapshotBaseDir() (string, error) {
