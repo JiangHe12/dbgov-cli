@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## v0.1.11
+
+### Security
+
+- Upgraded to opskit-core v1.0.5 to consume shared opaque token, URL credential,
+  Bearer authorization, and session identifier value redaction across SQL,
+  caller output, and audit boundaries.
+
 ## v0.1.10
 
 ### Security
