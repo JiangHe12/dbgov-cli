@@ -137,9 +137,9 @@ jobs:
         run: go test ./... -count=1
 
   integration:
-    # Real MySQL integration suite. Excluded from PR gating because it starts a
-    # database container and dbgov integration tests are env-gated by DSN.
-    name: mysql integration / ubuntu-latest
+    # Real database integration suite. Excluded from PR gating because it starts
+    # database containers and dbgov integration tests are env-gated by DSN.
+    name: database integration / ubuntu-latest
     timeout-minutes: 20
     if: ${{ github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/integration/') }}
     runs-on: ubuntu-latest
@@ -156,24 +156,28 @@ jobs:
       - name: Start MySQL
         run: docker compose -f docker-compose.integration.yml up -d
 
-      - name: Wait for MySQL readiness
+      - name: Wait for database readiness
         run: |
           for i in $(seq 1 60); do
-            if docker compose -f docker-compose.integration.yml exec -T mysql mysqladmin ping -h 127.0.0.1 -uroot -pdbgov-root --silent; then
+            if docker compose -f docker-compose.integration.yml exec -T mysql mysqladmin ping -h 127.0.0.1 -uroot -pdbgov-root --silent \
+              && docker compose -f docker-compose.integration.yml exec -T postgres pg_isready -h 127.0.0.1 -U postgres -d test; then
               echo "ready after ${i}s"
               exit 0
             fi
             sleep 1
           done
           docker compose -f docker-compose.integration.yml logs --tail 100 mysql
+          docker compose -f docker-compose.integration.yml logs --tail 100 postgres
           exit 1
 
       - name: Run integration suite
         env:
           DBGOV_TEST_MYSQL_DSN: root:dbgov-root@tcp(127.0.0.1:3306)/test
           DBGOV_TEST_MYSQL_DATABASE: test
+          DBGOV_TEST_POSTGRES_DSN: postgres://postgres:dbgov-postgres@127.0.0.1:5432/test?sslmode=disable
+          DBGOV_TEST_POSTGRES_DATABASE: test
         run: go test ./... -count=1
 
-      - name: Tear down MySQL
+      - name: Tear down databases
         if: always()
         run: docker compose -f docker-compose.integration.yml down -v

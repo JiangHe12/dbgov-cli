@@ -142,6 +142,26 @@ func TestRedactSQLTruthTable(t *testing.T) {
 			want:  "GRANT ALL ON db.* TO 'u'@'%' IDENTIFIED BY '[REDACTED]'",
 		},
 		{
+			name:  "postgres create role password",
+			input: "CREATE ROLE app LOGIN PASSWORD 'pg-secret'",
+			want:  "CREATE ROLE app LOGIN PASSWORD '[REDACTED]'",
+		},
+		{
+			name:  "postgres create user encrypted password double quoted",
+			input: `CREATE USER app WITH ENCRYPTED PASSWORD "pg-secret"`,
+			want:  `CREATE USER app WITH ENCRYPTED PASSWORD '[REDACTED]'`,
+		},
+		{
+			name:  "postgres alter role encrypted password",
+			input: "ALTER ROLE app WITH ENCRYPTED PASSWORD 'pg-secret'",
+			want:  "ALTER ROLE app WITH ENCRYPTED PASSWORD '[REDACTED]'",
+		},
+		{
+			name:  "postgres alter user password",
+			input: `ALTER USER app PASSWORD "pg-secret"`,
+			want:  `ALTER USER app PASSWORD '[REDACTED]'`,
+		},
+		{
 			name:  "core password assignment",
 			input: "UPDATE users SET password='hunter2'",
 			want:  "UPDATE users SET password='[REDACTED]'",

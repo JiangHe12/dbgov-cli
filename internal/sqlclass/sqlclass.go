@@ -7,16 +7,40 @@ import (
 
 type Kind string
 
+type Dialect string
+
 const (
 	KindInsert Kind = "insert"
 	KindUpdate Kind = "update"
 	KindDelete Kind = "delete"
+
+	DialectMySQL    Dialect = "mysql"
+	DialectPostgres Dialect = "postgres"
+	DialectStrict   Dialect = "strict"
 )
 
 var whereRE = regexp.MustCompile(`(?i)\bwhere\b`)
 
-func IsReadOnly(sql string) bool {
-	keyword := operativeKeyword(sql)
+func DialectForEngine(engine string) Dialect {
+	switch strings.ToLower(strings.TrimSpace(engine)) {
+	case "mysql":
+		return DialectMySQL
+	case "postgres", "postgresql":
+		return DialectPostgres
+	default:
+		return DialectStrict
+	}
+}
+
+func IsReadOnly(sql string, dialects ...Dialect) bool {
+	dialect := selectedDialect(dialects)
+	if dialect == DialectStrict {
+		return false
+	}
+	if dialect == DialectPostgres && HasMultipleStatements(sql, dialect) {
+		return false
+	}
+	keyword := operativeKeyword(sql, dialect)
 	switch keyword {
 	case "select", "show", "describe", "desc", "explain":
 		return true
@@ -25,8 +49,12 @@ func IsReadOnly(sql string) bool {
 	}
 }
 
-func ClassifyDML(sql string) (kind Kind, hasWhere bool, ok bool) {
-	switch firstKeyword(sql) {
+func ClassifyDML(sql string, dialects ...Dialect) (kind Kind, hasWhere bool, ok bool) {
+	dialect := selectedDialect(dialects)
+	if dialect == DialectStrict {
+		return "", false, false
+	}
+	switch firstKeyword(sql, dialect) {
 	case "insert":
 		return KindInsert, false, true
 	case "update":
@@ -38,15 +66,28 @@ func ClassifyDML(sql string) (kind Kind, hasWhere bool, ok bool) {
 	}
 }
 
-func HasMultipleStatements(sql string) bool {
-	scanner := sqlScanner{sql: sql}
+//nolint:gocyclo // SQL token scanning is intentionally centralized so dialect fail-closed rules stay in one place.
+func HasMultipleStatements(sql string, dialects ...Dialect) bool {
+	dialect := selectedDialect(dialects)
+	if dialect == DialectStrict {
+		return strings.TrimSpace(sql) != ""
+	}
+	scanner := sqlScanner{sql: sql, dialect: dialect}
 	depth := 0
 	for scanner.pos < len(scanner.sql) {
 		switch scanner.sql[scanner.pos] {
 		case '\'', '"', '`':
 			if !scanner.skipQuoted(scanner.sql[scanner.pos]) {
-				return false
+				return scanner.failClosed()
 			}
+		case '$':
+			if scanner.dialect == DialectPostgres && scanner.hasDollarQuote() {
+				if !scanner.skipDollarQuote() {
+					return true
+				}
+				continue
+			}
+			scanner.pos++
 		case '(':
 			depth++
 			scanner.pos++
@@ -57,7 +98,7 @@ func HasMultipleStatements(sql string) bool {
 			scanner.pos++
 		case ';':
 			scanner.pos++
-			if depth == 0 {
+			if scanner.dialect == DialectPostgres || depth == 0 {
 				if !scanner.skipIgnorable() {
 					return true
 				}
@@ -66,7 +107,7 @@ func HasMultipleStatements(sql string) bool {
 		case '-', '/':
 			start := scanner.pos
 			if !scanner.skipComment() {
-				return false
+				return scanner.failClosed()
 			}
 			if scanner.pos == start {
 				scanner.pos++
@@ -78,8 +119,15 @@ func HasMultipleStatements(sql string) bool {
 	return false
 }
 
-func operativeKeyword(sql string) string {
-	scanner := sqlScanner{sql: sql}
+func selectedDialect(dialects []Dialect) Dialect {
+	if len(dialects) == 0 {
+		return DialectMySQL
+	}
+	return dialects[0]
+}
+
+func operativeKeyword(sql string, dialect Dialect) string {
+	scanner := sqlScanner{sql: sql, dialect: dialect}
 	keyword, ok := scanner.readWord()
 	if !ok || keyword != "with" {
 		return keyword
@@ -113,8 +161,9 @@ func operativeKeyword(sql string) string {
 }
 
 type sqlScanner struct {
-	sql string
-	pos int
+	sql     string
+	pos     int
+	dialect Dialect
 }
 
 func (s *sqlScanner) readWord() (string, bool) {
@@ -143,8 +192,11 @@ func (s *sqlScanner) skipIdentifier() bool {
 	if !s.skipIgnorable() || s.pos >= len(s.sql) {
 		return false
 	}
-	if s.sql[s.pos] == '`' {
+	if s.dialect == DialectMySQL && s.sql[s.pos] == '`' {
 		return s.skipQuoted('`')
+	}
+	if s.dialect == DialectPostgres && s.sql[s.pos] == '"' {
+		return s.skipQuoted('"')
 	}
 	if !isIdentifierStart(s.sql[s.pos]) {
 		return false
@@ -156,6 +208,7 @@ func (s *sqlScanner) skipIdentifier() bool {
 	return true
 }
 
+//nolint:gocyclo // Balanced SQL scanning keeps quote/comment/dollar-quote state in one fail-closed loop.
 func (s *sqlScanner) skipBalanced() bool {
 	if s.peek() != '(' {
 		return false
@@ -167,6 +220,14 @@ func (s *sqlScanner) skipBalanced() bool {
 			if !s.skipQuoted(s.sql[s.pos]) {
 				return false
 			}
+		case '$':
+			if s.dialect == DialectPostgres && s.hasDollarQuote() {
+				if !s.skipDollarQuote() {
+					return false
+				}
+				continue
+			}
+			s.pos++
 		case '(':
 			depth++
 			s.pos++
@@ -176,6 +237,11 @@ func (s *sqlScanner) skipBalanced() bool {
 			if depth == 0 {
 				return true
 			}
+		case ';':
+			if s.dialect == DialectPostgres {
+				return false
+			}
+			s.pos++
 		case '-', '/':
 			start := s.pos
 			if !s.skipComment() {
@@ -192,11 +258,19 @@ func (s *sqlScanner) skipBalanced() bool {
 }
 
 func (s *sqlScanner) skipQuoted(quote byte) bool {
+	if s.dialect == DialectPostgres && quote == '`' {
+		s.pos++
+		return true
+	}
 	s.pos++
 	for s.pos < len(s.sql) {
 		switch s.sql[s.pos] {
 		case '\\':
-			s.pos += 2
+			if s.dialect == DialectPostgres {
+				s.pos++
+			} else {
+				s.pos += 2
+			}
 		case quote:
 			s.pos++
 			if s.pos < len(s.sql) && s.sql[s.pos] == quote {
@@ -209,6 +283,38 @@ func (s *sqlScanner) skipQuoted(quote byte) bool {
 		}
 	}
 	return false
+}
+
+func (s *sqlScanner) hasDollarQuote() bool {
+	return s.dollarQuoteDelimiter() != ""
+}
+
+func (s *sqlScanner) skipDollarQuote() bool {
+	delimiter := s.dollarQuoteDelimiter()
+	if delimiter == "" {
+		return false
+	}
+	s.pos += len(delimiter)
+	end := strings.Index(s.sql[s.pos:], delimiter)
+	if end < 0 {
+		return false
+	}
+	s.pos += end + len(delimiter)
+	return true
+}
+
+func (s *sqlScanner) dollarQuoteDelimiter() string {
+	if s.pos >= len(s.sql) || s.sql[s.pos] != '$' {
+		return ""
+	}
+	end := s.pos + 1
+	for end < len(s.sql) && isDollarTagPart(s.sql[end]) {
+		end++
+	}
+	if end < len(s.sql) && s.sql[end] == '$' {
+		return s.sql[s.pos : end+1]
+	}
+	return ""
 }
 
 func (s *sqlScanner) skipIgnorable() bool {
@@ -259,6 +365,10 @@ func (s *sqlScanner) peek() byte {
 	return s.sql[s.pos]
 }
 
+func (s *sqlScanner) failClosed() bool {
+	return s.dialect == DialectPostgres
+}
+
 func isSpace(ch byte) bool {
 	switch ch {
 	case ' ', '\t', '\n', '\r', '\v', '\f':
@@ -276,7 +386,23 @@ func isIdentifierPart(ch byte) bool {
 	return isIdentifierStart(ch) || ch >= '0' && ch <= '9' || ch == '$'
 }
 
-func firstKeyword(sql string) string {
+func isDollarTagPart(ch byte) bool {
+	return ch == '_' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9'
+}
+
+func firstKeyword(sql string, dialect Dialect) string {
+	if dialect != DialectPostgres {
+		return firstKeywordMySQL(sql)
+	}
+	scanner := sqlScanner{sql: sql, dialect: dialect}
+	keyword, ok := scanner.readWord()
+	if !ok {
+		return ""
+	}
+	return keyword
+}
+
+func firstKeywordMySQL(sql string) string {
 	trimmed := strings.TrimSpace(sql)
 	if trimmed == "" {
 		return ""

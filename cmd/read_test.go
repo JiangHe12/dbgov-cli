@@ -18,6 +18,7 @@ import (
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/backend/fake"
+	"github.com/JiangHe12/dbgov-cli/internal/backend/postgres"
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
@@ -67,6 +68,86 @@ func TestExplainFakeBackendJSONAndAudit(t *testing.T) {
 	evt := lastAuditEvent(t, home)
 	if evt.EventType != dbgaudit.EventTypeExplain || evt.ImpactRows == nil || *evt.ImpactRows != 2 {
 		t.Fatalf("audit event = %+v", evt)
+	}
+}
+
+func TestQueryUsesPostgresDialectForSelectedContext(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	if _, err := executeCommandForTest("--config", configPath, "ctx", "set", "pg", "--engine", "postgres", "--host", "127.0.0.1", "--database", "demo"); err != nil {
+		t.Fatalf("ctx set postgres error = %v", err)
+	}
+	if _, err := executeCommandForTest("--config", configPath, "ctx", "use", "pg"); err != nil {
+		t.Fatalf("ctx use postgres error = %v", err)
+	}
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	out, err := executeCommandForTest("--config", configPath, "-o", "json", "query", "--sql", "SELECT $$; DROP TABLE users;$$ AS body", "--fake")
+	if err != nil {
+		t.Fatalf("postgres dialect query error = %v", err)
+	}
+	if !strings.Contains(out, `"kind": "QueryResult"`) {
+		t.Fatalf("query output = %s", out)
+	}
+
+	if _, err := executeCommandForTest("--config", configPath, "query", "--sql", `SELECT 'a\'; DROP TABLE users`, "--fake"); err == nil {
+		t.Fatal("expected postgres backslash string to expose multiple statements and be rejected")
+	}
+}
+
+func TestCtxSetAllowsPostgresDefaultPort(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	if _, err := executeCommandForTest("--config", configPath, "ctx", "set", "pg", "--engine", "postgres", "--host", "127.0.0.1", "--database", "demo"); err != nil {
+		t.Fatalf("ctx set postgres error = %v", err)
+	}
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	cfg, err := dbgovctx.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := cfg.Contexts["pg"]
+	if ctx.Engine != "postgres" || ctx.Port != 5432 || ctx.Server != "postgres://127.0.0.1:5432" {
+		t.Fatalf("postgres context = %+v", ctx)
+	}
+}
+
+func TestBuildBackendAllowsPostgres(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	if err := dbgovctx.SetContext("pg", dbgovctx.Context{
+		Base:     corectx.Base{Password: "secret"},
+		Engine:   "postgres",
+		Host:     "127.0.0.1",
+		Port:     5432,
+		Database: "demo",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbgovctx.UseContext("pg"); err != nil {
+		t.Fatal(err)
+	}
+
+	backend, meta, err := buildBackend(&cliFlags{Config: configPath}, backendOptions{})
+	if err != nil {
+		t.Fatalf("buildBackend(postgres) error = %v", err)
+	}
+	if _, ok := backend.(*postgres.Backend); !ok {
+		t.Fatalf("backend type = %T, want *postgres.Backend", backend)
+	}
+	if meta.Engine != "postgres" || meta.Database != "demo" {
+		t.Fatalf("meta = %+v", meta)
 	}
 }
 

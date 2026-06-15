@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add PostgreSQL P1 support for connection, read-only `query`, and `explain`
+  using `EXPLAIN (FORMAT JSON)`.
+
+### Security
+
+- Harden SQL classification for PostgreSQL string, identifier, and
+  dollar-quoted literal rules while keeping MySQL behavior unchanged.
+- Redact PostgreSQL `CREATE/ALTER ROLE|USER ... PASSWORD ...` credential
+  literals before caller output and audit persistence.
+
 ## v0.1.11
 
 ### Security

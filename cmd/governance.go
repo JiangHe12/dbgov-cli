@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"context"
+	"net"
+	"net/url"
 	"path/filepath"
 
 	"github.com/JiangHe12/opskit-core/apperrors"
@@ -11,6 +13,7 @@ import (
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/backend/fake"
 	"github.com/JiangHe12/dbgov-cli/internal/backend/mysql"
+	"github.com/JiangHe12/dbgov-cli/internal/backend/postgres"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
@@ -24,6 +27,7 @@ type contextMeta struct {
 	Name          string
 	Env           string
 	Protected     bool
+	Engine        string
 	Database      string
 	TicketPattern string
 	Roles         map[string]string
@@ -33,9 +37,9 @@ var newFakeBackend = func() dbbackend.Backend { return fake.New() }
 
 func buildBackend(f *cliFlags, opts backendOptions) (dbbackend.Backend, contextMeta, error) {
 	if opts.Fake {
-		meta := contextMeta{Name: "fake", Database: "fake"}
+		meta := contextMeta{Name: "fake", Engine: "mysql", Database: "fake"}
 		if ctx, name := selectedContext(f); ctx != nil {
-			meta = contextMeta{Name: name, Env: ctx.Env, Protected: ctx.Protected, Database: ctx.Database, TicketPattern: ctx.TicketPattern, Roles: ctx.Roles}
+			meta = contextMeta{Name: name, Env: ctx.Env, Protected: ctx.Protected, Engine: ctx.Engine, Database: ctx.Database, TicketPattern: ctx.TicketPattern, Roles: ctx.Roles}
 		}
 		return newFakeBackend(), meta, nil
 	}
@@ -43,19 +47,34 @@ func buildBackend(f *cliFlags, opts backendOptions) (dbbackend.Backend, contextM
 	if ctx == nil {
 		return nil, contextMeta{}, errNoContext()
 	}
-	if ctx.Engine != "mysql" {
-		return nil, contextMeta{}, errUnsupportedEngine(ctx.Engine)
-	}
 	password, err := ctx.ResolvePasswordContext(commandContext(f), name)
 	if err != nil {
 		return nil, contextMeta{}, err
 	}
-	dsn := ctx.Username + ":" + password + "@tcp(" + ctx.Host + ":" + itoa(ctx.Port) + ")/" + ctx.Database
-	backend, err := mysql.New(dsn, ctx.Database)
+	var backend dbbackend.Backend
+	switch ctx.Engine {
+	case "mysql":
+		dsn := ctx.Username + ":" + password + "@tcp(" + ctx.Host + ":" + itoa(ctx.Port) + ")/" + ctx.Database
+		backend, err = mysql.New(dsn, ctx.Database)
+	case "postgres":
+		backend, err = postgres.New(postgresDSN(ctx.Username, password, ctx.Host, ctx.Port, ctx.Database), ctx.Database)
+	default:
+		return nil, contextMeta{}, errUnsupportedEngine(ctx.Engine)
+	}
 	if err != nil {
 		return nil, contextMeta{}, err
 	}
-	return backend, contextMeta{Name: name, Env: ctx.Env, Protected: ctx.Protected, Database: ctx.Database, TicketPattern: ctx.TicketPattern, Roles: ctx.Roles}, nil
+	return backend, contextMeta{Name: name, Env: ctx.Env, Protected: ctx.Protected, Engine: ctx.Engine, Database: ctx.Database, TicketPattern: ctx.TicketPattern, Roles: ctx.Roles}, nil
+}
+
+func postgresDSN(username, password, host string, port int, database string) string {
+	dsn := url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(username, password),
+		Host:   net.JoinHostPort(host, itoa(port)),
+		Path:   "/" + database,
+	}
+	return dsn.String()
 }
 
 func authorizeRead(f *cliFlags) error {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -39,16 +40,20 @@ func ctxSetCmd(f *cliFlags) *cobra.Command {
 		Short: "Add or update a context",
 		Args:  requireExactArgs("ctx set"),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if req.Engine == "" {
+			req.Engine = strings.ToLower(strings.TrimSpace(req.Engine))
+			switch req.Engine {
+			case "":
 				req.Engine = "mysql"
-			}
-			if req.Engine != "mysql" {
-				return apperrors.New(apperrors.CodeUsageError, "only mysql engine is supported in this phase", nil)
+			case "mysql", "postgres":
+			default:
+				return apperrors.New(apperrors.CodeUsageError, "--engine must be mysql or postgres", nil)
 			}
 			if req.Host == "" {
 				return apperrors.New(apperrors.CodeUsageError, "--host is required", nil)
 			}
-			if req.Port == 0 {
+			if !cmd.Flags().Changed("port") && req.Engine == "postgres" {
+				req.Port = 5432
+			} else if req.Port == 0 {
 				req.Port = 3306
 			}
 			if req.Server == "" {
@@ -65,7 +70,7 @@ func ctxSetCmd(f *cliFlags) *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&req.Engine, "engine", "mysql", "Engine: mysql")
+	cmd.Flags().StringVar(&req.Engine, "engine", "mysql", "Engine: mysql | postgres")
 	cmd.Flags().StringVar(&req.Host, "host", "", "Database host")
 	cmd.Flags().IntVar(&req.Port, "port", 3306, "Database port")
 	cmd.Flags().StringVar(&req.Database, "database", "", "Default database")

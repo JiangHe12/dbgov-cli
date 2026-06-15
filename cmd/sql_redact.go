@@ -32,6 +32,10 @@ var sqlSecretLiteralPatterns = []sqlSecretLiteralPattern{
 		replacement: `${1}` + redactedSQLLiteral,
 	},
 	{
+		re:          regexp.MustCompile(`(?i)(\b(?:CREATE|ALTER)\s+(?:ROLE|USER)\b[^;]*?\b(?:ENCRYPTED\s+)?PASSWORD\s+)` + sqlQuotedLiteral),
+		replacement: `${1}` + redactedSQLLiteral,
+	},
+	{
 		re:          regexp.MustCompile(`(?i)(\bPASSWORD\s*\(\s*)` + sqlQuotedLiteral + `(\s*\))`),
 		replacement: `${1}` + redactedSQLLiteral + `${2}`,
 	},

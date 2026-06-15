@@ -81,13 +81,14 @@ func runDataExec(f *cliFlags, opts dataExecOptions) error {
 	if err != nil {
 		return err
 	}
-	if sqlclass.HasMultipleStatements(sqlText) {
+	dialect := sqlclass.DialectForEngine(meta.Engine)
+	if sqlclass.HasMultipleStatements(sqlText, dialect) {
 		err := apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
 		event := newDataExecAuditEvent(f, meta, dataExecPlan{SQL: sqlText})
 		emitAudit(f, event, err)
 		return err
 	}
-	kind, hasWhere, ok := sqlclass.ClassifyDML(sqlText)
+	kind, hasWhere, ok := sqlclass.ClassifyDML(sqlText, dialect)
 	if !ok {
 		err := apperrors.New(apperrors.CodeValidationFailed, "data exec only accepts INSERT, UPDATE, or DELETE; use dbgov query for reads and schema apply for DDL", nil)
 		event := newDataExecAuditEvent(f, meta, dataExecPlan{SQL: sqlText})

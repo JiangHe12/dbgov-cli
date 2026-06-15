@@ -25,12 +25,13 @@
         },
         {
           "name": "postgres",
-          "status": "planned",
+          "status": "read/explain only",
           "rollback": {
             "ddl": "transactional",
             "data": "generally-irreversible",
             "notes": [
-              "Transactional DDL rollback is planned for supported operations.",
+              "PostgreSQL P1 supports connect, read query, and explain only.",
+              "Schema, DDL, DML, and transactional DDL rollback are planned for later phases.",
               "Data rollback requires explicit undo capture in future phases."
             ]
           }

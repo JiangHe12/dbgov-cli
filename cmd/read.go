@@ -36,10 +36,11 @@ func newQueryCmd(f *cliFlags) *cobra.Command {
 }
 
 func runQuery(f *cliFlags, opts sqlCommandOptions) error {
-	if sqlclass.HasMultipleStatements(opts.SQL) {
+	dialect := dialectForSQLCommand(f)
+	if sqlclass.HasMultipleStatements(opts.SQL, dialect) {
 		return apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
 	}
-	if !sqlclass.IsReadOnly(opts.SQL) {
+	if !sqlclass.IsReadOnly(opts.SQL, dialect) {
 		return apperrors.New(apperrors.CodeValidationFailed, "query only accepts read-only SQL", nil)
 	}
 	if err := authorizeRead(f); err != nil {
@@ -87,10 +88,11 @@ func newExplainCmd(f *cliFlags) *cobra.Command {
 }
 
 func runExplain(f *cliFlags, opts sqlCommandOptions) error {
-	if sqlclass.HasMultipleStatements(opts.SQL) {
+	dialect := dialectForSQLCommand(f)
+	if sqlclass.HasMultipleStatements(opts.SQL, dialect) {
 		return apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
 	}
-	if !sqlclass.IsReadOnly(opts.SQL) {
+	if !sqlclass.IsReadOnly(opts.SQL, dialect) {
 		return apperrors.New(apperrors.CodeValidationFailed, "explain only accepts read-only SQL", nil)
 	}
 	if err := authorizeRead(f); err != nil {
@@ -111,6 +113,14 @@ func runExplain(f *cliFlags, opts sqlCommandOptions) error {
 		return err
 	}
 	return printExplainResult(f, result)
+}
+
+func dialectForSQLCommand(f *cliFlags) sqlclass.Dialect {
+	ctx, _ := selectedContext(f)
+	if ctx == nil {
+		return sqlclass.DialectMySQL
+	}
+	return sqlclass.DialectForEngine(ctx.Engine)
 }
 
 func printExplainResult(f *cliFlags, result dbbackend.ExplainResult) error {
