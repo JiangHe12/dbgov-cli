@@ -25,18 +25,19 @@
         },
         {
           "name": "postgres",
-          "status": "read/explain/schema",
+          "status": "available",
           "rollback": {
-            "ddl": "transactional",
-            "data": "generally-irreversible",
+            "ddl": "structural-snapshot",
+            "data": "irreversible",
             "notes": [
-              "PostgreSQL supports connect, read query, explain, schema inspect, diff, plan, and apply.",
-              "Governed DML and GitOps workflows are planned for later phases.",
-              "Data rollback requires explicit undo capture in future phases."
+              "PostgreSQL supports query, explain, schema workflows, governed DML, import, reconcile, and rollback.",
+              "Rollback restores schema structure from snapshots only.",
+              "Deleted data cannot be reconstructed by dbgov."
             ]
           }
         }
       ],
+      "schema": "MySQL and PostgreSQL schema diff/plan/apply manage normalized autoIncrement columns; serial-vs-identity, ALWAYS-vs-BY-DEFAULT, and sequence options are not preserved.",
       "riskModel": [
         {
           "level": "R0",

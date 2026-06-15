@@ -33,7 +33,12 @@ type contextMeta struct {
 	Roles         map[string]string
 }
 
-var newFakeBackend = func() dbbackend.Backend { return fake.New() }
+var (
+	newFakeBackend     = func() dbbackend.Backend { return fake.New() }
+	newPostgresBackend = func(dsn, database string) (dbbackend.Backend, error) {
+		return postgres.New(dsn, database)
+	}
+)
 
 func buildBackend(f *cliFlags, opts backendOptions) (dbbackend.Backend, contextMeta, error) {
 	if opts.Fake {
@@ -57,7 +62,7 @@ func buildBackend(f *cliFlags, opts backendOptions) (dbbackend.Backend, contextM
 		dsn := ctx.Username + ":" + password + "@tcp(" + ctx.Host + ":" + itoa(ctx.Port) + ")/" + ctx.Database
 		backend, err = mysql.New(dsn, ctx.Database)
 	case "postgres":
-		backend, err = postgres.New(postgresDSN(ctx.Username, password, ctx.Host, ctx.Port, ctx.Database), ctx.Database)
+		backend, err = newPostgresBackend(postgresDSN(ctx.Username, password, ctx.Host, ctx.Port, ctx.Database), ctx.Database)
 	default:
 		return nil, contextMeta{}, errUnsupportedEngine(ctx.Engine)
 	}

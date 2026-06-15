@@ -19,12 +19,12 @@ func TestIntrospectSchemaQueriesInformationSchema(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "appdb")
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, column_name, column_type, is_nullable, column_default, column_key\nFROM information_schema.columns\nWHERE table_schema = ?\nORDER BY table_name, ordinal_position")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, column_name, column_type, is_nullable, column_default, column_key, extra\nFROM information_schema.columns\nWHERE table_schema = ?\nORDER BY table_name, ordinal_position")).
 		WithArgs("appdb").
-		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "is_nullable", "column_default", "column_key"}).
-			AddRow("users", "id", "bigint", "NO", nil, "PRI").
-			AddRow("users", "org_id", "bigint", "YES", nil, "MUL").
-			AddRow("users", "name", "varchar(100)", "YES", "anonymous", ""))
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "is_nullable", "column_default", "column_key", "extra"}).
+			AddRow("users", "id", "bigint", "NO", nil, "PRI", "auto_increment").
+			AddRow("users", "org_id", "bigint", "YES", nil, "MUL", "").
+			AddRow("users", "name", "varchar(100)", "YES", "anonymous", "", ""))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, index_name, column_name, non_unique, seq_in_index\nFROM information_schema.statistics\nWHERE table_schema = ?\nORDER BY table_name, index_name, seq_in_index")).
 		WithArgs("appdb").
 		WillReturnRows(sqlmock.NewRows([]string{"table_name", "index_name", "column_name", "non_unique", "seq_in_index"}).
@@ -42,6 +42,9 @@ func TestIntrospectSchemaQueriesInformationSchema(t *testing.T) {
 	users := schema.Tables["users"]
 	if len(users.Columns) != 3 || users.Columns[0].Key != "PRI" || !users.Columns[1].Nullable {
 		t.Fatalf("schema = %+v", schema)
+	}
+	if !users.Columns[0].AutoIncrement {
+		t.Fatalf("id autoIncrement = false, want true: %+v", users.Columns[0])
 	}
 	if users.Columns[2].Default == nil || *users.Columns[2].Default != "anonymous" {
 		t.Fatalf("default not parsed: %+v", users.Columns[2])
@@ -64,9 +67,9 @@ func TestIntrospectSchemaAllowsEmptyDatabase(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "emptydb")
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, column_name, column_type, is_nullable, column_default, column_key\nFROM information_schema.columns\nWHERE table_schema = ?\nORDER BY table_name, ordinal_position")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, column_name, column_type, is_nullable, column_default, column_key, extra\nFROM information_schema.columns\nWHERE table_schema = ?\nORDER BY table_name, ordinal_position")).
 		WithArgs("emptydb").
-		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "is_nullable", "column_default", "column_key"}))
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "is_nullable", "column_default", "column_key", "extra"}))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, index_name, column_name, non_unique, seq_in_index\nFROM information_schema.statistics\nWHERE table_schema = ?\nORDER BY table_name, index_name, seq_in_index")).
 		WithArgs("emptydb").
 		WillReturnRows(sqlmock.NewRows([]string{"table_name", "index_name", "column_name", "non_unique", "seq_in_index"}))
@@ -94,14 +97,24 @@ func TestTableDDLUsesShowCreateTable(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "appdb")
 	mock.ExpectQuery(regexp.QuoteMeta("SHOW CREATE TABLE `users`")).
-		WillReturnRows(sqlmock.NewRows([]string{"Table", "Create Table"}).AddRow("users", "CREATE TABLE `users` (`id` bigint)"))
+		WillReturnRows(sqlmock.NewRows([]string{"Table", "Create Table"}).AddRow("users", "CREATE TABLE `users` (`id` int AUTO_INCREMENT, `flags` int unsigned, PRIMARY KEY (`id`))"))
 
 	ddl, err := backend.TableDDL(context.Background(), "users")
 	if err != nil {
 		t.Fatalf("TableDDL() error = %v", err)
 	}
-	if ddl != "CREATE TABLE `users` (`id` bigint)" {
+	if ddl != "CREATE TABLE `users` (`id` int AUTO_INCREMENT, `flags` int unsigned, PRIMARY KEY (`id`))" {
 		t.Fatalf("TableDDL() = %q", ddl)
+	}
+	parsed, err := schema.ParseDesiredSQL(ddl)
+	if err != nil {
+		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v", err)
+	}
+	current := schema.Schema{Tables: map[string]schema.Table{
+		"users": {Name: "users", Columns: []schema.Column{{Name: "id", Type: "int", AutoIncrement: true}, {Name: "flags", Type: "int unsigned"}}},
+	}}
+	if diff := schema.Diff(current, parsed); len(diff.Changes) != 0 {
+		t.Fatalf("round-trip diff = %+v, want none", diff.Changes)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
@@ -127,18 +140,22 @@ func TestTableDDLMissingTableIsResourceNotFound(t *testing.T) {
 func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 	backend := NewWithDB(nil, "appdb")
 	statements, err := backend.RenderDDL([]schema.Change{
-		{Action: schema.ActionCreateTable, Table: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}, {Name: "user_id", Type: "BIGINT"}}},
+		{Action: schema.ActionCreateTable, Table: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT", AutoIncrement: true}, {Name: "user_id", Type: "BIGINT"}}},
 		{Action: schema.ActionAddColumn, Table: "users", Column: "name", Type: "VARCHAR(100)"},
 		{Action: schema.ActionModifyColumn, Table: "users", Column: "name", Type: "TEXT"},
+		{Action: schema.ActionAddColumn, Table: "users", Column: "seq", Type: "int unsigned", AutoIncrement: true},
+		{Action: schema.ActionModifyColumn, Table: "users", Column: "seq", Type: "int unsigned", AutoIncrement: true, AutoIncrementChanged: true},
 		{Action: schema.ActionDropColumn, Table: "users", Column: "legacy"},
 	})
 	if err != nil {
 		t.Fatalf("RenderDDL() error = %v", err)
 	}
 	want := []string{
-		"CREATE TABLE `orders` (`id` BIGINT, `user_id` BIGINT);",
+		"CREATE TABLE `orders` (`id` BIGINT AUTO_INCREMENT, `user_id` BIGINT, PRIMARY KEY (`id`));",
 		"ALTER TABLE `users` ADD COLUMN `name` VARCHAR(100);",
 		"ALTER TABLE `users` MODIFY COLUMN `name` TEXT;",
+		"ALTER TABLE `users` ADD COLUMN `seq` int unsigned AUTO_INCREMENT, ADD PRIMARY KEY (`seq`);",
+		"ALTER TABLE `users` MODIFY COLUMN `seq` int unsigned AUTO_INCREMENT, ADD PRIMARY KEY (`seq`);",
 		"ALTER TABLE `users` DROP COLUMN `legacy`;",
 	}
 	if len(statements) != len(want) {

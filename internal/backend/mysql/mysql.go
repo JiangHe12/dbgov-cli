@@ -38,7 +38,7 @@ func (b *Backend) Ping(ctx context.Context) error {
 
 func (b *Backend) IntrospectSchema(ctx context.Context) (schema.Schema, error) {
 	rows, err := b.db.QueryContext(ctx, `
-SELECT table_name, column_name, column_type, is_nullable, column_default, column_key
+SELECT table_name, column_name, column_type, is_nullable, column_default, column_key, extra
 FROM information_schema.columns
 WHERE table_schema = ?
 ORDER BY table_name, ordinal_position`, b.database)
@@ -49,16 +49,16 @@ ORDER BY table_name, ordinal_position`, b.database)
 
 	result := schema.Schema{Tables: map[string]schema.Table{}}
 	for rows.Next() {
-		var tableName, columnName, columnType, nullable, columnKey string
+		var tableName, columnName, columnType, nullable, columnKey, extra string
 		var defaultValue sql.NullString
-		if err := rows.Scan(&tableName, &columnName, &columnType, &nullable, &defaultValue, &columnKey); err != nil {
+		if err := rows.Scan(&tableName, &columnName, &columnType, &nullable, &defaultValue, &columnKey, &extra); err != nil {
 			return schema.Schema{}, err
 		}
 		table := result.Tables[tableName]
 		if table.Name == "" {
 			table.Name = tableName
 		}
-		column := schema.Column{Name: columnName, Type: columnType, Nullable: strings.EqualFold(nullable, "YES"), Key: columnKey}
+		column := schema.Column{Name: columnName, Type: columnType, Nullable: strings.EqualFold(nullable, "YES"), Key: columnKey, AutoIncrement: strings.Contains(strings.ToLower(extra), "auto_increment")}
 		if defaultValue.Valid {
 			value := defaultValue.String
 			column.Default = &value
@@ -220,17 +220,34 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 		switch change.Action {
 		case schema.ActionCreateTable:
 			columns := make([]string, 0, len(change.Columns))
+			autoIncrementKey := ""
 			for _, column := range change.Columns {
 				columns = append(columns, renderColumn(column))
+				if column.AutoIncrement && autoIncrementKey == "" {
+					autoIncrementKey = column.Name
+				}
 			}
 			if len(columns) == 0 {
 				return nil, apperrors.New(apperrors.CodeValidationFailed, fmt.Sprintf("CREATE_TABLE %s has no columns", change.Table), nil)
 			}
+			if autoIncrementKey != "" {
+				columns = append(columns, fmt.Sprintf("PRIMARY KEY (`%s`)", escapeIdent(autoIncrementKey)))
+			}
 			statements = append(statements, fmt.Sprintf("CREATE TABLE `%s` (%s);", escapeIdent(change.Table), strings.Join(columns, ", ")))
 		case schema.ActionAddColumn:
-			statements = append(statements, fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN `%s` %s;", escapeIdent(change.Table), escapeIdent(change.Column), change.Type))
+			column := schema.Column{Name: change.Column, Type: change.Type, AutoIncrement: change.AutoIncrement}
+			statement := fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN %s", escapeIdent(change.Table), renderColumn(column))
+			if change.AutoIncrement {
+				statement += fmt.Sprintf(", ADD PRIMARY KEY (`%s`)", escapeIdent(change.Column))
+			}
+			statements = append(statements, statement+";")
 		case schema.ActionModifyColumn:
-			statements = append(statements, fmt.Sprintf("ALTER TABLE `%s` MODIFY COLUMN `%s` %s;", escapeIdent(change.Table), escapeIdent(change.Column), change.Type))
+			column := schema.Column{Name: change.Column, Type: change.Type, AutoIncrement: change.AutoIncrement}
+			statement := fmt.Sprintf("ALTER TABLE `%s` MODIFY COLUMN %s", escapeIdent(change.Table), renderColumn(column))
+			if change.AutoIncrementChanged && change.AutoIncrement {
+				statement += fmt.Sprintf(", ADD PRIMARY KEY (`%s`)", escapeIdent(change.Column))
+			}
+			statements = append(statements, statement+";")
 		case schema.ActionDropColumn:
 			statements = append(statements, fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`;", escapeIdent(change.Table), escapeIdent(change.Column)))
 		case schema.ActionDropTable:
@@ -339,5 +356,9 @@ func escapeIdent(value string) string {
 }
 
 func renderColumn(column schema.Column) string {
-	return fmt.Sprintf("`%s` %s", escapeIdent(column.Name), column.Type)
+	parts := []string{fmt.Sprintf("`%s` %s", escapeIdent(column.Name), column.Type)}
+	if column.AutoIncrement {
+		parts = append(parts, "AUTO_INCREMENT")
+	}
+	return strings.Join(parts, " ")
 }

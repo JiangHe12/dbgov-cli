@@ -2,11 +2,11 @@
 
 [English](README.md) | [中文](README_zh.md)
 
-Governed MySQL operations CLI for AI agents and operators. It provides read queries, schema planning and apply, governed DML, GitOps import/reconcile/rollback, audit, RBAC, and local credential management.
+Governed MySQL and PostgreSQL operations CLI for AI agents and operators. It provides read queries, schema planning and apply, governed DML, GitOps import/reconcile/rollback, audit, RBAC, and local credential management.
 
 ## Overview
 
-`dbgov` is built around a governance spine: connect to MySQL, classify risk, require explicit authorization for writes, execute through backend interfaces, and write structured audit events. It is MySQL-only today; PostgreSQL is planned but not enabled unless capabilities report it.
+`dbgov` is built around a governance spine: connect to MySQL or PostgreSQL, classify risk, require explicit authorization for writes, execute through backend interfaces, and write structured audit events.
 
 ## Install
 
@@ -67,6 +67,8 @@ dbgov-cli rollback list -o json
 dbgov-cli audit query --since 24h -o json
 ```
 
+Schema management normalizes auto-increment columns as a boolean `autoIncrement` model across MySQL and PostgreSQL. It preserves create, introspect, diff, apply, snapshot, and rollback behavior, but intentionally does not preserve PostgreSQL `serial` vs identity, `ALWAYS` vs `BY DEFAULT`, or sequence start/increment options.
+
 ## Configuration and Contexts
 
 Contexts live under `~/.dbgov`. Use `ctx set`, `ctx use`, `ctx current`, and `ctx list` to manage them. Credentials may be literal during setup, read from `DBGOV_PASSWORD`, or migrated to secure backends:
@@ -84,7 +86,7 @@ Set `DBGOV_OPERATOR` in CI to make audit and RBAC identity stable.
 
 ## Rollback and Snapshots
 
-Schema mutations capture a pre-change DDL snapshot before execution. `rollback --to <snapshot>` restores structure only; MySQL data dropped by table or column deletion is not recovered. dbgov prints this warning during rollback planning and execution.
+Schema mutations capture a pre-change DDL snapshot before execution. `rollback --to <snapshot>` restores structure only; MySQL and PostgreSQL data dropped by table or column deletion is not recovered. dbgov prints this warning during rollback planning and execution.
 
 ## Build from Source
 
@@ -95,7 +97,7 @@ gofmt -l main.go cmd internal
 golangci-lint run --timeout=5m
 ```
 
-MySQL integration tests are opt-in with `DBGOV_TEST_MYSQL_DSN`.
+MySQL and PostgreSQL integration tests are opt-in with `DBGOV_TEST_MYSQL_DSN` and `DBGOV_TEST_POSTGRES_DSN`.
 
 ## AI Skill
 

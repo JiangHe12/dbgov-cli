@@ -2,11 +2,11 @@
 
 [English](README.md) | [中文](README_zh.md)
 
-面向 AI agent 和操作人员的 MySQL 治理 CLI。提供只读查询、schema plan/apply、受治理 DML、GitOps import/reconcile/rollback、审计、RBAC 和本地凭据管理。
+面向 AI agent 和操作人员的 MySQL 与 PostgreSQL 治理 CLI。提供只读查询、schema plan/apply、受治理 DML、GitOps import/reconcile/rollback、审计、RBAC 和本地凭据管理。
 
 ## 概览
 
-`dbgov` 围绕治理执行脊椎构建:连接 MySQL、分类风险、写操作要求显式授权、通过 backend 执行、写结构化审计事件。目前只支持 MySQL;PostgreSQL 属后续计划,除非 capabilities 明确声明可用,不要假设支持。
+`dbgov` 围绕治理执行脊椎构建:连接 MySQL 或 PostgreSQL、分类风险、写操作要求显式授权、通过 backend 执行、写结构化审计事件。
 
 ## 安装
 
@@ -67,6 +67,8 @@ dbgov-cli rollback list -o json
 dbgov-cli audit query --since 24h -o json
 ```
 
+Schema 管理把自增列归一化为跨 MySQL/PostgreSQL 的布尔 `autoIncrement` 模型,覆盖 create、introspect、diff、apply、快照和 rollback。它不保留 PostgreSQL `serial` vs identity、`ALWAYS` vs `BY DEFAULT`、sequence 起始值/步长等细节。
+
 ## 配置和 Context
 
 Context 存在 `~/.dbgov`。通过 `ctx set/use/current/list` 管理。凭据可在初始化时使用字面量,也可从 `DBGOV_PASSWORD` 读取,并迁移到安全后端:
@@ -84,7 +86,7 @@ CI 中建议设置 `DBGOV_OPERATOR`,让审计和 RBAC 身份稳定。
 
 ## Rollback 和快照
 
-schema 变更执行前会捕获变更前 DDL 快照。`rollback --to <snapshot>` 只恢复结构;MySQL 中已经因删表/删列丢失的数据不会恢复。dbgov 在 rollback plan 和执行时都会明确提示该有损限制。
+schema 变更执行前会捕获变更前 DDL 快照。`rollback --to <snapshot>` 只恢复结构;MySQL/PostgreSQL 中已经因删表/删列丢失的数据不会恢复。dbgov 在 rollback plan 和执行时都会明确提示该有损限制。
 
 ## 从源码构建
 
@@ -95,7 +97,7 @@ gofmt -l main.go cmd internal
 golangci-lint run --timeout=5m
 ```
 
-MySQL 集成测试通过 `DBGOV_TEST_MYSQL_DSN` 显式启用。
+MySQL 与 PostgreSQL 集成测试分别通过 `DBGOV_TEST_MYSQL_DSN`、`DBGOV_TEST_POSTGRES_DSN` 显式启用。
 
 ## AI Skill
 

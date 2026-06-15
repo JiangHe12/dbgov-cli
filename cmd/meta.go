@@ -70,6 +70,7 @@ type CapSupported struct {
 	ContextAPIVersion string        `json:"contextApiVersion"`
 	AuditAPIVersion   string        `json:"auditApiVersion"`
 	Engines           []CapEngine   `json:"engines"`
+	Schema            string        `json:"schema"`
 	RiskModel         []CapRisk     `json:"riskModel"`
 	AllowFlags        []string      `json:"allowFlags"`
 	Governance        CapGovernance `json:"governance"`
@@ -120,18 +121,19 @@ func capabilitiesData() CapabilitiesData {
 				},
 				{
 					Name:   "postgres",
-					Status: "read/explain/schema",
+					Status: "available",
 					Rollback: CapRollback{
-						DDL:  "transactional",
-						Data: "generally-irreversible",
+						DDL:  "structural-snapshot",
+						Data: "irreversible",
 						Notes: []string{
-							"PostgreSQL supports connect, read query, explain, schema inspect, diff, plan, and apply.",
-							"Governed DML and GitOps workflows are planned for later phases.",
-							"Data rollback requires explicit undo capture in future phases.",
+							"PostgreSQL supports query, explain, schema workflows, governed DML, import, reconcile, and rollback.",
+							"Rollback restores schema structure from snapshots only.",
+							"Deleted data cannot be reconstructed by dbgov.",
 						},
 					},
 				},
 			},
+			Schema: "MySQL and PostgreSQL schema diff/plan/apply manage normalized autoIncrement columns; serial-vs-identity, ALWAYS-vs-BY-DEFAULT, and sequence options are not preserved.",
 			RiskModel: []CapRisk{
 				{Level: "R0", Authorization: "free"},
 				{Level: "R1", Authorization: "--yes or interactive confirmation"},
@@ -169,7 +171,8 @@ func newCapabilitiesCmd(f *cliFlags) *cobra.Command {
 			rows := [][]string{
 				{"contextApiVersion", data.Supported.ContextAPIVersion},
 				{"auditApiVersion", data.Supported.AuditAPIVersion},
-				{"engines", "mysql available; postgres read/explain/schema"},
+				{"engines", "mysql available; postgres available"},
+				{"schema", data.Supported.Schema},
 				{"authorization", "R1/R2/R3 require --yes; R2/R3 require --ticket; R3 requires --allow-*"},
 				{"governance", "audit, RBAC, dry-run, OTel"},
 			}

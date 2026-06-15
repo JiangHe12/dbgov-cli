@@ -592,6 +592,33 @@ func TestDataExecProtectedSmallUpdateUpgradesToR2(t *testing.T) {
 	}
 }
 
+func TestPostgresDataExecGovernedFlow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := setupPostgresContext(t, home)
+	backend := fake.New()
+	backend.ExplainRows = 2
+	backend.DMLAffected = 1
+	restore := stubPostgresBackend(t, backend)
+	defer restore()
+
+	sqlText := "UPDATE users SET name=$$pg$$ WHERE id=1"
+	out, err := executeCommandForTest("--config", configPath, "--yes", "-o", "json", "data", "exec", "--sql", sqlText)
+	if err != nil {
+		t.Fatalf("postgres data exec error = %v", err)
+	}
+	if len(backend.ExecutedDML) != 1 || backend.ExecutedDML[0] != sqlText {
+		t.Fatalf("ExecutedDML = %+v", backend.ExecutedDML)
+	}
+	if !strings.Contains(out, `"kind": "DataExecResult"`) || !strings.Contains(out, `"affectedRows": 1`) {
+		t.Fatalf("postgres data exec output = %s", out)
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeDataExec || evt.Context.Name != "pg" || evt.Risk != "R1" {
+		t.Fatalf("postgres data exec audit = %+v", evt)
+	}
+}
+
 func TestCtxRoleSetListUnsetAndAudit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1077,6 +1104,59 @@ func TestImportR1RequiresYesAndExecutesMultiTablePlan(t *testing.T) {
 	}
 	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeImport || evt.Status != dbgaudit.StatusSucceeded || evt.Executed != 2 {
 		t.Fatalf("success import audit event = %+v", evt)
+	}
+}
+
+func TestPostgresGitOpsAndRollbackUsePostgresDDL(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := setupPostgresContext(t, home)
+
+	importDir := t.TempDir()
+	writeTestFile(t, importDir, "users.sql", `CREATE TABLE users (id integer, name text);`)
+	importBackend := newPostgresFakeBackend(schema.Schema{Tables: map[string]schema.Table{}})
+	restore := stubPostgresBackend(t, importBackend)
+	out, err := executeCommandForTest("--config", configPath, "--yes", "-o", "json", "import", importDir)
+	restore()
+	if err != nil {
+		t.Fatalf("postgres import error = %v\n%s", err, out)
+	}
+	if len(importBackend.Executed) != 1 || importBackend.Executed[0] != `CREATE TABLE "users" ("id" integer, "name" text);` {
+		t.Fatalf("postgres import executed = %+v", importBackend.Executed)
+	}
+
+	reconcileDir := t.TempDir()
+	writeTestFile(t, reconcileDir, "users.sql", `CREATE TABLE users (id integer);`)
+	reconcileBackend := newPostgresFakeBackend(schema.Schema{Tables: map[string]schema.Table{
+		"users": {Name: "users", Columns: []schema.Column{{Name: "id", Type: "integer"}, {Name: "legacy", Type: "text"}}},
+	}})
+	reconcileBackend.DDLs["users"] = `CREATE TABLE "users" ("id" integer, "legacy" text);`
+	restore = stubPostgresBackend(t, reconcileBackend)
+	out, err = executeCommandForTest("--config", configPath, "--yes", "--ticket", "CHG-1", "-o", "json", "reconcile", reconcileDir, "--allow-destructive")
+	restore()
+	if err != nil {
+		t.Fatalf("postgres reconcile error = %v\n%s", err, out)
+	}
+	if len(reconcileBackend.Executed) != 1 || reconcileBackend.Executed[0] != `ALTER TABLE "users" DROP COLUMN "legacy";` {
+		t.Fatalf("postgres reconcile executed = %+v", reconcileBackend.Executed)
+	}
+
+	sourceID := captureSnapshotForTest(t, home, map[string]string{
+		"users": `CREATE TABLE "users" ("id" integer, "name" text);`,
+	})
+	rollbackBackend := newPostgresFakeBackend(schema.Schema{Tables: map[string]schema.Table{}})
+	restore = stubPostgresBackend(t, rollbackBackend)
+	out, err = executeCommandForTest("--config", configPath, "--yes", "--ticket", "CHG-2", "-o", "json", "rollback", "--to", sourceID)
+	restore()
+	if err != nil {
+		t.Fatalf("postgres rollback error = %v\n%s", err, out)
+	}
+	if len(rollbackBackend.Executed) != 1 || rollbackBackend.Executed[0] != `CREATE TABLE "users" ("id" integer, "name" text);` {
+		t.Fatalf("postgres rollback executed = %+v", rollbackBackend.Executed)
+	}
+	if !strings.Contains(out, rollbackDataLossWarning) {
+		t.Fatalf("postgres rollback output missing data-loss warning:\n%s", out)
 	}
 }
 
@@ -1912,6 +1992,49 @@ func stubFakeBackend(t *testing.T, backend *fake.Backend) func() {
 	old := newFakeBackend
 	newFakeBackend = func() dbbackend.Backend { return backend }
 	return func() { newFakeBackend = old }
+}
+
+func setupPostgresContext(t *testing.T, home string) string {
+	t.Helper()
+	configPath := filepath.Join(home, "config.yaml")
+	dbgovctx.SetConfigPath(configPath)
+	t.Cleanup(func() { dbgovctx.SetConfigPath("") })
+	if err := dbgovctx.SetContext("pg", dbgovctx.Context{
+		Base:     corectx.Base{Password: "secret"},
+		Engine:   "postgres",
+		Host:     "127.0.0.1",
+		Port:     5432,
+		Database: "app",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbgovctx.UseContext("pg"); err != nil {
+		t.Fatal(err)
+	}
+	return configPath
+}
+
+func stubPostgresBackend(t *testing.T, backend dbbackend.Backend) func() {
+	t.Helper()
+	old := newPostgresBackend
+	newPostgresBackend = func(string, string) (dbbackend.Backend, error) { return backend, nil }
+	return func() { newPostgresBackend = old }
+}
+
+type postgresFakeBackend struct {
+	*fake.Backend
+	renderer *postgres.Backend
+}
+
+func newPostgresFakeBackend(current schema.Schema) *postgresFakeBackend {
+	return &postgresFakeBackend{
+		Backend:  &fake.Backend{Schema: current, DDLs: map[string]string{}},
+		renderer: postgres.NewWithDB(nil, "app"),
+	}
+}
+
+func (b *postgresFakeBackend) RenderDDL(changes []schema.Change) ([]string, error) {
+	return b.renderer.RenderDDL(changes)
 }
 
 func lastAuditEvent(t *testing.T, home string) dbgaudit.Event {

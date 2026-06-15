@@ -54,13 +54,14 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 		t.Fatalf("postgres.New() error = %v", err)
 	}
 	ctx := context.Background()
-	_, _ = backend.ExecDDL(ctx, []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`})
+	_, _ = backend.ExecDDL(ctx, []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`})
 	t.Cleanup(func() {
-		_, _ = backend.ExecDDL(context.Background(), []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`})
+		_, _ = backend.ExecDDL(context.Background(), []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`})
 	})
 	_, err = backend.ExecDDL(ctx, []string{
-		`CREATE TABLE "dbgov_pg_parent" ("id" integer NOT NULL, "name" text DEFAULT 'n', CONSTRAINT "dbgov_pg_parent_pkey" PRIMARY KEY ("id"));`,
+		`CREATE TABLE "dbgov_pg_parent" ("id" integer GENERATED ALWAYS AS IDENTITY, "name" text DEFAULT 'n', CONSTRAINT "dbgov_pg_parent_pkey" PRIMARY KEY ("id"));`,
 		`CREATE TABLE "dbgov_pg_child" ("id" integer NOT NULL, "parent_id" integer NOT NULL, CONSTRAINT "dbgov_pg_child_pkey" PRIMARY KEY ("id"), CONSTRAINT "dbgov_pg_child_parent_fkey" FOREIGN KEY ("parent_id") REFERENCES "dbgov_pg_parent" ("id"));`,
+		`CREATE TABLE "dbgov_pg_serial" ("id" serial PRIMARY KEY, "name" character varying(255));`,
 		`CREATE INDEX "dbgov_pg_child_parent_idx" ON "dbgov_pg_child" ("parent_id");`,
 	})
 	if err != nil {
@@ -72,8 +73,12 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 		t.Fatalf("IntrospectSchema() error = %v", err)
 	}
 	parent := current.Tables["dbgov_pg_parent"]
-	if parent.Columns[0].Key != "PRI" || parent.Columns[1].Default == nil {
+	if parent.Columns[0].Key != "PRI" || !parent.Columns[0].AutoIncrement || parent.Columns[1].Default == nil {
 		t.Fatalf("parent table = %+v", parent)
+	}
+	serialTable := current.Tables["dbgov_pg_serial"]
+	if len(serialTable.Columns) < 2 || !serialTable.Columns[0].AutoIncrement || serialTable.Columns[0].Default != nil {
+		t.Fatalf("serial table = %+v", serialTable)
 	}
 	child := current.Tables["dbgov_pg_child"]
 	if len(child.Indexes) == 0 || len(child.ForeignKeys) != 1 {
@@ -86,6 +91,20 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 	if !strings.Contains(ddl, `CREATE TABLE "dbgov_pg_child"`) || !strings.Contains(ddl, `FOREIGN KEY ("parent_id") REFERENCES "dbgov_pg_parent" ("id")`) {
 		t.Fatalf("unexpected TableDDL:\n%s", ddl)
 	}
+	serialDDL, err := backend.TableDDL(ctx, "dbgov_pg_serial")
+	if err != nil {
+		t.Fatalf("serial TableDDL() error = %v", err)
+	}
+	parsed, err := schema.ParseDesiredSQL(serialDDL)
+	if err != nil {
+		t.Fatalf("ParseDesiredSQL(serial TableDDL) error = %v\n%s", err, serialDDL)
+	}
+	expected := schema.Schema{Tables: map[string]schema.Table{
+		"dbgov_pg_serial": {Name: "dbgov_pg_serial", Columns: []schema.Column{{Name: "id", Type: "integer", AutoIncrement: true}, {Name: "name", Type: "character varying(255)"}}},
+	}}
+	if diff := schema.Diff(expected, parsed); len(diff.Changes) != 0 {
+		t.Fatalf("serial round-trip diff = %+v, want none\nDDL:\n%s", diff.Changes, serialDDL)
+	}
 	statements, err := backend.RenderDDL([]schema.Change{
 		{Action: schema.ActionAddColumn, Table: "dbgov_pg_parent", Column: "note", Type: "text"},
 		{Action: schema.ActionModifyColumn, Table: "dbgov_pg_parent", Column: "name", Type: "character varying(200)"},
@@ -96,5 +115,12 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 	if statements[0] != `ALTER TABLE "dbgov_pg_parent" ADD COLUMN "note" text;` ||
 		statements[1] != `ALTER TABLE "dbgov_pg_parent" ALTER COLUMN "name" TYPE character varying(200);` {
 		t.Fatalf("RenderDDL statements = %+v", statements)
+	}
+	affected, err := backend.ExecDML(ctx, `UPDATE "dbgov_pg_parent" SET "name" = 'changed' WHERE "id" = 1`)
+	if err != nil {
+		t.Fatalf("ExecDML() error = %v", err)
+	}
+	if affected != 0 {
+		t.Fatalf("ExecDML affected = %d, want 0 for empty fixture", affected)
 	}
 }

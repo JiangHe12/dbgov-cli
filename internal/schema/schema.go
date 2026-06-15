@@ -23,11 +23,12 @@ type Table struct {
 }
 
 type Column struct {
-	Name     string  `json:"name"`
-	Type     string  `json:"type"`
-	Nullable bool    `json:"nullable"`
-	Default  *string `json:"default,omitempty"`
-	Key      string  `json:"key,omitempty"`
+	Name          string  `json:"name"`
+	Type          string  `json:"type"`
+	Nullable      bool    `json:"nullable"`
+	AutoIncrement bool    `json:"autoIncrement,omitempty"`
+	Default       *string `json:"default,omitempty"`
+	Key           string  `json:"key,omitempty"`
 }
 
 type Index struct {
@@ -54,12 +55,14 @@ const (
 )
 
 type Change struct {
-	Action      Action   `json:"action"`
-	Table       string   `json:"table"`
-	Column      string   `json:"column,omitempty"`
-	Type        string   `json:"type,omitempty"`
-	Columns     []Column `json:"columns,omitempty"`
-	Destructive bool     `json:"destructive"`
+	Action               Action   `json:"action"`
+	Table                string   `json:"table"`
+	Column               string   `json:"column,omitempty"`
+	Type                 string   `json:"type,omitempty"`
+	AutoIncrement        bool     `json:"autoIncrement,omitempty"`
+	AutoIncrementChanged bool     `json:"-"`
+	Columns              []Column `json:"columns,omitempty"`
+	Destructive          bool     `json:"destructive"`
 }
 
 type DiffResult struct {
@@ -82,7 +85,7 @@ type RiskSummary struct {
 	Destructive bool `json:"destructive"`
 }
 
-var createTableRE = regexp.MustCompile(`(?is)^\s*CREATE\s+TABLE\s+` + "`?" + `([a-zA-Z_][a-zA-Z0-9_]*)` + "`?" + `\s*\((.*)\)\s*;?\s*$`)
+var createTableRE = regexp.MustCompile(`(?is)^\s*CREATE\s+TABLE\s+(?:` + "`" + `([^` + "`" + `]+)` + "`" + `|"((?:""|[^"])*)"|([a-zA-Z_][a-zA-Z0-9_]*))\s*\((.*)\)\s*(?:[a-z].*)?;?\s*$`)
 
 func ParseDesiredSQL(sqlText string) (Schema, error) {
 	trimmed := strings.TrimSpace(sqlText)
@@ -90,8 +93,8 @@ func ParseDesiredSQL(sqlText string) (Schema, error) {
 	if matches == nil {
 		return Schema{}, apperrors.New(apperrors.CodeNotImplemented, "unsupported DDL: only simple CREATE TABLE statements are supported", nil)
 	}
-	tableName := matches[1]
-	columns, err := parseColumns(matches[2])
+	tableName := firstNonEmpty(matches[1], strings.ReplaceAll(matches[2], `""`, `"`), matches[3])
+	columns, err := parseColumns(matches[4])
 	if err != nil {
 		return Schema{}, err
 	}
@@ -158,7 +161,7 @@ func parseColumns(body string) ([]Column, error) {
 		if len(fields) == 0 {
 			continue
 		}
-		first := strings.ToUpper(strings.Trim(fields[0], "`"))
+		first := strings.ToUpper(trimSQLIdent(fields[0]))
 		switch first {
 		case "PRIMARY", "KEY", "UNIQUE", "INDEX", "CONSTRAINT", "FOREIGN":
 			continue
@@ -166,13 +169,89 @@ func parseColumns(body string) ([]Column, error) {
 		if len(fields) < 2 {
 			return nil, apperrors.New(apperrors.CodeNotImplemented, fmt.Sprintf("unsupported column definition: %s", strings.TrimSpace(part)), nil)
 		}
-		name := strings.Trim(fields[0], "`")
-		columns = append(columns, Column{Name: name, Type: fields[1]})
+		name := trimSQLIdent(fields[0])
+		columnType := columnTypeFromFields(fields[1:])
+		if columnType == "" {
+			return nil, apperrors.New(apperrors.CodeNotImplemented, fmt.Sprintf("unsupported column definition: %s", strings.TrimSpace(part)), nil)
+		}
+		columnType, autoIncrement := normalizeAutoIncrementType(columnType, fields[1:])
+		columns = append(columns, Column{Name: name, Type: columnType, AutoIncrement: autoIncrement})
 	}
 	if len(columns) == 0 {
 		return nil, apperrors.New(apperrors.CodeValidationFailed, "unsupported DDL: CREATE TABLE must contain at least one column", nil)
 	}
 	return columns, nil
+}
+
+func normalizeAutoIncrementType(columnType string, fields []string) (string, bool) {
+	switch strings.ToLower(columnType) {
+	case "serial":
+		return "integer", true
+	case "bigserial":
+		return "bigint", true
+	case "smallserial":
+		return "smallint", true
+	}
+	for index, field := range fields {
+		normalized := strings.ToUpper(strings.Trim(field, "`\""))
+		if normalized == "AUTO_INCREMENT" {
+			return columnType, true
+		}
+		if normalized == "GENERATED" {
+			if hasIdentityClause(fields[index:]) {
+				return columnType, true
+			}
+		}
+	}
+	return columnType, false
+}
+
+func hasIdentityClause(fields []string) bool {
+	for _, field := range fields {
+		if strings.EqualFold(strings.Trim(field, "`\""), "IDENTITY") {
+			return true
+		}
+	}
+	return false
+}
+
+func columnTypeFromFields(fields []string) string {
+	typeFields := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if isColumnConstraintKeyword(field) {
+			break
+		}
+		typeFields = append(typeFields, field)
+	}
+	return strings.Join(typeFields, " ")
+}
+
+func isColumnConstraintKeyword(field string) bool {
+	switch strings.ToUpper(strings.Trim(field, "`\"")) {
+	case "NOT", "NULL", "DEFAULT", "PRIMARY", "UNIQUE", "REFERENCES", "CHECK", "GENERATED", "COLLATE", "CONSTRAINT", "AUTO_INCREMENT", "COMMENT", "KEY", "IDENTITY":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func trimSQLIdent(value string) string {
+	if strings.HasPrefix(value, "`") && strings.HasSuffix(value, "`") {
+		return strings.TrimSuffix(strings.TrimPrefix(value, "`"), "`")
+	}
+	if strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) {
+		return strings.ReplaceAll(strings.TrimSuffix(strings.TrimPrefix(value, `"`), `"`), `""`, `"`)
+	}
+	return value
 }
 
 func splitColumnParts(body string) []string {
@@ -213,12 +292,13 @@ func Diff(current, desired Schema) DiffResult {
 		dropped := false
 		for _, col := range desiredTable.Columns {
 			if _, ok := currentCols[col.Name]; !ok {
-				result.Changes = append(result.Changes, Change{Action: ActionAddColumn, Table: tableName, Column: col.Name, Type: col.Type})
+				result.Changes = append(result.Changes, Change{Action: ActionAddColumn, Table: tableName, Column: col.Name, Type: col.Type, AutoIncrement: col.AutoIncrement})
 				added = true
 				continue
 			}
-			if !sameColumnType(currentCols[col.Name].Type, col.Type) {
-				result.Changes = append(result.Changes, Change{Action: ActionModifyColumn, Table: tableName, Column: col.Name, Type: col.Type, Destructive: true})
+			autoIncrementChanged := currentCols[col.Name].AutoIncrement != col.AutoIncrement
+			if !sameColumnType(currentCols[col.Name].Type, col.Type) || autoIncrementChanged {
+				result.Changes = append(result.Changes, Change{Action: ActionModifyColumn, Table: tableName, Column: col.Name, Type: col.Type, AutoIncrement: col.AutoIncrement, AutoIncrementChanged: autoIncrementChanged, Destructive: true})
 				result.Destructive = true
 			}
 		}

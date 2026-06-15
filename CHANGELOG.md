@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## v0.2.0
 
 ### Added
 
@@ -8,6 +8,10 @@
   using `EXPLAIN (FORMAT JSON)`.
 - Add PostgreSQL schema support for list, describe, dump, diff, plan, and
   apply through the shared schema engine.
+- Add PostgreSQL governed DML plus GitOps import, reconcile, and
+  structure-level rollback support.
+- Manage auto-increment columns end to end for MySQL and PostgreSQL schema
+  workflows using a normalized boolean `autoIncrement` model.
 
 ### Security
 
