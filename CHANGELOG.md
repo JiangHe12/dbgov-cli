@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## v0.1.10
+
+### Security
+
+- Redact SQL credential literals before statements and failed statements reach
+  the audit log, while preserving the surrounding SQL structure.
+- Redact governed DML plans/results and schema plan/dump SQL before returning
+  JSON or table output to callers.
+- Reuse the shared opskit-core v1.0.4 redactor for sensitive assignments, with
+  a narrow MySQL layer for `IDENTIFIED BY/WITH` and `PASSWORD(...)` literals.
+
 ## v0.1.9
 
 ### Fixed

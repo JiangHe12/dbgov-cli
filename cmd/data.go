@@ -200,6 +200,7 @@ func buildDataExecPlan(ctx context.Context, backend interface {
 }
 
 func printDataExecPlan(f *cliFlags, plan dataExecPlan) error {
+	plan.SQL = redactSQL(plan.SQL)
 	p := newPrinter(f)
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecPlan", Data: plan})
@@ -210,6 +211,7 @@ func printDataExecPlan(f *cliFlags, plan dataExecPlan) error {
 }
 
 func printDataExecResult(f *cliFlags, result dataExecResult) error {
+	result.SQL = redactSQL(result.SQL)
 	p := newPrinter(f)
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecResult", Data: result})

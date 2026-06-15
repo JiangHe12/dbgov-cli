@@ -460,6 +460,10 @@ func buildSchemaPlanFromDiff(b interface {
 }
 
 func printSchemaPlan(f *cliFlags, plan schemaPlan) error {
+	plan.Statements = append([]schemaPlanStatement(nil), plan.Statements...)
+	for index := range plan.Statements {
+		plan.Statements[index].SQL = redactSQL(plan.Statements[index].SQL)
+	}
 	p := newPrinter(f)
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaPlan", Data: plan})
@@ -518,6 +522,10 @@ func printSchemaDescribe(f *cliFlags, table schema.Table) error {
 }
 
 func printSchemaDump(f *cliFlags, result schemaDumpResult) error {
+	result.Tables = append([]schemaDumpTable(nil), result.Tables...)
+	for index := range result.Tables {
+		result.Tables[index].DDL = redactSQL(result.Tables[index].DDL)
+	}
 	p := newPrinter(f)
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaDump", Data: result})

@@ -95,6 +95,8 @@ func effectiveRiskLabel(baseLabel string, meta contextMeta) string {
 }
 
 func emitAudit(f *cliFlags, event dbgaudit.Event, opErr error) {
+	event.Statement = redactSQL(event.Statement)
+	event.FailedStatement = redactSQL(event.FailedStatement)
 	if opErr != nil {
 		event.Status = dbgaudit.StatusFailed
 		appErr := apperrors.AsAppError(opErr)
