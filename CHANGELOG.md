@@ -6,6 +6,8 @@
 
 - Add PostgreSQL P1 support for connection, read-only `query`, and `explain`
   using `EXPLAIN (FORMAT JSON)`.
+- Add PostgreSQL schema support for list, describe, dump, diff, plan, and
+  apply through the shared schema engine.
 
 ### Security
 

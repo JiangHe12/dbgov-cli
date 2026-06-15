@@ -5,9 +5,11 @@ package cmd
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/JiangHe12/dbgov-cli/internal/backend/postgres"
+	"github.com/JiangHe12/dbgov-cli/internal/schema"
 )
 
 func TestPostgresIntegrationQueryExplain(t *testing.T) {
@@ -35,5 +37,64 @@ func TestPostgresIntegrationQueryExplain(t *testing.T) {
 	}
 	if result.EstimatedRows == 0 {
 		t.Fatalf("EstimatedRows = 0, want non-zero")
+	}
+}
+
+func TestPostgresIntegrationSchema(t *testing.T) {
+	dsn := os.Getenv("DBGOV_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("DBGOV_TEST_POSTGRES_DSN is not set")
+	}
+	database := os.Getenv("DBGOV_TEST_POSTGRES_DATABASE")
+	if database == "" {
+		database = "postgres"
+	}
+	backend, err := postgres.New(dsn, database)
+	if err != nil {
+		t.Fatalf("postgres.New() error = %v", err)
+	}
+	ctx := context.Background()
+	_, _ = backend.ExecDDL(ctx, []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`})
+	t.Cleanup(func() {
+		_, _ = backend.ExecDDL(context.Background(), []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`})
+	})
+	_, err = backend.ExecDDL(ctx, []string{
+		`CREATE TABLE "dbgov_pg_parent" ("id" integer NOT NULL, "name" text DEFAULT 'n', CONSTRAINT "dbgov_pg_parent_pkey" PRIMARY KEY ("id"));`,
+		`CREATE TABLE "dbgov_pg_child" ("id" integer NOT NULL, "parent_id" integer NOT NULL, CONSTRAINT "dbgov_pg_child_pkey" PRIMARY KEY ("id"), CONSTRAINT "dbgov_pg_child_parent_fkey" FOREIGN KEY ("parent_id") REFERENCES "dbgov_pg_parent" ("id"));`,
+		`CREATE INDEX "dbgov_pg_child_parent_idx" ON "dbgov_pg_child" ("parent_id");`,
+	})
+	if err != nil {
+		t.Fatalf("create schema fixtures error = %v", err)
+	}
+
+	current, err := backend.IntrospectSchema(ctx)
+	if err != nil {
+		t.Fatalf("IntrospectSchema() error = %v", err)
+	}
+	parent := current.Tables["dbgov_pg_parent"]
+	if parent.Columns[0].Key != "PRI" || parent.Columns[1].Default == nil {
+		t.Fatalf("parent table = %+v", parent)
+	}
+	child := current.Tables["dbgov_pg_child"]
+	if len(child.Indexes) == 0 || len(child.ForeignKeys) != 1 {
+		t.Fatalf("child table = %+v", child)
+	}
+	ddl, err := backend.TableDDL(ctx, "dbgov_pg_child")
+	if err != nil {
+		t.Fatalf("TableDDL() error = %v", err)
+	}
+	if !strings.Contains(ddl, `CREATE TABLE "dbgov_pg_child"`) || !strings.Contains(ddl, `FOREIGN KEY ("parent_id") REFERENCES "dbgov_pg_parent" ("id")`) {
+		t.Fatalf("unexpected TableDDL:\n%s", ddl)
+	}
+	statements, err := backend.RenderDDL([]schema.Change{
+		{Action: schema.ActionAddColumn, Table: "dbgov_pg_parent", Column: "note", Type: "text"},
+		{Action: schema.ActionModifyColumn, Table: "dbgov_pg_parent", Column: "name", Type: "character varying(200)"},
+	})
+	if err != nil {
+		t.Fatalf("RenderDDL() error = %v", err)
+	}
+	if statements[0] != `ALTER TABLE "dbgov_pg_parent" ADD COLUMN "note" text;` ||
+		statements[1] != `ALTER TABLE "dbgov_pg_parent" ALTER COLUMN "name" TYPE character varying(200);` {
+		t.Fatalf("RenderDDL statements = %+v", statements)
 	}
 }

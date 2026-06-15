@@ -274,6 +274,38 @@ func TestSchemaPlanFakeBackendShowsRiskDDLAndAudit(t *testing.T) {
 	}
 }
 
+func TestPostgresSchemaPlanUsesPostgresDDL(t *testing.T) {
+	t.Parallel()
+
+	backend := postgres.NewWithDB(nil, "app")
+	current := schema.Schema{Tables: map[string]schema.Table{
+		`evil";--`: {
+			Name:    `evil";--`,
+			Columns: []schema.Column{{Name: "id", Type: "integer"}, {Name: `name";--`, Type: "text"}},
+		},
+	}}
+	desired := schema.Schema{Tables: map[string]schema.Table{
+		`evil";--`: {
+			Name:    `evil";--`,
+			Columns: []schema.Column{{Name: "id", Type: "integer"}, {Name: `name";--`, Type: "character varying(20)"}, {Name: `new";--`, Type: "text"}},
+		},
+	}}
+
+	plan, err := buildSchemaPlan(backend, current, desired)
+	if err != nil {
+		t.Fatalf("buildSchemaPlan(postgres) error = %v", err)
+	}
+	sqlText := schemaPlanSQL(plan)
+	for _, want := range []string{
+		`ALTER TABLE "evil"";--" ADD COLUMN "new"";--" text;`,
+		`ALTER TABLE "evil"";--" ALTER COLUMN "name"";--" TYPE character varying(20);`,
+	} {
+		if !strings.Contains(sqlText, want) {
+			t.Fatalf("postgres plan missing %q:\n%s", want, sqlText)
+		}
+	}
+}
+
 func TestSchemaApplyR1RequiresYesAndExecutesWhenAuthorized(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

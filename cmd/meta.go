@@ -120,13 +120,13 @@ func capabilitiesData() CapabilitiesData {
 				},
 				{
 					Name:   "postgres",
-					Status: "read/explain only",
+					Status: "read/explain/schema",
 					Rollback: CapRollback{
 						DDL:  "transactional",
 						Data: "generally-irreversible",
 						Notes: []string{
-							"PostgreSQL P1 supports connect, read query, and explain only.",
-							"Schema, DDL, DML, and transactional DDL rollback are planned for later phases.",
+							"PostgreSQL supports connect, read query, explain, schema inspect, diff, plan, and apply.",
+							"Governed DML and GitOps workflows are planned for later phases.",
 							"Data rollback requires explicit undo capture in future phases.",
 						},
 					},
@@ -169,7 +169,7 @@ func newCapabilitiesCmd(f *cliFlags) *cobra.Command {
 			rows := [][]string{
 				{"contextApiVersion", data.Supported.ContextAPIVersion},
 				{"auditApiVersion", data.Supported.AuditAPIVersion},
-				{"engines", "mysql available; postgres read/explain only"},
+				{"engines", "mysql available; postgres read/explain/schema"},
 				{"authorization", "R1/R2/R3 require --yes; R2/R3 require --ticket; R3 requires --allow-*"},
 				{"governance", "audit, RBAC, dry-run, OTel"},
 			}
