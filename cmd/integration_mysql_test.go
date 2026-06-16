@@ -48,9 +48,9 @@ func TestMySQLIntegrationAutoIncrementSchema(t *testing.T) {
 		t.Fatalf("mysql.New() error = %v", err)
 	}
 	ctx := context.Background()
-	_, _ = backend.ExecDDL(ctx, []string{"DROP TABLE IF EXISTS `dbgov_ai_mysql`;"})
+	_, _ = backend.ExecDDL(ctx, []string{"DROP TABLE IF EXISTS `dbgov_ai_mysql`;", "DROP TABLE IF EXISTS `dbgov_ai_mysql_existing_add`;", "DROP TABLE IF EXISTS `dbgov_ai_mysql_existing_modify`;"})
 	t.Cleanup(func() {
-		_, _ = backend.ExecDDL(context.Background(), []string{"DROP TABLE IF EXISTS `dbgov_ai_mysql`;"})
+		_, _ = backend.ExecDDL(context.Background(), []string{"DROP TABLE IF EXISTS `dbgov_ai_mysql`;", "DROP TABLE IF EXISTS `dbgov_ai_mysql_existing_add`;", "DROP TABLE IF EXISTS `dbgov_ai_mysql_existing_modify`;"})
 	})
 	_, err = backend.ExecDDL(ctx, []string{"CREATE TABLE `dbgov_ai_mysql` (`id` int AUTO_INCREMENT, `flags` int unsigned, PRIMARY KEY (`id`));"})
 	if err != nil {
@@ -77,5 +77,47 @@ func TestMySQLIntegrationAutoIncrementSchema(t *testing.T) {
 	}}
 	if diff := schema.Diff(expected, parsed); len(diff.Changes) != 0 {
 		t.Fatalf("round-trip diff = %+v, want none\nDDL:\n%s", diff.Changes, ddl)
+	}
+
+	_, err = backend.ExecDDL(ctx, []string{
+		"CREATE TABLE `dbgov_ai_mysql_existing_add` (`id` int NOT NULL, `seq` int, PRIMARY KEY (`id`));",
+		"CREATE TABLE `dbgov_ai_mysql_existing_modify` (`id` int NOT NULL, `seq` int, PRIMARY KEY (`id`));",
+	})
+	if err != nil {
+		t.Fatalf("create existing primary key fixture error = %v", err)
+	}
+	current = schema.Schema{Tables: map[string]schema.Table{
+		"dbgov_ai_mysql_existing_add": {
+			Name:    "dbgov_ai_mysql_existing_add",
+			Columns: []schema.Column{{Name: "id", Type: "int", Key: "PRI"}, {Name: "seq", Type: "int"}},
+			Indexes: []schema.Index{{Name: "PRIMARY", Columns: []string{"id"}, Unique: true}},
+		},
+	}}
+	desiredAdd := schema.Schema{Tables: map[string]schema.Table{
+		"dbgov_ai_mysql_existing_add": {Name: "dbgov_ai_mysql_existing_add", Columns: []schema.Column{{Name: "id", Type: "int"}, {Name: "seq", Type: "int"}, {Name: "new_seq", Type: "int", AutoIncrement: true}}},
+	}}
+	addStatements, err := backend.RenderDDL(schema.Diff(current, desiredAdd).Changes)
+	if err != nil {
+		t.Fatalf("RenderDDL(add autoincrement) error = %v", err)
+	}
+	if _, err := backend.ExecDDL(ctx, addStatements); err != nil {
+		t.Fatalf("apply add autoincrement with existing primary key error = %v; statements=%+v", err, addStatements)
+	}
+	current = schema.Schema{Tables: map[string]schema.Table{
+		"dbgov_ai_mysql_existing_modify": {
+			Name:    "dbgov_ai_mysql_existing_modify",
+			Columns: []schema.Column{{Name: "id", Type: "int", Key: "PRI"}, {Name: "seq", Type: "int"}},
+			Indexes: []schema.Index{{Name: "PRIMARY", Columns: []string{"id"}, Unique: true}},
+		},
+	}}
+	desiredModify := schema.Schema{Tables: map[string]schema.Table{
+		"dbgov_ai_mysql_existing_modify": {Name: "dbgov_ai_mysql_existing_modify", Columns: []schema.Column{{Name: "id", Type: "int"}, {Name: "seq", Type: "int", AutoIncrement: true}}},
+	}}
+	modifyStatements, err := backend.RenderDDL(schema.Diff(current, desiredModify).Changes)
+	if err != nil {
+		t.Fatalf("RenderDDL(modify autoincrement) error = %v", err)
+	}
+	if _, err := backend.ExecDDL(ctx, modifyStatements); err != nil {
+		t.Fatalf("apply modify autoincrement with existing primary key error = %v; statements=%+v", err, modifyStatements)
 	}
 }

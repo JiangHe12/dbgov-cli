@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.1
+
+### Fixed
+
+- Avoid duplicate MySQL primary-key DDL when adding or modifying an
+  auto-increment column on a table that already has a primary key.
+- Avoid PostgreSQL table rewrites by omitting `ALTER COLUMN ... TYPE` when a
+  schema diff changes only identity/auto-increment state.
+- Treat PostgreSQL `nextval(...)` defaults as serial auto-increment only when
+  `pg_depend` shows the sequence is owned by that table column.
+- Cap generated MySQL auto-increment helper index names at the 64-character
+  identifier limit while preserving existing short-name output.
+
 ## v0.2.0
 
 ### Added

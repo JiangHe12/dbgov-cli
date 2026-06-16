@@ -160,8 +160,53 @@ func TestDiffDetectsAutoIncrementChanges(t *testing.T) {
 		t.Fatalf("changes = %+v, want 1", diff.Changes)
 	}
 	change := diff.Changes[0]
-	if change.Action != ActionModifyColumn || change.Column != "id" || change.Type != "integer" || !change.AutoIncrement || !change.AutoIncrementChanged {
+	if change.Action != ActionModifyColumn || change.Column != "id" || change.Type != "integer" || !change.AutoIncrement || !change.AutoIncrementChanged || change.TypeChanged {
 		t.Fatalf("auto increment change = %+v", change)
+	}
+}
+
+func TestDiffCarriesAutoIncrementIndexContext(t *testing.T) {
+	current := Schema{Tables: map[string]Table{
+		"users": {
+			Name:    "users",
+			Columns: []Column{{Name: "id", Type: "BIGINT", Key: "PRI"}, {Name: "seq", Type: "int"}},
+			Indexes: []Index{{Name: "PRIMARY", Columns: []string{"id"}, Unique: true}},
+		},
+	}}
+	desired := Schema{Tables: map[string]Table{
+		"users": {Name: "users", Columns: []Column{{Name: "id", Type: "BIGINT"}, {Name: "seq", Type: "int", AutoIncrement: true}, {Name: "new_seq", Type: "int", AutoIncrement: true}}},
+	}}
+
+	diff := Diff(current, desired)
+	if len(diff.Changes) != 2 {
+		t.Fatalf("changes = %+v, want 2", diff.Changes)
+	}
+	if diff.Changes[0].Action != ActionModifyColumn || diff.Changes[0].Column != "seq" || !diff.Changes[0].AutoIncrementIndexRequired {
+		t.Fatalf("modify autoincrement change = %+v, want index required", diff.Changes[0])
+	}
+	if diff.Changes[1].Action != ActionAddColumn || diff.Changes[1].Column != "new_seq" || !diff.Changes[1].AutoIncrementIndexRequired {
+		t.Fatalf("add autoincrement change = %+v, want index required", diff.Changes[1])
+	}
+}
+
+func TestDiffSkipsAutoIncrementIndexWhenColumnAlreadyIndexed(t *testing.T) {
+	current := Schema{Tables: map[string]Table{
+		"users": {
+			Name:    "users",
+			Columns: []Column{{Name: "seq", Type: "int", Key: "MUL"}},
+			Indexes: []Index{{Name: "idx_users_seq", Columns: []string{"seq"}, Unique: false}},
+		},
+	}}
+	desired := Schema{Tables: map[string]Table{
+		"users": {Name: "users", Columns: []Column{{Name: "seq", Type: "int", AutoIncrement: true}}},
+	}}
+
+	diff := Diff(current, desired)
+	if len(diff.Changes) != 1 {
+		t.Fatalf("changes = %+v, want 1", diff.Changes)
+	}
+	if diff.Changes[0].AutoIncrementIndexRequired {
+		t.Fatalf("change = %+v, want no extra index for indexed column", diff.Changes[0])
 	}
 }
 
@@ -214,7 +259,7 @@ func TestDiffSchemaFindsModifyColumnAndCreateTable(t *testing.T) {
 	if diff.Changes[0].Action != ActionCreateTable || diff.Changes[0].Table != "orders" || len(diff.Changes[0].Columns) != 2 {
 		t.Fatalf("create table change = %+v", diff.Changes[0])
 	}
-	if diff.Changes[1].Action != ActionModifyColumn || diff.Changes[1].Column != "name" || diff.Changes[1].Type != "TEXT" || !diff.Changes[1].Destructive {
+	if diff.Changes[1].Action != ActionModifyColumn || diff.Changes[1].Column != "name" || diff.Changes[1].Type != "TEXT" || !diff.Changes[1].TypeChanged || !diff.Changes[1].Destructive {
 		t.Fatalf("modify column change = %+v", diff.Changes[1])
 	}
 	if !diff.Destructive {

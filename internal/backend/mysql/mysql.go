@@ -2,7 +2,9 @@ package mysql
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -19,6 +21,8 @@ type Backend struct {
 	db       *sql.DB
 	database string
 }
+
+const mysqlIdentifierMaxLen = 64
 
 func New(dsn, database string) (*Backend, error) {
 	db, err := sql.Open("mysql", dsn)
@@ -237,15 +241,15 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 		case schema.ActionAddColumn:
 			column := schema.Column{Name: change.Column, Type: change.Type, AutoIncrement: change.AutoIncrement}
 			statement := fmt.Sprintf("ALTER TABLE `%s` ADD COLUMN %s", escapeIdent(change.Table), renderColumn(column))
-			if change.AutoIncrement {
-				statement += fmt.Sprintf(", ADD PRIMARY KEY (`%s`)", escapeIdent(change.Column))
+			if change.AutoIncrementIndexRequired {
+				statement += fmt.Sprintf(", ADD UNIQUE KEY `%s` (`%s`)", escapeIdent(autoIncrementIndexName(change.Table, change.Column)), escapeIdent(change.Column))
 			}
 			statements = append(statements, statement+";")
 		case schema.ActionModifyColumn:
 			column := schema.Column{Name: change.Column, Type: change.Type, AutoIncrement: change.AutoIncrement}
 			statement := fmt.Sprintf("ALTER TABLE `%s` MODIFY COLUMN %s", escapeIdent(change.Table), renderColumn(column))
-			if change.AutoIncrementChanged && change.AutoIncrement {
-				statement += fmt.Sprintf(", ADD PRIMARY KEY (`%s`)", escapeIdent(change.Column))
+			if change.AutoIncrementIndexRequired {
+				statement += fmt.Sprintf(", ADD UNIQUE KEY `%s` (`%s`)", escapeIdent(autoIncrementIndexName(change.Table, change.Column)), escapeIdent(change.Column))
 			}
 			statements = append(statements, statement+";")
 		case schema.ActionDropColumn:
@@ -361,4 +365,40 @@ func renderColumn(column schema.Column) string {
 		parts = append(parts, "AUTO_INCREMENT")
 	}
 	return strings.Join(parts, " ")
+}
+
+func autoIncrementIndexName(table, column string) string {
+	natural := "idx_" + table + "_" + column + "_autoinc"
+	if len(natural) <= mysqlIdentifierMaxLen {
+		return natural
+	}
+	sum := sha256.Sum256([]byte(table + "\x00" + column))
+	suffix := "_" + hex.EncodeToString(sum[:])[:12]
+	prefixLimit := mysqlIdentifierMaxLen - len(suffix)
+	prefix := sanitizeIdentifierName(natural)
+	if len(prefix) > prefixLimit {
+		prefix = prefix[:prefixLimit]
+	}
+	prefix = strings.TrimRight(prefix, "_")
+	if prefix == "" {
+		prefix = "idx"
+	}
+	if len(prefix) > prefixLimit {
+		prefix = prefix[:prefixLimit]
+	}
+	return prefix + suffix
+}
+
+func sanitizeIdentifierName(value string) string {
+	var b strings.Builder
+	b.Grow(len(value))
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+			b.WriteByte(c)
+			continue
+		}
+		b.WriteByte('_')
+	}
+	return b.String()
 }

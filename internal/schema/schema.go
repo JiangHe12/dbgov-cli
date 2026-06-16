@@ -55,14 +55,16 @@ const (
 )
 
 type Change struct {
-	Action               Action   `json:"action"`
-	Table                string   `json:"table"`
-	Column               string   `json:"column,omitempty"`
-	Type                 string   `json:"type,omitempty"`
-	AutoIncrement        bool     `json:"autoIncrement,omitempty"`
-	AutoIncrementChanged bool     `json:"-"`
-	Columns              []Column `json:"columns,omitempty"`
-	Destructive          bool     `json:"destructive"`
+	Action                     Action   `json:"action"`
+	Table                      string   `json:"table"`
+	Column                     string   `json:"column,omitempty"`
+	Type                       string   `json:"type,omitempty"`
+	AutoIncrement              bool     `json:"autoIncrement,omitempty"`
+	TypeChanged                bool     `json:"-"`
+	AutoIncrementChanged       bool     `json:"-"`
+	AutoIncrementIndexRequired bool     `json:"-"`
+	Columns                    []Column `json:"columns,omitempty"`
+	Destructive                bool     `json:"destructive"`
 }
 
 type DiffResult struct {
@@ -292,13 +294,31 @@ func Diff(current, desired Schema) DiffResult {
 		dropped := false
 		for _, col := range desiredTable.Columns {
 			if _, ok := currentCols[col.Name]; !ok {
-				result.Changes = append(result.Changes, Change{Action: ActionAddColumn, Table: tableName, Column: col.Name, Type: col.Type, AutoIncrement: col.AutoIncrement})
+				result.Changes = append(result.Changes, Change{
+					Action:                     ActionAddColumn,
+					Table:                      tableName,
+					Column:                     col.Name,
+					Type:                       col.Type,
+					AutoIncrement:              col.AutoIncrement,
+					AutoIncrementIndexRequired: col.AutoIncrement,
+				})
 				added = true
 				continue
 			}
+			typeChanged := !sameColumnType(currentCols[col.Name].Type, col.Type)
 			autoIncrementChanged := currentCols[col.Name].AutoIncrement != col.AutoIncrement
-			if !sameColumnType(currentCols[col.Name].Type, col.Type) || autoIncrementChanged {
-				result.Changes = append(result.Changes, Change{Action: ActionModifyColumn, Table: tableName, Column: col.Name, Type: col.Type, AutoIncrement: col.AutoIncrement, AutoIncrementChanged: autoIncrementChanged, Destructive: true})
+			if typeChanged || autoIncrementChanged {
+				result.Changes = append(result.Changes, Change{
+					Action:                     ActionModifyColumn,
+					Table:                      tableName,
+					Column:                     col.Name,
+					Type:                       col.Type,
+					AutoIncrement:              col.AutoIncrement,
+					TypeChanged:                typeChanged,
+					AutoIncrementChanged:       autoIncrementChanged,
+					AutoIncrementIndexRequired: col.AutoIncrement && !columnHasLeadingIndex(currentTable, col.Name),
+					Destructive:                true,
+				})
 				result.Destructive = true
 			}
 		}
@@ -369,6 +389,20 @@ func columnMap(columns []Column) map[string]Column {
 		out[col.Name] = col
 	}
 	return out
+}
+
+func columnHasLeadingIndex(table Table, columnName string) bool {
+	for _, column := range table.Columns {
+		if column.Name == columnName && column.Key != "" {
+			return true
+		}
+	}
+	for _, index := range table.Indexes {
+		if len(index.Columns) > 0 && index.Columns[0] == columnName {
+			return true
+		}
+	}
+	return false
 }
 
 func sameColumnType(left, right string) bool {

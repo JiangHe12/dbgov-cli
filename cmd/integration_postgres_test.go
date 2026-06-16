@@ -54,14 +54,16 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 		t.Fatalf("postgres.New() error = %v", err)
 	}
 	ctx := context.Background()
-	_, _ = backend.ExecDDL(ctx, []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`})
+	_, _ = backend.ExecDDL(ctx, []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_shared_seq";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`, `DROP SEQUENCE IF EXISTS "dbgov_pg_shared_sequence";`})
 	t.Cleanup(func() {
-		_, _ = backend.ExecDDL(context.Background(), []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`})
+		_, _ = backend.ExecDDL(context.Background(), []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_shared_seq";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`, `DROP SEQUENCE IF EXISTS "dbgov_pg_shared_sequence";`})
 	})
 	_, err = backend.ExecDDL(ctx, []string{
+		`CREATE SEQUENCE "dbgov_pg_shared_sequence";`,
 		`CREATE TABLE "dbgov_pg_parent" ("id" integer GENERATED ALWAYS AS IDENTITY, "name" text DEFAULT 'n', CONSTRAINT "dbgov_pg_parent_pkey" PRIMARY KEY ("id"));`,
 		`CREATE TABLE "dbgov_pg_child" ("id" integer NOT NULL, "parent_id" integer NOT NULL, CONSTRAINT "dbgov_pg_child_pkey" PRIMARY KEY ("id"), CONSTRAINT "dbgov_pg_child_parent_fkey" FOREIGN KEY ("parent_id") REFERENCES "dbgov_pg_parent" ("id"));`,
 		`CREATE TABLE "dbgov_pg_serial" ("id" serial PRIMARY KEY, "name" character varying(255));`,
+		`CREATE TABLE "dbgov_pg_shared_seq" ("id" integer DEFAULT nextval('"dbgov_pg_shared_sequence"'::regclass), "name" text);`,
 		`CREATE INDEX "dbgov_pg_child_parent_idx" ON "dbgov_pg_child" ("parent_id");`,
 	})
 	if err != nil {
@@ -79,6 +81,10 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 	serialTable := current.Tables["dbgov_pg_serial"]
 	if len(serialTable.Columns) < 2 || !serialTable.Columns[0].AutoIncrement || serialTable.Columns[0].Default != nil {
 		t.Fatalf("serial table = %+v", serialTable)
+	}
+	sharedSeqTable := current.Tables["dbgov_pg_shared_seq"]
+	if len(sharedSeqTable.Columns) < 2 || sharedSeqTable.Columns[0].AutoIncrement || sharedSeqTable.Columns[0].Default == nil {
+		t.Fatalf("shared sequence table = %+v, want regular nextval default", sharedSeqTable)
 	}
 	child := current.Tables["dbgov_pg_child"]
 	if len(child.Indexes) == 0 || len(child.ForeignKeys) != 1 {

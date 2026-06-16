@@ -49,6 +49,15 @@ SELECT c.relname AS table_name,
        a.attidentity AS identity_kind,
        EXISTS (
            SELECT 1
+           FROM pg_depend dep
+           JOIN pg_class seq ON seq.oid = dep.objid
+           WHERE seq.relkind = 'S'
+             AND dep.refobjid = c.oid
+             AND dep.refobjsubid = a.attnum
+             AND dep.deptype = 'a'
+       ) AS has_owned_sequence,
+       EXISTS (
+           SELECT 1
            FROM pg_constraint pk
            WHERE pk.conrelid = c.oid
              AND pk.contype = 'p'
@@ -71,16 +80,16 @@ ORDER BY c.relname, a.attnum`, b.schema)
 	result := schema.Schema{Tables: map[string]schema.Table{}}
 	for rows.Next() {
 		var tableName, columnName, columnType string
-		var notNull, primary bool
+		var notNull, hasOwnedSequence, primary bool
 		var defaultValue, identityKind sql.NullString
-		if err := rows.Scan(&tableName, &columnName, &columnType, &notNull, &defaultValue, &identityKind, &primary); err != nil {
+		if err := rows.Scan(&tableName, &columnName, &columnType, &notNull, &defaultValue, &identityKind, &hasOwnedSequence, &primary); err != nil {
 			return schema.Schema{}, err
 		}
 		table := result.Tables[tableName]
 		if table.Name == "" {
 			table.Name = tableName
 		}
-		autoIncrement := identityKind.String == "a" || identityKind.String == "d" || isPostgresNextvalDefault(defaultValue.String)
+		autoIncrement := identityKind.String == "a" || identityKind.String == "d" || (hasOwnedSequence && isPostgresNextvalDefault(defaultValue.String))
 		column := schema.Column{Name: columnName, Type: columnType, Nullable: !notNull, AutoIncrement: autoIncrement}
 		if primary {
 			column.Key = "PRI"
@@ -267,7 +276,10 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 			column := schema.Column{Name: change.Column, Type: change.Type, AutoIncrement: change.AutoIncrement}
 			statements = append(statements, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s;", quoteIdent(change.Table), renderColumnDefinition(column)))
 		case schema.ActionModifyColumn:
-			clauses := []string{fmt.Sprintf("ALTER COLUMN %s TYPE %s", quoteIdent(change.Column), change.Type)}
+			var clauses []string
+			if change.TypeChanged {
+				clauses = append(clauses, fmt.Sprintf("ALTER COLUMN %s TYPE %s", quoteIdent(change.Column), change.Type))
+			}
 			if change.AutoIncrementChanged {
 				if change.AutoIncrement {
 					clauses = append(clauses, fmt.Sprintf("ALTER COLUMN %s SET NOT NULL", quoteIdent(change.Column)))
@@ -275,6 +287,9 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 				} else {
 					clauses = append(clauses, fmt.Sprintf("ALTER COLUMN %s DROP IDENTITY IF EXISTS", quoteIdent(change.Column)))
 				}
+			}
+			if len(clauses) == 0 {
+				continue
 			}
 			statements = append(statements, fmt.Sprintf("ALTER TABLE %s %s;", quoteIdent(change.Table), strings.Join(clauses, ", ")))
 		case schema.ActionDropColumn:

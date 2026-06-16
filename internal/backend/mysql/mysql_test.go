@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -143,8 +144,8 @@ func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 		{Action: schema.ActionCreateTable, Table: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT", AutoIncrement: true}, {Name: "user_id", Type: "BIGINT"}}},
 		{Action: schema.ActionAddColumn, Table: "users", Column: "name", Type: "VARCHAR(100)"},
 		{Action: schema.ActionModifyColumn, Table: "users", Column: "name", Type: "TEXT"},
-		{Action: schema.ActionAddColumn, Table: "users", Column: "seq", Type: "int unsigned", AutoIncrement: true},
-		{Action: schema.ActionModifyColumn, Table: "users", Column: "seq", Type: "int unsigned", AutoIncrement: true, AutoIncrementChanged: true},
+		{Action: schema.ActionAddColumn, Table: "users", Column: "seq", Type: "int unsigned", AutoIncrement: true, AutoIncrementIndexRequired: true},
+		{Action: schema.ActionModifyColumn, Table: "users", Column: "seq", Type: "int unsigned", AutoIncrement: true, AutoIncrementChanged: true, AutoIncrementIndexRequired: true},
 		{Action: schema.ActionDropColumn, Table: "users", Column: "legacy"},
 	})
 	if err != nil {
@@ -154,8 +155,8 @@ func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 		"CREATE TABLE `orders` (`id` BIGINT AUTO_INCREMENT, `user_id` BIGINT, PRIMARY KEY (`id`));",
 		"ALTER TABLE `users` ADD COLUMN `name` VARCHAR(100);",
 		"ALTER TABLE `users` MODIFY COLUMN `name` TEXT;",
-		"ALTER TABLE `users` ADD COLUMN `seq` int unsigned AUTO_INCREMENT, ADD PRIMARY KEY (`seq`);",
-		"ALTER TABLE `users` MODIFY COLUMN `seq` int unsigned AUTO_INCREMENT, ADD PRIMARY KEY (`seq`);",
+		"ALTER TABLE `users` ADD COLUMN `seq` int unsigned AUTO_INCREMENT, ADD UNIQUE KEY `idx_users_seq_autoinc` (`seq`);",
+		"ALTER TABLE `users` MODIFY COLUMN `seq` int unsigned AUTO_INCREMENT, ADD UNIQUE KEY `idx_users_seq_autoinc` (`seq`);",
 		"ALTER TABLE `users` DROP COLUMN `legacy`;",
 	}
 	if len(statements) != len(want) {
@@ -165,6 +166,82 @@ func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 		if statements[i] != want[i] {
 			t.Fatalf("statement[%d] = %q, want %q", i, statements[i], want[i])
 		}
+	}
+}
+
+func TestRenderDDLDoesNotAddSecondPrimaryKeyForAutoIncrementOnExistingTable(t *testing.T) {
+	backend := NewWithDB(nil, "appdb")
+	current := schema.Schema{Tables: map[string]schema.Table{
+		"users": {
+			Name:    "users",
+			Columns: []schema.Column{{Name: "id", Type: "BIGINT", Key: "PRI"}, {Name: "seq", Type: "int"}},
+			Indexes: []schema.Index{{Name: "PRIMARY", Columns: []string{"id"}, Unique: true}},
+		},
+	}}
+	desiredAdd := schema.Schema{Tables: map[string]schema.Table{
+		"users": {
+			Name:    "users",
+			Columns: []schema.Column{{Name: "id", Type: "BIGINT"}, {Name: "seq", Type: "int"}, {Name: "new_seq", Type: "int", AutoIncrement: true}},
+		},
+	}}
+	desiredModify := schema.Schema{Tables: map[string]schema.Table{
+		"users": {
+			Name:    "users",
+			Columns: []schema.Column{{Name: "id", Type: "BIGINT"}, {Name: "seq", Type: "int", AutoIncrement: true}},
+		},
+	}}
+
+	for _, tc := range []struct {
+		name string
+		diff schema.DiffResult
+		want string
+	}{
+		{name: "add", diff: schema.Diff(current, desiredAdd), want: "ALTER TABLE `users` ADD COLUMN `new_seq` int AUTO_INCREMENT, ADD UNIQUE KEY `idx_users_new_seq_autoinc` (`new_seq`);"},
+		{name: "modify", diff: schema.Diff(current, desiredModify), want: "ALTER TABLE `users` MODIFY COLUMN `seq` int AUTO_INCREMENT, ADD UNIQUE KEY `idx_users_seq_autoinc` (`seq`);"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statements, err := backend.RenderDDL(tc.diff.Changes)
+			if err != nil {
+				t.Fatalf("RenderDDL() error = %v", err)
+			}
+			if len(statements) != 1 || statements[0] != tc.want {
+				t.Fatalf("statements = %+v, want %q", statements, tc.want)
+			}
+			if strings.Contains(statements[0], "ADD PRIMARY KEY") {
+				t.Fatalf("statement adds duplicate primary key: %s", statements[0])
+			}
+		})
+	}
+}
+
+func TestAutoIncrementIndexNameKeepsShortNamesUnchanged(t *testing.T) {
+	got := autoIncrementIndexName("users", "seq")
+	if got != "idx_users_seq_autoinc" {
+		t.Fatalf("autoIncrementIndexName() = %q, want old short-name format", got)
+	}
+}
+
+func TestAutoIncrementIndexNameCapsLongNamesDeterministically(t *testing.T) {
+	table := strings.Repeat("very_long_table_name_", 4)
+	column := strings.Repeat("very_long_column_name_", 4)
+
+	first := autoIncrementIndexName(table, column)
+	second := autoIncrementIndexName(table, column)
+	if first != second {
+		t.Fatalf("autoIncrementIndexName() not deterministic: %q vs %q", first, second)
+	}
+	if len(first) > mysqlIdentifierMaxLen {
+		t.Fatalf("index name length = %d, want <= %d: %q", len(first), mysqlIdentifierMaxLen, first)
+	}
+	if !regexp.MustCompile(`^[A-Za-z0-9_]+$`).MatchString(first) {
+		t.Fatalf("index name contains unsafe identifier characters: %q", first)
+	}
+	natural := "idx_" + table + "_" + column + "_autoinc"
+	if len(natural) <= mysqlIdentifierMaxLen {
+		t.Fatalf("test fixture natural name length = %d, want > %d", len(natural), mysqlIdentifierMaxLen)
+	}
+	if first == natural {
+		t.Fatalf("long name was not shortened: %q", first)
 	}
 }
 
