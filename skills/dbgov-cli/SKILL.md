@@ -1,6 +1,6 @@
 ---
 name: dbgov-cli
-description: Governed database operations via CLI — query, schema diff/plan/apply, governed DML, GitOps import/reconcile/rollback, audit. MySQL.
+description: Governed database operations via CLI — query, schema diff/plan/apply, governed DML, GitOps import/reconcile/rollback, audit. MySQL and PostgreSQL.
 allowed-tools: Bash(dbgov-cli:*), Bash(go:*)
 ---
 
@@ -8,11 +8,11 @@ allowed-tools: Bash(dbgov-cli:*), Bash(go:*)
 
 ## What This Tool Does
 
-`dbgov` is a governed database operations CLI for AI agents. Use it for MySQL database reads, schema inspection, declarative schema changes, governed DML, GitOps schema import/reconcile/rollback, context management, and audit inspection.
+`dbgov` is a governed database operations CLI for AI agents. Use it for MySQL and PostgreSQL database reads, schema inspection, declarative schema changes, governed DML, GitOps schema import/reconcile/rollback, context management, and audit inspection.
 
 **Always use `-o json` for agent-consumed output.** stdout is clean JSON/table/plain output; errors go to stderr.
 
-**MySQL only in the current release.** PostgreSQL is planned as a fast-follow, but do not assume PG support unless `dbgov-cli capabilities -o json` says it is available.
+**MySQL and PostgreSQL are supported.** Treat `dbgov-cli capabilities -o json` as the authoritative source for the current build's available engines and features.
 
 **Never estimate blast radius yourself.** Impact must come from dbgov commands such as `dbgov-cli explain`, `dbgov-cli schema plan`, or command `--dry-run` output. If dbgov cannot measure impact, it fails closed instead of guessing.
 
@@ -57,7 +57,7 @@ Use `dbgov-cli ctx role set`, `dbgov-cli ctx role unset`, and `dbgov-cli ctx rol
 
 ### Snapshots and Rollback
 
-Before schema mutations (`schema apply`, `import`, `reconcile`, `rollback`), dbgov captures a pre-change schema DDL snapshot. Rollback is structure-level only for MySQL: dropped data is not recovered. dbgov prints a data-loss warning during rollback planning and execution.
+Before schema mutations (`schema apply`, `import`, `reconcile`, `rollback`), dbgov captures a pre-change schema DDL snapshot. Rollback restores structure only for MySQL and PostgreSQL: dropped data is not recovered. dbgov prints a data-loss warning during rollback planning and execution.
 
 ### Audit
 
@@ -92,10 +92,11 @@ dbgov-cli capabilities -o json
 dbgov-cli ctx current -o json
 ```
 
-If no context exists, ask the user for MySQL host, database, username, and credential handling, then create and select one:
+If no context exists, ask the user for MySQL or PostgreSQL host, database, username, and credential handling, then create and select one:
 
 ```bash
 DBGOV_PASSWORD='<password>' dbgov-cli ctx set prod --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected -o json
+DBGOV_PASSWORD='<password>' dbgov-cli ctx set prod-pg --engine postgres --host 127.0.0.1 --port 5432 --database app --username appuser --env prod --protected -o json
 dbgov-cli ctx use prod -o json
 ```
 

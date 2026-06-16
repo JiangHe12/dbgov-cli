@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.2
+
+### Changed
+
+- Synchronize documentation to reflect MySQL and PostgreSQL dual-engine
+  support.
+
 ## v0.2.1
 
 ### Fixed

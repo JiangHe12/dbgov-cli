@@ -54,6 +54,7 @@ func TestSkillFrontmatter(t *testing.T) {
 	for _, want := range []string{
 		"---\nname: dbgov-cli",
 		"description: Governed database operations via CLI",
+		"MySQL and PostgreSQL",
 		"allowed-tools: Bash(dbgov-cli:*), Bash(go:*)",
 	} {
 		if !strings.Contains(body, want) {
@@ -66,14 +67,15 @@ func TestSkillGovernanceRules(t *testing.T) {
 	body := loadSkillBody(t)
 	for _, want := range []string{
 		"Always use `-o json`",
-		"MySQL only",
+		"MySQL and PostgreSQL are supported",
+		"`dbgov-cli capabilities -o json` as the authoritative source",
 		"Never estimate blast radius yourself",
 		"`--yes` only confirms R1",
 		"Never auto-supply `--ticket`, `--allow-*`, or high-risk `--yes`",
 		"reader | R0",
 		"writer | R2",
 		"admin | R3",
-		"Rollback is structure-level only",
+		"Rollback restores structure only",
 		"dbgov-cli audit prune",
 		"`--allow-destructive`",
 		"`--allow-no-where`",

@@ -4,7 +4,7 @@ This file is the contributor and AI-agent guide for this repository. `CLAUDE.md`
 
 ## Project Summary
 
-dbgov is a governed MySQL operations CLI for AI agents: read queries and `explain`, schema `diff` / `plan` / `apply`, governed DML (`data exec`), GitOps `import` / `reconcile` / `rollback`, audit query/verify/prune, RBAC, and credential migration. It is built on the shared `opskit-core` governance engine.
+dbgov is a governed MySQL and PostgreSQL operations CLI for AI agents: read queries and `explain`, schema `diff` / `plan` / `apply`, governed DML (`data exec`), GitOps `import` / `reconcile` / `rollback`, audit query/verify/prune, RBAC, and credential migration. It is built on the shared `opskit-core` governance engine.
 
 ## Working Discipline
 
@@ -25,7 +25,7 @@ npm pack --dry-run              # must list exactly the 5 files in Release & Ver
 ## Governance Rules
 
 - R0 reads are free but still audited. R1 needs `--yes`. R2 also needs a non-empty `--ticket`. R3 also needs the precise `--allow-*` flag(s). Protected contexts raise every operation one tier.
-- DML impact must come from `EXPLAIN`; rollback is structure-level only for MySQL, so dropped data is never recovered.
+- DML impact must come from `EXPLAIN`; rollback restores structure only for MySQL and PostgreSQL, so dropped data is never recovered.
 - AI agents must never auto-fill `--ticket`, `--allow-*`, or a high-risk `--yes`. Impact and blast radius must come from the CLI's own `plan` / `diff` / `explain` / `--dry-run` output, never from model guesses.
 
 ## Code Conventions
