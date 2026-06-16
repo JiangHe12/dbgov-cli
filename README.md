@@ -80,7 +80,7 @@ dbgov-cli ctx migrate-credentials --to encrypted-file -o json
 dbgov-cli ctx role set prod --target-operator alice --role writer -o json
 ```
 
-Portable context export redacts passwords by default. `--include-credentials` is only allowed for `plain-yaml` or empty credential backends; secure backend credentials must be shared out of band.
+Portable context export redacts passwords by default. `--include-credentials` only includes plaintext credentials when they are stored inline (`plain-yaml` or an empty/unset credential backend); secure backends such as encrypted-file, keychain, and vault must be shared out of band.
 
 Set `DBGOV_OPERATOR` in CI to make audit and RBAC identity stable.
 

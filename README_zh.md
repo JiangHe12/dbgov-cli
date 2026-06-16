@@ -80,7 +80,7 @@ dbgov-cli ctx migrate-credentials --to encrypted-file -o json
 dbgov-cli ctx role set prod --target-operator alice --role writer -o json
 ```
 
-可移植 context 导出默认会脱敏 password。`--include-credentials` 仅允许 `plain-yaml` 或空凭据后端;安全后端凭据必须通过带外方式共享。
+可移植 context 导出默认会脱敏 password。`--include-credentials` 只会在凭据以内联方式存储时导出明文(`plain-yaml` 或空/未设置 credential backend);encrypted-file、keychain、vault 等安全后端凭据必须通过带外方式共享。
 
 CI 中建议设置 `DBGOV_OPERATOR`,让审计和 RBAC 身份稳定。
 

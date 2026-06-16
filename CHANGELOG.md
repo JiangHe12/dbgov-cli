@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.2.3
+
+### Changed
+
+- Documentation: clarify that `ctx export --include-credentials` exports plaintext only for inline credentials (`plain-yaml` or an unset credential backend); encrypted-file, keychain, and vault backends must be shared out of band.
+
 ## v0.2.2
 
 ### Changed

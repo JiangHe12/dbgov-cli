@@ -131,7 +131,7 @@ dbgov-cli ctx import -f ctx.yaml --rename <new-name> --force -o json
 dbgov-cli ctx migrate-credentials --to encrypted-file --context <name> -o json
 ```
 
-`ctx export` redacts `password` by default. `--include-credentials` is only valid for `plain-yaml` or empty credential backends; encrypted-file, keychain, and vault credentials must be shared out of band. `ctx import` accepts portable context YAML, supports `--rename` and `--force`, and leaves redacted credentials empty so the operator can run `dbgov-cli ctx set <name> --password=...`.
+`ctx export` redacts `password` by default. `--include-credentials` only includes plaintext credentials when they are stored inline (`plain-yaml` or an empty/unset credential backend); encrypted-file, keychain, and vault credentials must be shared out of band. `ctx import` accepts portable context YAML, supports `--rename` and `--force`, and leaves redacted credentials empty so the operator can run `dbgov-cli ctx set <name> --password=...`.
 
 ### Read Queries
 
