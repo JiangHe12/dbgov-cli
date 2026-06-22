@@ -344,6 +344,64 @@ func TestExecDMLRollsBackOnFailure(t *testing.T) {
 	}
 }
 
+func TestExecDMLErrorsAreBackendErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(sqlmock.Sqlmock)
+	}{
+		{
+			name: "begin",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin().WillReturnError(errors.New("begin boom"))
+			},
+		},
+		{
+			name: "exec",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec(regexp.QuoteMeta("UPDATE users SET name='x' WHERE id=1")).WillReturnError(errors.New("exec boom"))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "rows affected",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec(regexp.QuoteMeta("UPDATE users SET name='x' WHERE id=1")).WillReturnResult(sqlmock.NewErrorResult(errors.New("rows boom")))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "commit",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectExec(regexp.QuoteMeta("UPDATE users SET name='x' WHERE id=1")).WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit().WillReturnError(errors.New("commit boom"))
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			backend := NewWithDB(db, "appdb")
+			tc.setup(mock)
+
+			affected, err := backend.ExecDML(context.Background(), "UPDATE users SET name='x' WHERE id=1")
+			if affected != 0 {
+				t.Fatalf("affected = %d, want 0", affected)
+			}
+			assertBackendErrorExit(t, err)
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("sql expectations: %v", err)
+			}
+		})
+	}
+}
+
 func TestQueryReturnsColumnsAndStringRows(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -361,6 +419,22 @@ func TestQueryReturnsColumnsAndStringRows(t *testing.T) {
 	if result.Columns[0] != "id" || result.Rows[0][0] != "1" || result.Rows[0][1] != "alice" {
 		t.Fatalf("Query() = %+v", result)
 	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestQueryErrorIsBackendError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM missing")).WillReturnError(errors.New("table missing"))
+
+	_, err = backend.Query(context.Background(), "SELECT * FROM missing")
+	assertBackendErrorExit(t, err)
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
 	}
@@ -386,5 +460,34 @@ func TestExplainEstimatesRows(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestExplainErrorIsBackendError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN SELECT * FROM missing")).WillReturnError(errors.New("table missing"))
+
+	_, err = backend.Explain(context.Background(), "SELECT * FROM missing")
+	assertBackendErrorExit(t, err)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func assertBackendErrorExit(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("error = nil, want backend error")
+	}
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeBackendError {
+		t.Fatalf("code = %s, want %s (err=%v)", got, apperrors.CodeBackendError, err)
+	}
+	if got := apperrors.ExitCode(err); got != 7 {
+		t.Fatalf("exit code = %d, want 7 (err=%v)", got, err)
 	}
 }

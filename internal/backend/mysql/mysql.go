@@ -175,22 +175,26 @@ ORDER BY kcu.table_name, kcu.constraint_name, kcu.ordinal_position`, b.database)
 func (b *Backend) Query(ctx context.Context, sqlText string) (dbbackend.QueryResult, error) {
 	rows, err := b.db.QueryContext(ctx, sqlText)
 	if err != nil {
-		return dbbackend.QueryResult{}, err
+		return dbbackend.QueryResult{}, backendErr("execute read query", err)
 	}
 	defer func() { _ = rows.Close() }()
-	return scanRows(rows)
+	result, err := scanRows(rows)
+	if err != nil {
+		return dbbackend.QueryResult{}, backendErr("execute read query", err)
+	}
+	return result, nil
 }
 
 func (b *Backend) Explain(ctx context.Context, sqlText string) (dbbackend.ExplainResult, error) {
 	explainSQL := "EXPLAIN " + strings.TrimSpace(sqlText) //nolint:gosec // Adds EXPLAIN to an already classified statement; no additional SQL surface is introduced.
 	rows, err := b.db.QueryContext(ctx, explainSQL)
 	if err != nil {
-		return dbbackend.ExplainResult{}, err
+		return dbbackend.ExplainResult{}, backendErr("explain query", err)
 	}
 	defer func() { _ = rows.Close() }()
 	result, err := scanRows(rows)
 	if err != nil {
-		return dbbackend.ExplainResult{}, err
+		return dbbackend.ExplainResult{}, backendErr("explain query", err)
 	}
 	return dbbackend.ExplainResult{
 		Columns:       result.Columns,
@@ -275,22 +279,29 @@ func (b *Backend) ExecDDL(ctx context.Context, statements []string) (int, error)
 func (b *Backend) ExecDML(ctx context.Context, sqlText string) (int64, error) {
 	tx, err := b.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, backendErr("execute DML", err)
 	}
 	result, err := tx.ExecContext(ctx, sqlText)
 	if err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return 0, backendErr("execute DML", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
 		_ = tx.Rollback()
-		return 0, err
+		return 0, backendErr("execute DML", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, err
+		return 0, backendErr("execute DML", err)
 	}
 	return affected, nil
+}
+
+func backendErr(message string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return apperrors.New(apperrors.CodeBackendError, message, err)
 }
 
 func scanRows(rows *sql.Rows) (dbbackend.QueryResult, error) {
