@@ -113,7 +113,7 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 	}
 	statements, err := backend.RenderDDL([]schema.Change{
 		{Action: schema.ActionAddColumn, Table: "dbgov_pg_parent", Column: "note", Type: "text"},
-		{Action: schema.ActionModifyColumn, Table: "dbgov_pg_parent", Column: "name", Type: "character varying(200)"},
+		{Action: schema.ActionModifyColumn, Table: "dbgov_pg_parent", Column: "name", Type: "character varying(200)", TypeChanged: true},
 	})
 	if err != nil {
 		t.Fatalf("RenderDDL() error = %v", err)
