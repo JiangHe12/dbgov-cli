@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.4
+
+### Fixed
+- `-o json` now emits the standard `{apiVersion, kind, success, data}` envelope for every command. `schema diff` and `ctx current` previously returned bare objects while the other commands were enveloped, which broke uniform programmatic consumption by AI agents. Errors under `-o json` now also use the standard `{success:false, error:{code,message}}` envelope instead of bare text. The contract test asserts the envelope so it cannot regress.
+
 ## v0.2.3
 
 ### Changed
