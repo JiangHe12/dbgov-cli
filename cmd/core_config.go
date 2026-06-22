@@ -26,7 +26,7 @@ func init() {
 	})
 	corectx.Configure(corectx.Options{APIVersion: "dbgov.io/context/v1", ConfigDirName: ".dbgov"})
 	lockfile.Configure(lockfile.Options{TimeoutEnvVar: "DBGOV_LOCK_TIMEOUT"})
-	printer.Configure(printer.Options{APIVersion: "dbgov.io/v1"})
+	printer.Configure(printer.Options{APIVersion: "dbgov.io/v1", JSONEnvelopeByDefault: true})
 	safety.Configure(safety.Config{
 		Prompt:                   "Proceed with database operation? [y/N] ",
 		OperatorEnvVar:           "DBGOV_OPERATOR",

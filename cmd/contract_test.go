@@ -68,29 +68,58 @@ func TestContractExitCodes(t *testing.T) {
 
 func TestContractJSONOutput(t *testing.T) {
 	tests := []struct {
-		name       string
-		args       []string
-		wantObject bool
+		name  string
+		args  []string
+		setup func(t *testing.T, home string) []string
 	}{
-		{name: "schema describe users", args: []string{"-o", "json", "schema", "describe", "users", "--fake"}, wantObject: true},
-		{name: "schema list", args: []string{"-o", "json", "schema", "list", "--fake"}, wantObject: true},
-		{name: "schema dump", args: []string{"-o", "json", "schema", "dump", "--fake"}, wantObject: true},
-		{name: "data exec dry-run plan", args: []string{"-o", "json", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1", "--fake", "--dry-run"}, wantObject: true},
-		{name: "schema apply dry-run plan reaches fake backend planning", args: nil, wantObject: true},
+		{name: "query", args: []string{"-o", "json", "query", "--sql", "SELECT 1", "--fake"}},
+		{name: "explain", args: []string{"-o", "json", "explain", "--sql", "SELECT * FROM users", "--fake"}},
+		{name: "schema describe users", args: []string{"-o", "json", "schema", "describe", "users", "--fake"}},
+		{name: "schema list", args: []string{"-o", "json", "schema", "list", "--fake"}},
+		{name: "schema dump", args: []string{"-o", "json", "schema", "dump", "--fake"}},
+		{name: "schema diff", setup: func(t *testing.T, home string) []string {
+			t.Helper()
+			desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100), email VARCHAR(255));`)
+			return []string{"-o", "json", "schema", "diff", "-f", desired, "--fake"}
+		}},
+		{name: "schema plan", setup: func(t *testing.T, home string) []string {
+			t.Helper()
+			desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100), email VARCHAR(255));`)
+			return []string{"-o", "json", "schema", "plan", "-f", desired, "--fake"}
+		}},
+		{name: "data exec dry-run plan", args: []string{"-o", "json", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1", "--fake", "--dry-run"}},
+		{name: "schema apply dry-run plan reaches fake backend planning", setup: func(t *testing.T, home string) []string {
+			t.Helper()
+			desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100), email VARCHAR(255));`)
+			return []string{"-o", "json", "schema", "apply", "-f", desired, "--fake", "--dry-run"}
+		}},
+		{name: "ctx list", args: []string{"-o", "json", "ctx", "list"}},
+		{name: "ctx current", setup: func(t *testing.T, home string) []string {
+			t.Helper()
+			if _, err := executeCommandForTest("--config", home+"/config.yaml", "ctx", "set", "dev", "--engine", "mysql", "--host", "127.0.0.1", "--database", "app"); err != nil {
+				t.Fatalf("ctx set error = %v", err)
+			}
+			if _, err := executeCommandForTest("--config", home+"/config.yaml", "ctx", "use", "dev"); err != nil {
+				t.Fatalf("ctx use error = %v", err)
+			}
+			return []string{"--config", home + "/config.yaml", "-o", "json", "ctx", "current"}
+		}},
+		{name: "capabilities", args: []string{"-o", "json", "capabilities"}},
+		{name: "version", args: []string{"-o", "json", "version"}},
+		{name: "doctor config", args: []string{"-o", "json", "doctor", "config"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			home := setContractHome(t)
 			args := tc.args
-			if args == nil {
-				desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100), email VARCHAR(255));`)
-				args = []string{"-o", "json", "schema", "apply", "-f", desired, "--fake", "--dry-run"}
+			if tc.setup != nil {
+				args = tc.setup(t, home)
 			}
 			out, err := executeCommandForTest(args...)
 			if err != nil {
 				t.Fatalf("Execute(%v) error = %v", args, err)
 			}
-			assertJSONOutput(t, out, tc.wantObject)
+			assertJSONSuccessEnvelope(t, out)
 		})
 	}
 }
@@ -135,15 +164,21 @@ func assertContractError(t *testing.T, err error, wantCode apperrors.ErrorCode, 
 	}
 }
 
-func assertJSONOutput(t *testing.T, out string, wantObject bool) {
+func assertJSONSuccessEnvelope(t *testing.T, out string) {
 	t.Helper()
 	if !json.Valid([]byte(out)) {
 		t.Fatalf("output is not valid JSON:\n%s", out)
 	}
-	if wantObject {
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(out), &obj); err != nil {
-			t.Fatalf("output is not a JSON object: %v\n%s", err, out)
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		t.Fatalf("output is not a JSON object: %v\n%s", err, out)
+	}
+	for _, key := range []string{"apiVersion", "kind", "success", "data"} {
+		if _, ok := obj[key]; !ok {
+			t.Fatalf("JSON envelope missing %q: %s", key, out)
 		}
+	}
+	if success, ok := obj["success"].(bool); !ok || !success {
+		t.Fatalf("JSON envelope success = %#v, want true: %s", obj["success"], out)
 	}
 }
