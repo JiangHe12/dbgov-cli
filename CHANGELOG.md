@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.5
+
+### Fixed
+- Query, explain and `data exec` execution errors are now classified as `BACKEND_ERROR` (exit 7) instead of `LOCAL_IO_ERROR` (exit 6). Both the MySQL and PostgreSQL backends previously returned raw driver errors, so a server-side failure (permission denied, table not found, syntax error, …) was coerced to a local IO error with the wrong exit code — misleading for AI-agent callers. Error messages stay generic and never embed SQL text. Verified against real MySQL 8.4 and 5.7.
+
 ## v0.2.4
 
 ### Fixed
