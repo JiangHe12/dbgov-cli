@@ -19,8 +19,11 @@ go build ./...
 go test -count=1 ./...
 gofmt -l main.go cmd internal   # must print nothing
 golangci-lint run --timeout=5m
+go vet -tags=integration ./...  # compiles the //go:build integration tests
 npm pack --dry-run              # must list exactly the 5 files in Release & Versioning
 ```
+
+Real-backend integration tests (`//go:build integration`) for MySQL and PostgreSQL are env-gated (skipped unless `DBGOV_TEST_MYSQL_DSN` / `DBGOV_TEST_POSTGRES_DSN` is set). They run against live databases in the nightly `integration.yml` workflow and the release-gate `integration-test` job via `docker-compose.integration.yml` — not on push/PR.
 
 ## Governance Rules
 
