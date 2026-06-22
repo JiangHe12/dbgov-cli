@@ -1,0 +1,45 @@
+name: Integration
+
+# Real-backend integration tests (//go:build integration) against live MySQL
+# and PostgreSQL containers from docker-compose.integration.yml. Runs nightly
+# and on manual dispatch only — separate from the push/PR CI so a slow database
+# boot or a transient registry flake never blocks everyday commits. (The
+# release pipeline runs the same suite as a release gate.)
+
+on:
+  schedule:
+    - cron: '0 5 * * *'   # daily 05:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    name: real-DB integration (mysql + postgres)
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Start databases
+        run: docker compose -f docker-compose.integration.yml up -d --wait
+
+      - name: Run integration suite
+        env:
+          DBGOV_TEST_MYSQL_DSN: root:dbgov-root@tcp(127.0.0.1:3306)/test
+          DBGOV_TEST_MYSQL_DATABASE: test
+          DBGOV_TEST_POSTGRES_DSN: postgres://postgres:dbgov-postgres@127.0.0.1:5432/test?sslmode=disable
+          DBGOV_TEST_POSTGRES_DATABASE: test
+        run: go test -tags=integration ./... -count=1
+
+      - name: Tear down databases
+        if: always()
+        run: docker compose -f docker-compose.integration.yml down -v

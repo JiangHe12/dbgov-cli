@@ -39,11 +39,25 @@ jobs:
           docker compose -f docker-compose.integration.yml logs --tail 100 mysql
           exit 1
 
+      - name: Wait for PostgreSQL readiness
+        run: |
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.integration.yml exec -T postgres pg_isready -h 127.0.0.1 -U postgres -d test; then
+              echo "postgres ready after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker compose -f docker-compose.integration.yml logs --tail 100 postgres
+          exit 1
+
       - name: Run integration suite
         env:
           DBGOV_TEST_MYSQL_DSN: root:dbgov-root@tcp(127.0.0.1:3306)/test
           DBGOV_TEST_MYSQL_DATABASE: test
-        run: go test ./... -count=1
+          DBGOV_TEST_POSTGRES_DSN: postgres://postgres:dbgov-postgres@127.0.0.1:5432/test?sslmode=disable
+          DBGOV_TEST_POSTGRES_DATABASE: test
+        run: go test -tags=integration ./... -count=1
 
       - name: Tear down MySQL
         if: always()
