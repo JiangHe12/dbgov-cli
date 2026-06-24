@@ -257,7 +257,7 @@ golangci-lint run --timeout=5m
 
 MySQL / PostgreSQL integration tests are opt-in via `DBGOV_TEST_MYSQL_DSN` and `DBGOV_TEST_POSTGRES_DSN`. See [CONTRIBUTING.md](CONTRIBUTING.md) and the security policy in [SECURITY.md](SECURITY.md).
 
-dbgov-cli is built on the shared [`opskit-core`](https://github.com/JiangHe12/opskit-core) governance engine and is part of the **opskit** family of governed CLIs for AI agents — alongside [`cfgov-cli`](https://www.npmjs.com/package/cfgov-cli) (config & Sentinel rules) and `srvgov-cli` (remote servers).
+dbgov-cli is built on the shared [`opskit-core`](https://github.com/JiangHe12/opskit-core) governance engine and is part of the **opskit** family of governed CLIs for AI agents — alongside [`srvgov-cli`](https://www.npmjs.com/package/srvgov-cli) (remote servers), [`cfgov-cli`](https://www.npmjs.com/package/cfgov-cli) (config & Sentinel rules), and [`mqgov-cli`](https://www.npmjs.com/package/mqgov-cli) (message brokers).
 
 ---
 

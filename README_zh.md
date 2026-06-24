@@ -257,7 +257,7 @@ golangci-lint run --timeout=5m
 
 MySQL / PostgreSQL 集成测试通过 `DBGOV_TEST_MYSQL_DSN` 与 `DBGOV_TEST_POSTGRES_DSN` 选择性开启。详见 [CONTRIBUTING.md](CONTRIBUTING.md) 与安全策略 [SECURITY.md](SECURITY.md)。
 
-dbgov-cli 构建于共享治理引擎 [`opskit-core`](https://github.com/JiangHe12/opskit-core) 之上,是面向 AI 智能体的 **opskit** 治理型 CLI 家族的一员——同族还有 [`cfgov-cli`](https://www.npmjs.com/package/cfgov-cli)(配置 & Sentinel 规则)与 `srvgov-cli`(远程服务器)。
+dbgov-cli 构建于共享治理引擎 [`opskit-core`](https://github.com/JiangHe12/opskit-core) 之上,是面向 AI 智能体的 **opskit** 治理型 CLI 家族的一员——同族还有 [`srvgov-cli`](https://www.npmjs.com/package/srvgov-cli)(远程服务器)、[`cfgov-cli`](https://www.npmjs.com/package/cfgov-cli)(配置 & Sentinel 规则)与 [`mqgov-cli`](https://www.npmjs.com/package/mqgov-cli)(消息中间件)。
 
 ---
 
