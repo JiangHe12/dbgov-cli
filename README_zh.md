@@ -77,10 +77,11 @@ dbgov doctor config -o json     # 静态 + 只读诊断
 ## 🚀 快速上手(60 秒)
 
 ```bash
-# 1. 把 dbgov 指向你的数据库(保存为可复用的「上下文」;密码走环境变量)
-DBGOV_PASSWORD='***' dbgov ctx set prod --engine mysql \
+# 1. 把 dbgov 指向你的数据库(保存为可复用的「上下文」;密码不写入 YAML)
+dbgov ctx set prod --engine mysql \
   --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected
 dbgov ctx use prod
+export DBGOV_PASSWORD='***'   # context 未保存凭据时,连接命令会读取它
 
 # 2. 读——只读 SQL 免费(R0)且拒绝写入
 dbgov query --sql "SELECT id, name FROM users LIMIT 10" -o json
@@ -196,6 +197,7 @@ dbgov rollback --to <snapshot-id> --ticket DB-123 --yes -o json   # 仅结构;�
 ```bash
 # 上下文(MySQL 或 PostgreSQL)
 dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> [--protected]
+dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> --credential-backend keychain|encrypted-file --password <secret>
 dbgov ctx use|list|current|delete
 dbgov ctx export <name> [--include-credentials] -o json
 dbgov ctx import -f ctx.yaml [--rename <new>] [--force] -o json
@@ -219,6 +221,8 @@ dbgov version
 ```
 
 > `audit prune` 只删**轮转**日志(绝不删活动 `audit.log`),默认 dry-run,必须加 `--confirm` 才真正删。CI 里设 `DBGOV_OPERATOR` 可让审计/RBAC 身份稳定。
+
+非交互运行优先使用 `DBGOV_PASSWORD`;当命令建立数据库连接且所选 context 没有保存凭据时会读取它。若要通过 `ctx set` 持久保存密码,`--password` 必须配 `--credential-backend keychain` 或 `--credential-backend encrypted-file`;plain-yaml 的 `ctx set --password` 会被拒绝。legacy/import 进来的 inline 凭据仍可读取,用于迁移与导出兼容。
 </details>
 
 ---
