@@ -74,11 +74,12 @@ dbgov-cli audit prune --keep-last 10 --confirm -o json
 
 ### Credentials
 
-Contexts resolve credentials through literal passwords, credstore references, or `DBGOV_PASSWORD`. Prefer secure backends:
+Runtime commands resolve stored credstore references first. If the selected context has no stored credential, they fall back to `DBGOV_PASSWORD`; prefer this for non-interactive automation. `ctx set --password` must use `--credential-backend keychain` or `--credential-backend encrypted-file`; plain-yaml `ctx set --password` is rejected. Legacy/imported inline passwords remain readable for migration compatibility.
 
 ```bash
 dbgov-cli ctx migrate-credentials --to encrypted-file -o json
 dbgov-cli ctx migrate-credentials --to keychain --context prod -o json
+dbgov-cli ctx set prod --credential-backend keychain --password '<password>' -o json
 ```
 
 ---
@@ -95,10 +96,12 @@ dbgov-cli ctx current -o json
 If no context exists, ask the user for MySQL or PostgreSQL host, database, username, and credential handling, then create and select one:
 
 ```bash
-DBGOV_PASSWORD='<password>' dbgov-cli ctx set prod --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected -o json
-DBGOV_PASSWORD='<password>' dbgov-cli ctx set prod-pg --engine postgres --host 127.0.0.1 --port 5432 --database app --username appuser --env prod --protected -o json
+dbgov-cli ctx set prod --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected -o json
+dbgov-cli ctx set prod-pg --engine postgres --host 127.0.0.1 --port 5432 --database app --username appuser --env prod --protected -o json
 dbgov-cli ctx use prod -o json
 ```
+
+For commands that connect, supply `DBGOV_PASSWORD='<password>'` in the environment unless the context stores a secure credstore reference.
 
 ---
 
@@ -131,7 +134,7 @@ dbgov-cli ctx import -f ctx.yaml --rename <new-name> --force -o json
 dbgov-cli ctx migrate-credentials --to encrypted-file --context <name> -o json
 ```
 
-`ctx export` redacts `password` by default. `--include-credentials` only includes plaintext credentials when they are stored inline (`plain-yaml` or an empty/unset credential backend); encrypted-file, keychain, and vault credentials must be shared out of band. `ctx import` accepts portable context YAML, supports `--rename` and `--force`, and leaves redacted credentials empty so the operator can run `dbgov-cli ctx set <name> --password=...`.
+`ctx export` redacts `password` by default. `--include-credentials` only includes plaintext credentials when they are stored inline in legacy contexts (`plain-yaml` or an empty/unset credential backend); encrypted-file, keychain, and vault credentials must be shared out of band. `ctx import` accepts portable context YAML, supports `--rename` and `--force`, and leaves redacted credentials empty so the operator can supply `DBGOV_PASSWORD` at runtime or run `dbgov-cli ctx set <name> --credential-backend keychain --password=...`.
 
 ### Read Queries
 

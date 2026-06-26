@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -1985,6 +1986,204 @@ func TestBuildBackendResolvesCredentialReference(t *testing.T) {
 	if !strings.Contains(err.Error(), "missing-backend") {
 		t.Fatalf("expected credstore backend error, got %v", err)
 	}
+}
+
+func TestBuildBackendUsesDBGOVPasswordForCurrentContext(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("DBGOV_PASSWORD", "env-secret")
+	configPath := filepath.Join(home, "config.yaml")
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	if err := dbgovctx.SetContext("prod", dbgovctx.Context{
+		Base:     corectx.Base{Username: "appuser"},
+		Engine:   "postgres",
+		Host:     "127.0.0.1",
+		Port:     5432,
+		Database: "appdb",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbgovctx.UseContext("prod"); err != nil {
+		t.Fatal(err)
+	}
+	backend := fake.New()
+	var gotDSN string
+	old := newPostgresBackend
+	newPostgresBackend = func(dsn, database string) (dbbackend.Backend, error) {
+		gotDSN = dsn
+		return backend, nil
+	}
+	defer func() { newPostgresBackend = old }()
+
+	_, meta, err := buildBackend(&cliFlags{Config: configPath}, backendOptions{})
+	if err != nil {
+		t.Fatalf("buildBackend() error = %v", err)
+	}
+	if meta.Name != "prod" {
+		t.Fatalf("context name = %q, want prod", meta.Name)
+	}
+	if !strings.Contains(gotDSN, "appuser:env-secret@") {
+		t.Fatalf("postgres DSN did not use DBGOV_PASSWORD: %s", gotDSN)
+	}
+}
+
+func TestBuildBackendUsesDBGOVPasswordForContextOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("DBGOV_PASSWORD", "override-secret")
+	configPath := filepath.Join(home, "config.yaml")
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	if err := dbgovctx.SetContext("dev", dbgovctx.Context{
+		Base:     corectx.Base{Username: "devuser", Password: "dev-secret"},
+		Engine:   "postgres",
+		Host:     "127.0.0.1",
+		Port:     5432,
+		Database: "devdb",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbgovctx.SetContext("prod", dbgovctx.Context{
+		Base:     corectx.Base{Username: "produser"},
+		Engine:   "postgres",
+		Host:     "127.0.0.1",
+		Port:     5432,
+		Database: "proddb",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := dbgovctx.UseContext("dev"); err != nil {
+		t.Fatal(err)
+	}
+	backend := fake.New()
+	var gotDSN string
+	old := newPostgresBackend
+	newPostgresBackend = func(dsn, database string) (dbbackend.Backend, error) {
+		gotDSN = dsn
+		return backend, nil
+	}
+	defer func() { newPostgresBackend = old }()
+
+	_, meta, err := buildBackend(&cliFlags{Config: configPath, Context: "prod"}, backendOptions{})
+	if err != nil {
+		t.Fatalf("buildBackend(--context prod) error = %v", err)
+	}
+	if meta.Name != "prod" {
+		t.Fatalf("context name = %q, want prod", meta.Name)
+	}
+	if !strings.Contains(gotDSN, "produser:override-secret@") {
+		t.Fatalf("postgres DSN did not use DBGOV_PASSWORD for override context: %s", gotDSN)
+	}
+}
+
+func TestCtxSetRejectsPlainYamlPassword(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	_, err := executeCommandForTest("--config", configPath, "ctx", "set", "prod", "--engine", "mysql", "--host", "127.0.0.1", "--username", "app", "--password", "secret")
+	if err == nil {
+		t.Fatal("expected ctx set --password with plain-yaml backend to fail")
+	}
+	appErr := apperrors.AsAppError(err)
+	if appErr.Code != apperrors.CodeUsageError || appErr.Message != "credentials must use a non-plain credential backend" {
+		t.Fatalf("error = %#v, want usage guard", appErr)
+	}
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	cfg, loadErr := dbgovctx.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if _, ok := cfg.Contexts["prod"]; ok {
+		t.Fatalf("context was saved despite rejected plain-yaml password: %+v", cfg.Contexts["prod"])
+	}
+}
+
+func TestCtxSetStoresPasswordInKeychainBackend(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	store := map[string]string{}
+	corecredstore.Register("keychain", func() corecredstore.Backend {
+		return memoryCredentialBackend{values: store}
+	})
+
+	_, err := executeCommandForTest("--config", configPath, "ctx", "set", "prod", "--engine", "mysql", "--host", "127.0.0.1", "--username", "app", "--password", "secret", "--credential-backend", "keychain")
+	if err != nil {
+		t.Fatalf("ctx set keychain error = %v", err)
+	}
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	cfg, err := dbgovctx.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := cfg.Contexts["prod"]
+	if ctx.Password != corecredstore.EncodeRef("keychain") || ctx.CredentialBackend != "keychain" {
+		t.Fatalf("stored context credential = %+v", ctx.Base)
+	}
+	resolved, err := ctx.ResolvePasswordContext(context.Background(), "prod")
+	if err != nil {
+		t.Fatalf("ResolvePasswordContext() error = %v", err)
+	}
+	if resolved != "secret" {
+		t.Fatalf("resolved password = %q, want secret", resolved)
+	}
+}
+
+func TestCtxSetFailsWhenCredentialBackendCannotStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	_, err := executeCommandForTest("--config", configPath, "ctx", "set", "prod", "--engine", "mysql", "--host", "127.0.0.1", "--username", "app", "--password", "secret", "--credential-backend", "missing-backend")
+	if err == nil {
+		t.Fatal("expected missing credential backend to fail during ctx set")
+	}
+	appErr := apperrors.AsAppError(err)
+	if appErr.Code != apperrors.CodeCredentialStoreError || appErr.Message != "failed to store credential" {
+		t.Fatalf("error = %#v, want credential-store failure", appErr)
+	}
+	dbgovctx.SetConfigPath(configPath)
+	defer dbgovctx.SetConfigPath("")
+	cfg, loadErr := dbgovctx.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if _, ok := cfg.Contexts["prod"]; ok {
+		t.Fatalf("context was saved despite credential storage failure: %+v", cfg.Contexts["prod"])
+	}
+}
+
+type memoryCredentialBackend struct {
+	values map[string]string
+}
+
+func (m memoryCredentialBackend) Name() string { return "keychain" }
+
+func (m memoryCredentialBackend) Available() error { return nil }
+
+func (m memoryCredentialBackend) Get(_ context.Context, contextName string) (string, error) {
+	value, ok := m.values[contextName]
+	if !ok {
+		return "", corecredstore.ErrNotFound
+	}
+	return value, nil
+}
+
+func (m memoryCredentialBackend) Put(_ context.Context, contextName, password string) error {
+	m.values[contextName] = password
+	return nil
+}
+
+func (m memoryCredentialBackend) Delete(_ context.Context, contextName string) error {
+	delete(m.values, contextName)
+	return nil
 }
 
 func stubFakeBackend(t *testing.T, backend *fake.Backend) func() {

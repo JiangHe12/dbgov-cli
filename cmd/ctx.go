@@ -59,6 +59,14 @@ func ctxSetCmd(f *cliFlags) *cobra.Command {
 			if req.Server == "" {
 				req.Server = fmt.Sprintf("%s://%s:%d", req.Engine, req.Host, req.Port)
 			}
+			if req.Password != "" && (req.CredentialBackend == "" || req.CredentialBackend == "plain-yaml") {
+				return apperrors.New(apperrors.CodeUsageError, "credentials must use a non-plain credential backend", nil)
+			}
+			var err error
+			req, err = dbgovctx.StoreCredential(cmd.Context(), args[0], req.CredentialBackend, req.Password, req)
+			if err != nil {
+				return apperrors.New(apperrors.CodeCredentialStoreError, "failed to store credential", err)
+			}
 			if err := dbgovctx.SetContext(args[0], req); err != nil {
 				return err
 			}
@@ -76,7 +84,7 @@ func ctxSetCmd(f *cliFlags) *cobra.Command {
 	cmd.Flags().StringVar(&req.Database, "database", "", "Default database")
 	cmd.Flags().StringVar(&req.Server, "server", "", "Connection server URI")
 	cmd.Flags().StringVar(&req.Username, "username", "", "Username")
-	cmd.Flags().StringVar(&req.Password, "password", "", "Password. Prefer DBGOV_PASSWORD.")
+	cmd.Flags().StringVar(&req.Password, "password", "", "Password to store in credstore; prefer DBGOV_PASSWORD for non-interactive runs")
 	cmd.Flags().StringVar(&req.Env, "env", "", "Environment label")
 	cmd.Flags().BoolVar(&req.Protected, "protected", false, "Enable protection")
 	cmd.Flags().StringVar(&req.TicketPattern, "ticket-pattern", "", "Ticket regex pattern")

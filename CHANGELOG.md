@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.6
+
+### Fixed
+- `DBGOV_PASSWORD` is now honored at connection time as documented. Previously the env var was ignored at both `ctx set` and query time (only the `--password` flag worked), so the documented "prefer `DBGOV_PASSWORD`" path silently sent no password and failed downstream with `Access denied ... (using password: NO)`. It now resolves for the current context and for `--context` overrides when the context has no stored credential. Verified against real MySQL.
+
+### Changed
+- `ctx set --password` now requires a non-plain credential backend (`keychain` / `encrypted-file`) and is rejected with `credentials must use a non-plain credential backend` under the default `plain-yaml` backend, matching mqgov and cfgov. A non-plain `--password` is written to `opskit-core/credstore` immediately, failing fast with `CREDENTIAL_STORE_ERROR` instead of surfacing later. For non-interactive runs, prefer `DBGOV_PASSWORD`.
+
 ## v0.2.5
 
 ### Fixed

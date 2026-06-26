@@ -77,10 +77,11 @@ dbgov doctor config -o json     # static + read-only diagnostics
 ## 🚀 Quick start (60 seconds)
 
 ```bash
-# 1. Point dbgov at your database (stored as a reusable "context"; password via env)
-DBGOV_PASSWORD='***' dbgov ctx set prod --engine mysql \
+# 1. Point dbgov at your database (stored as a reusable "context"; password stays out of YAML)
+dbgov ctx set prod --engine mysql \
   --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected
 dbgov ctx use prod
+export DBGOV_PASSWORD='***'   # consumed when commands connect if the context has no stored credential
 
 # 2. Read — read-only SQL is free (R0) and rejects writes
 dbgov query --sql "SELECT id, name FROM users LIMIT 10" -o json
@@ -196,6 +197,7 @@ dbgov rollback --to <snapshot-id> --ticket DB-123 --yes -o json   # structure on
 ```bash
 # Contexts (MySQL or PostgreSQL)
 dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> [--protected]
+dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> --credential-backend keychain|encrypted-file --password <secret>
 dbgov ctx use|list|current|delete
 dbgov ctx export <name> [--include-credentials] -o json
 dbgov ctx import -f ctx.yaml [--rename <new>] [--force] -o json
@@ -219,6 +221,8 @@ dbgov version
 ```
 
 > `audit prune` only deletes **rotated** logs (never the active `audit.log`), defaults to a dry-run, and needs `--confirm` to remove files. Set `DBGOV_OPERATOR` in CI to keep audit/RBAC identity stable.
+
+For non-interactive runs, prefer `DBGOV_PASSWORD`; it is read when a command opens a connection and the selected context has no stored credential. To persist a password through `ctx set`, `--password` requires `--credential-backend keychain` or `--credential-backend encrypted-file`; plain-yaml `ctx set --password` is rejected. Legacy/imported inline credentials remain readable for migration and export compatibility.
 </details>
 
 ---
