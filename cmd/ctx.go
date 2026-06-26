@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/credstore"
 
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 )
@@ -59,8 +60,8 @@ func ctxSetCmd(f *cliFlags) *cobra.Command {
 			if req.Server == "" {
 				req.Server = fmt.Sprintf("%s://%s:%d", req.Engine, req.Host, req.Port)
 			}
-			if req.Password != "" && (req.CredentialBackend == "" || req.CredentialBackend == "plain-yaml") {
-				return apperrors.New(apperrors.CodeUsageError, "credentials must use a non-plain credential backend", nil)
+			if err := credstore.RequireSecureBackend(req.CredentialBackend, req.Password != ""); err != nil {
+				return err
 			}
 			var err error
 			req, err = dbgovctx.StoreCredential(cmd.Context(), args[0], req.CredentialBackend, req.Password, req)
