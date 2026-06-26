@@ -105,7 +105,7 @@ func runDataExec(f *cliFlags, opts dataExecOptions) error {
 		event := newDataExecAuditEvent(f, meta, plan)
 		event.DryRun = true
 		emitAudit(f, event, nil)
-		return printDataExecPlan(f, plan)
+		return printDataExecPlan(f, meta, plan)
 	}
 
 	var requiredAllows []safety.AllowFlag
@@ -131,7 +131,7 @@ func runDataExec(f *cliFlags, opts dataExecOptions) error {
 	if err != nil {
 		return err
 	}
-	return printDataExecResult(f, dataExecResult{SQL: sqlText, Risk: plan.Risk, ImpactRows: plan.ImpactRows, AffectedRows: affected})
+	return printDataExecResult(f, meta, dataExecResult{SQL: sqlText, Risk: plan.Risk, ImpactRows: plan.ImpactRows, AffectedRows: affected})
 }
 
 func readDMLStatement(opts dataExecOptions) (string, error) {
@@ -200,23 +200,25 @@ func buildDataExecPlan(ctx context.Context, backend interface {
 	}
 }
 
-func printDataExecPlan(f *cliFlags, plan dataExecPlan) error {
+func printDataExecPlan(f *cliFlags, meta contextMeta, plan dataExecPlan) error {
 	plan.SQL = redactSQL(plan.SQL)
 	p := newPrinter(f)
 	if f.Output == "json" {
-		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecPlan", Data: plan})
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecPlan", Data: dataWithTarget(plan, meta, targetWrite)})
 	}
+	printTargetHeader(p, meta, targetWrite)
 	rows := [][]string{{plan.SQL, plan.Kind, fmtImpactRows(plan.ImpactRows), plan.Risk, plan.RequiredAuthorization}}
 	p.Table([]string{"SQL", "KIND", "IMPACT_ROWS", "RISK", "REQUIRED_AUTHORIZATION"}, rows)
 	return nil
 }
 
-func printDataExecResult(f *cliFlags, result dataExecResult) error {
+func printDataExecResult(f *cliFlags, meta contextMeta, result dataExecResult) error {
 	result.SQL = redactSQL(result.SQL)
 	p := newPrinter(f)
 	if f.Output == "json" {
-		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecResult", Data: result})
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecResult", Data: dataWithTarget(result, meta, targetWrite)})
 	}
+	printTargetHeader(p, meta, targetWrite)
 	p.Table([]string{"SQL", "RISK", "IMPACT_ROWS", "AFFECTED_ROWS"}, [][]string{{result.SQL, result.Risk, fmtImpactRows(result.ImpactRows), fmt.Sprint(result.AffectedRows)}})
 	return nil
 }

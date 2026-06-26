@@ -28,6 +28,8 @@ type contextMeta struct {
 	Env           string
 	Protected     bool
 	Engine        string
+	Host          string
+	Port          int
 	Database      string
 	TicketPattern string
 	Roles         map[string]string
@@ -42,9 +44,9 @@ var (
 
 func buildBackend(f *cliFlags, opts backendOptions) (dbbackend.Backend, contextMeta, error) {
 	if opts.Fake {
-		meta := contextMeta{Name: "fake", Engine: "mysql", Database: "fake"}
+		meta := contextMeta{Name: "fake", Engine: "mysql", Host: "fake", Database: "fake"}
 		if ctx, name := selectedContext(f); ctx != nil {
-			meta = contextMeta{Name: name, Env: ctx.Env, Protected: ctx.Protected, Engine: ctx.Engine, Database: ctx.Database, TicketPattern: ctx.TicketPattern, Roles: ctx.Roles}
+			meta = contextMeta{Name: name, Env: ctx.Env, Protected: ctx.Protected, Engine: ctx.Engine, Host: ctx.Host, Port: ctx.Port, Database: ctx.Database, TicketPattern: ctx.TicketPattern, Roles: ctx.Roles}
 		}
 		return newFakeBackend(), meta, nil
 	}
@@ -69,7 +71,7 @@ func buildBackend(f *cliFlags, opts backendOptions) (dbbackend.Backend, contextM
 	if err != nil {
 		return nil, contextMeta{}, err
 	}
-	return backend, contextMeta{Name: name, Env: ctx.Env, Protected: ctx.Protected, Engine: ctx.Engine, Database: ctx.Database, TicketPattern: ctx.TicketPattern, Roles: ctx.Roles}, nil
+	return backend, contextMeta{Name: name, Env: ctx.Env, Protected: ctx.Protected, Engine: ctx.Engine, Host: ctx.Host, Port: ctx.Port, Database: ctx.Database, TicketPattern: ctx.TicketPattern, Roles: ctx.Roles}, nil
 }
 
 func postgresDSN(username, password, host string, port int, database string) string {

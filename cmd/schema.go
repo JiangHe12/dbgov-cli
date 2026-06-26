@@ -200,7 +200,7 @@ func runSchemaDiff(f *cliFlags, opts schemaDiffOptions) error {
 	}
 	diff := schema.Diff(current, desired)
 	writeSchemaDiffAudit(f, meta, diff, nil)
-	return printSchemaDiff(f, diff)
+	return printSchemaDiff(f, meta, diff)
 }
 
 func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) error {
@@ -234,7 +234,7 @@ func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) error {
 	if err != nil {
 		return err
 	}
-	return printSchemaPlan(f, plan)
+	return printSchemaPlan(f, meta, targetRead, plan)
 }
 
 func runSchemaApply(f *cliFlags, opts schemaApplyOptions) error {
@@ -266,7 +266,7 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) error {
 		event := newSchemaApplyAuditEvent(f, meta, plan)
 		event.DryRun = true
 		emitAudit(f, event, nil)
-		return printSchemaPlan(f, plan)
+		return printSchemaPlan(f, meta, targetWrite, plan)
 	}
 
 	var requiredAllows []safety.AllowFlag
@@ -303,7 +303,7 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) error {
 	if err != nil {
 		return err
 	}
-	return printSchemaPlan(f, plan)
+	return printSchemaPlan(f, meta, targetWrite, plan)
 }
 
 func runSchemaList(f *cliFlags, opts schemaReadOptions) error {
@@ -321,7 +321,7 @@ func runSchemaList(f *cliFlags, opts schemaReadOptions) error {
 	if err != nil {
 		return err
 	}
-	return printSchemaList(f, current)
+	return printSchemaList(f, meta, current)
 }
 
 func runSchemaDescribe(f *cliFlags, opts schemaReadOptions, table string) error {
@@ -346,7 +346,7 @@ func runSchemaDescribe(f *cliFlags, opts schemaReadOptions, table string) error 
 		return err
 	}
 	emitAudit(f, event, nil)
-	return printSchemaDescribe(f, tbl)
+	return printSchemaDescribe(f, meta, tbl)
 }
 
 //nolint:dupl // Schema dump and export share the same governed read/audit flow with different event types.
@@ -374,7 +374,7 @@ func runSchemaDump(f *cliFlags, opts schemaReadOptions) error {
 	if opErr != nil {
 		return opErr
 	}
-	return printSchemaDump(f, result)
+	return printSchemaDump(f, meta, result)
 }
 
 func dumpSchema(ctx context.Context, b interface {
@@ -403,7 +403,7 @@ func dumpSchema(ctx context.Context, b interface {
 	return result, nil
 }
 
-func printSchemaDiff(f *cliFlags, diff schema.DiffResult) error {
+func printSchemaDiff(f *cliFlags, meta contextMeta, diff schema.DiffResult) error {
 	rows := make([][]string, 0, len(diff.Changes))
 	for _, change := range diff.Changes {
 		risk, destructive := schema.ClassifyChange(change)
@@ -415,8 +415,9 @@ func printSchemaDiff(f *cliFlags, diff schema.DiffResult) error {
 	}
 	p := newPrinter(f)
 	if f.Output == "json" {
-		return p.JSONData("SchemaDiff", diff)
+		return p.JSONData("SchemaDiff", dataWithTarget(diff, meta, targetRead))
 	}
+	printTargetHeader(p, meta, targetRead)
 	p.Table([]string{"ACTION", "TABLE", "COLUMN", "TYPE", "RISK", "NOTE"}, rows)
 	return nil
 }
@@ -459,15 +460,16 @@ func buildSchemaPlanFromDiff(b interface {
 	return plan, nil
 }
 
-func printSchemaPlan(f *cliFlags, plan schemaPlan) error {
+func printSchemaPlan(f *cliFlags, meta contextMeta, mode targetMode, plan schemaPlan) error {
 	plan.Statements = append([]schemaPlanStatement(nil), plan.Statements...)
 	for index := range plan.Statements {
 		plan.Statements[index].SQL = redactSQL(plan.Statements[index].SQL)
 	}
 	p := newPrinter(f)
 	if f.Output == "json" {
-		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaPlan", Data: plan})
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaPlan", Data: dataWithTarget(plan, meta, mode)})
 	}
+	printTargetHeader(p, meta, mode)
 	rows := make([][]string, 0, len(plan.Statements))
 	for _, stmt := range plan.Statements {
 		note := ""
@@ -489,7 +491,7 @@ func printSchemaPlan(f *cliFlags, plan schemaPlan) error {
 	return nil
 }
 
-func printSchemaList(f *cliFlags, current schema.Schema) error {
+func printSchemaList(f *cliFlags, meta contextMeta, current schema.Schema) error {
 	result := schemaTableList{}
 	rows := make([][]string, 0, len(current.Tables))
 	for _, name := range sortedTableNames(current) {
@@ -498,17 +500,19 @@ func printSchemaList(f *cliFlags, current schema.Schema) error {
 	}
 	p := newPrinter(f)
 	if f.Output == "json" {
-		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaTableList", Data: result})
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaTableList", Data: dataWithTarget(result, meta, targetRead)})
 	}
+	printTargetHeader(p, meta, targetRead)
 	p.Table([]string{"TABLE"}, rows)
 	return nil
 }
 
-func printSchemaDescribe(f *cliFlags, table schema.Table) error {
+func printSchemaDescribe(f *cliFlags, meta contextMeta, table schema.Table) error {
 	p := newPrinter(f)
 	if f.Output == "json" {
-		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaDescribe", Data: schemaDescribeResult{Table: table}})
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaDescribe", Data: dataWithTarget(schemaDescribeResult{Table: table}, meta, targetRead)})
 	}
+	printTargetHeader(p, meta, targetRead)
 	rows := make([][]string, 0, len(table.Columns))
 	for _, col := range table.Columns {
 		def := ""
@@ -521,15 +525,16 @@ func printSchemaDescribe(f *cliFlags, table schema.Table) error {
 	return nil
 }
 
-func printSchemaDump(f *cliFlags, result schemaDumpResult) error {
+func printSchemaDump(f *cliFlags, meta contextMeta, result schemaDumpResult) error {
 	result.Tables = append([]schemaDumpTable(nil), result.Tables...)
 	for index := range result.Tables {
 		result.Tables[index].DDL = redactSQL(result.Tables[index].DDL)
 	}
 	p := newPrinter(f)
 	if f.Output == "json" {
-		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaDump", Data: result})
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaDump", Data: dataWithTarget(result, meta, targetRead)})
 	}
+	printTargetHeader(p, meta, targetRead)
 	if len(result.Files) > 0 {
 		rows := make([][]string, 0, len(result.Files))
 		for _, file := range result.Files {

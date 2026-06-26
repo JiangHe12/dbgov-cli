@@ -298,10 +298,10 @@ func TestSQLOutputRenderersRedactWithoutChangingInputs(t *testing.T) {
 		name string
 		run  func(*cliFlags) error
 	}{
-		{name: "data plan", run: func(f *cliFlags) error { return printDataExecPlan(f, dataPlan) }},
-		{name: "data result", run: func(f *cliFlags) error { return printDataExecResult(f, dataResult) }},
-		{name: "schema plan", run: func(f *cliFlags) error { return printSchemaPlan(f, schemaValue) }},
-		{name: "schema dump", run: func(f *cliFlags) error { return printSchemaDump(f, dump) }},
+		{name: "data plan", run: func(f *cliFlags) error { return printDataExecPlan(f, contextMeta{}, dataPlan) }},
+		{name: "data result", run: func(f *cliFlags) error { return printDataExecResult(f, contextMeta{}, dataResult) }},
+		{name: "schema plan", run: func(f *cliFlags) error { return printSchemaPlan(f, contextMeta{}, targetWrite, schemaValue) }},
+		{name: "schema dump", run: func(f *cliFlags) error { return printSchemaDump(f, contextMeta{}, dump) }},
 	}
 	for _, format := range []string{"json", "table"} {
 		for _, tt := range tests {

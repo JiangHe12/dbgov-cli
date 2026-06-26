@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/JiangHe12/opskit-core/apperrors"
@@ -135,6 +137,62 @@ func TestContractPlainOutputIsNotJSON(t *testing.T) {
 	}
 }
 
+func TestDBCommandTableOutputIncludesTargetHeader(t *testing.T) {
+	home := setContractHome(t)
+	configPath := filepath.Join(home, "config.yaml")
+	createTargetContext(t, configPath)
+
+	out, err := executeCommandForTest("--config", configPath, "query", "--sql", "SELECT 1", "--fake")
+	if err != nil {
+		t.Fatalf("query error = %v", err)
+	}
+	want := "TARGET\tcontext=dev | engine=mysql | host=127.0.0.1:3307 | database=app"
+	if !strings.Contains(out, want) {
+		t.Fatalf("query output missing target header %q:\n%s", want, out)
+	}
+
+	out, err = executeCommandForTest("--config", configPath, "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id=1", "--fake", "--dry-run")
+	if err != nil {
+		t.Fatalf("data exec dry-run error = %v", err)
+	}
+	want = "WRITE TARGET\tcontext=dev | engine=mysql | host=127.0.0.1:3307 | database=app"
+	if !strings.Contains(out, want) {
+		t.Fatalf("data exec output missing write target header %q:\n%s", want, out)
+	}
+}
+
+func TestDBCommandJSONOutputIncludesTargetWithoutBreakingEnvelope(t *testing.T) {
+	home := setContractHome(t)
+	configPath := filepath.Join(home, "config.yaml")
+	createTargetContext(t, configPath)
+
+	out, err := executeCommandForTest("--config", configPath, "-o", "json", "query", "--sql", "SELECT 1", "--fake")
+	if err != nil {
+		t.Fatalf("query error = %v", err)
+	}
+	assertJSONSuccessEnvelope(t, out)
+	var envelope struct {
+		Kind string `json:"kind"`
+		Data struct {
+			Columns []string      `json:"columns"`
+			Target  commandTarget `json:"target"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatalf("Unmarshal() error = %v\n%s", err, out)
+	}
+	if envelope.Kind != "QueryResult" {
+		t.Fatalf("kind = %q, want QueryResult", envelope.Kind)
+	}
+	if len(envelope.Data.Columns) == 0 {
+		t.Fatalf("query JSON lost existing columns field: %s", out)
+	}
+	target := envelope.Data.Target
+	if target.Context != "dev" || target.Engine != "mysql" || target.HostPort != "127.0.0.1:3307" || target.Database != "app" || target.Operation != string(targetRead) {
+		t.Fatalf("target = %#v, want dev/mysql/127.0.0.1:3307/app/read", target)
+	}
+}
+
 func TestContractQueryAcceptsReadOnlyRecursiveCTE(t *testing.T) {
 	setContractHome(t)
 	sql := "WITH RECURSIVE t AS (SELECT 1 UNION ALL SELECT n+1 FROM t WHERE n<5) SELECT * FROM t"
@@ -149,6 +207,16 @@ func setContractHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	return home
+}
+
+func createTargetContext(t *testing.T, configPath string) {
+	t.Helper()
+	if _, err := executeCommandForTest("--config", configPath, "ctx", "set", "dev", "--engine", "mysql", "--host", "127.0.0.1", "--port", "3307", "--database", "app"); err != nil {
+		t.Fatalf("ctx set error = %v", err)
+	}
+	if _, err := executeCommandForTest("--config", configPath, "ctx", "use", "dev"); err != nil {
+		t.Fatalf("ctx use error = %v", err)
+	}
 }
 
 func assertContractError(t *testing.T, err error, wantCode apperrors.ErrorCode, wantExit int) {

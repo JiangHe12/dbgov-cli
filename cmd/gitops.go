@@ -107,7 +107,7 @@ func runExport(f *cliFlags, opts exportOptions) error {
 	if err != nil {
 		return err
 	}
-	return printSchemaDump(f, result)
+	return printSchemaDump(f, meta, result)
 }
 
 func runImport(f *cliFlags, opts importOptions) error {
@@ -135,7 +135,7 @@ func runImport(f *cliFlags, opts importOptions) error {
 		event := newImportAuditEvent(f, meta, plan)
 		event.DryRun = true
 		emitAudit(f, event, nil)
-		return printSchemaPlan(f, plan)
+		return printSchemaPlan(f, meta, targetWrite, plan)
 	}
 
 	var requiredAllows []safety.AllowFlag
@@ -172,7 +172,7 @@ func runImport(f *cliFlags, opts importOptions) error {
 	if err != nil {
 		return err
 	}
-	return printSchemaPlan(f, plan)
+	return printSchemaPlan(f, meta, targetWrite, plan)
 }
 
 func runReconcile(f *cliFlags, opts reconcileOptions) error {
@@ -209,7 +209,7 @@ func runReconcile(f *cliFlags, opts reconcileOptions) error {
 		event := newReconcileAuditEvent(f, meta, plan)
 		event.DryRun = true
 		emitAudit(f, event, nil)
-		return printSchemaPlan(f, plan)
+		return printSchemaPlan(f, meta, targetWrite, plan)
 	}
 
 	requiredAllows, granted := reconcileAllowFlags(plan, opts)
@@ -239,7 +239,7 @@ func runReconcile(f *cliFlags, opts reconcileOptions) error {
 	if err != nil {
 		return err
 	}
-	return printSchemaPlan(f, plan)
+	return printSchemaPlan(f, meta, targetWrite, plan)
 }
 
 func newImportAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbgaudit.Event {
