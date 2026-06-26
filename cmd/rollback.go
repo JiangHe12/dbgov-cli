@@ -121,7 +121,7 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 		event := rollbackAuditEvent(f, meta, opts.to, plan)
 		event.DryRun = true
 		emitAudit(f, event, nil)
-		return printSchemaPlan(f, plan)
+		return printSchemaPlan(f, meta, targetWrite, plan)
 	}
 
 	requiredAllows, granted := planAllowFlags(plan, opts.allowDestructive, opts.allowProductionPrune)
@@ -152,7 +152,7 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 	if err != nil {
 		return err
 	}
-	return printSchemaPlan(f, plan)
+	return printSchemaPlan(f, meta, targetWrite, plan)
 }
 
 func rollbackListAuditEvent(f *cliFlags) dbgaudit.Event {

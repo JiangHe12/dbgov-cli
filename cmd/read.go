@@ -58,14 +58,15 @@ func runQuery(f *cliFlags, opts sqlCommandOptions) error {
 	if err != nil {
 		return err
 	}
-	return printQueryResult(f, result)
+	return printQueryResult(f, meta, result)
 }
 
-func printQueryResult(f *cliFlags, result dbbackend.QueryResult) error {
+func printQueryResult(f *cliFlags, meta contextMeta, result dbbackend.QueryResult) error {
 	p := newPrinter(f)
 	if f.Output == "json" {
-		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "QueryResult", Data: result})
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "QueryResult", Data: dataWithTarget(result, meta, targetRead)})
 	}
+	printTargetHeader(p, meta, targetRead)
 	p.Table(result.Columns, result.Rows)
 	return nil
 }
@@ -112,7 +113,7 @@ func runExplain(f *cliFlags, opts sqlCommandOptions) error {
 	if err != nil {
 		return err
 	}
-	return printExplainResult(f, result)
+	return printExplainResult(f, meta, result)
 }
 
 func dialectForSQLCommand(f *cliFlags) sqlclass.Dialect {
@@ -123,11 +124,12 @@ func dialectForSQLCommand(f *cliFlags) sqlclass.Dialect {
 	return sqlclass.DialectForEngine(ctx.Engine)
 }
 
-func printExplainResult(f *cliFlags, result dbbackend.ExplainResult) error {
+func printExplainResult(f *cliFlags, meta contextMeta, result dbbackend.ExplainResult) error {
 	p := newPrinter(f)
 	if f.Output == "json" {
-		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "ExplainResult", Data: result})
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "ExplainResult", Data: dataWithTarget(result, meta, targetRead)})
 	}
+	printTargetHeader(p, meta, targetRead)
 	p.Table(result.Columns, result.Rows)
 	_, _ = fmt.Fprintf(p.Out, "\nEstimated rows: %d\n", result.EstimatedRows)
 	return nil

@@ -49,7 +49,7 @@ func runDoctor(f *cliFlags, opts doctorOptions, target string) error {
 	if target == "config" {
 		report.Checks = append(report.Checks, checkFromError("config", err))
 		emitDoctorAudit(f, meta, err)
-		return printDoctorReport(f, report)
+		return printDoctorReport(f, meta, false, report)
 	}
 	if err == nil {
 		switch target {
@@ -66,7 +66,7 @@ func runDoctor(f *cliFlags, opts doctorOptions, target string) error {
 		report.Checks = append(report.Checks, checkFromError(target, err))
 	}
 	emitDoctorAudit(f, meta, err)
-	return printDoctorReport(f, report)
+	return printDoctorReport(f, meta, target == "network" || target == "auth", report)
 }
 
 func checkFromError(name string, err error) DoctorCheck {
@@ -82,10 +82,16 @@ func emitDoctorAudit(f *cliFlags, meta contextMeta, err error) {
 	emitAudit(f, event, err)
 }
 
-func printDoctorReport(f *cliFlags, report DoctorReport) error {
+func printDoctorReport(f *cliFlags, meta contextMeta, includeTarget bool, report DoctorReport) error {
 	p := newPrinter(f)
 	if f.Output == "json" {
+		if includeTarget && meta.Name != "" {
+			return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DoctorReport", Data: dataWithTarget(report, meta, targetRead)})
+		}
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DoctorReport", Data: report})
+	}
+	if includeTarget && meta.Name != "" {
+		printTargetHeader(p, meta, targetRead)
 	}
 	rows := make([][]string, 0, len(report.Checks))
 	for _, check := range report.Checks {

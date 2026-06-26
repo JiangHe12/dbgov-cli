@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.8
+
+### Changed
+- Every database command now shows the operation target (`context` / `engine` / `host` / `database`), closing the target-awareness gap.
+
 ## v0.2.7
 
 ### Changed
