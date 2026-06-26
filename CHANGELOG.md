@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.9
+
+### Changed
+- Reuse opskit-core's shared target output helpers; operation target output is unchanged.
+
 ## v0.2.8
 
 ### Changed

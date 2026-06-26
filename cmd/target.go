@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
-	"fmt"
 	"net"
 
 	"github.com/JiangHe12/opskit-core/printer"
@@ -25,25 +23,16 @@ type commandTarget struct {
 	Operation string `json:"operation"`
 }
 
-type targetedJSONData struct {
-	data   any
-	target commandTarget
-}
-
 func printTargetHeader(p *printer.Printer, meta contextMeta, mode targetMode) {
-	if p.Format == printer.FormatJSON {
-		return
-	}
 	label := "TARGET"
 	if mode == targetWrite {
 		label = "WRITE TARGET"
 	}
-	p.KV([][2]string{{label, formatTargetSummary(meta)}})
-	_, _ = fmt.Fprintln(p.Out)
+	p.TargetHeader(label, targetFields(meta))
 }
 
 func dataWithTarget(data any, meta contextMeta, mode targetMode) any {
-	return targetedJSONData{data: data, target: commandTargetFromMeta(meta, mode)}
+	return printer.WithTarget(data, commandTargetFromMeta(meta, mode))
 }
 
 func commandTargetFromMeta(meta contextMeta, mode targetMode) commandTarget {
@@ -58,9 +47,13 @@ func commandTargetFromMeta(meta contextMeta, mode targetMode) commandTarget {
 	}
 }
 
-func formatTargetSummary(meta contextMeta) string {
-	target := commandTargetFromMeta(meta, targetRead)
-	return fmt.Sprintf("context=%s | engine=%s | host=%s | database=%s", target.Context, target.Engine, target.HostPort, target.Database)
+func targetFields(meta contextMeta) [][2]string {
+	return [][2]string{
+		{"context", meta.Name},
+		{"engine", meta.Engine},
+		{"host", hostPort(meta.Host, meta.Port)},
+		{"database", meta.Database},
+	}
 }
 
 func hostPort(host string, port int) string {
@@ -71,27 +64,4 @@ func hostPort(host string, port int) string {
 		return host
 	}
 	return net.JoinHostPort(host, itoa(port))
-}
-
-func (d targetedJSONData) MarshalJSON() ([]byte, error) {
-	dataBytes, err := json.Marshal(d.data)
-	if err != nil {
-		return nil, err
-	}
-	targetBytes, err := json.Marshal(d.target)
-	if err != nil {
-		return nil, err
-	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(dataBytes, &object); err == nil && object != nil {
-		object["target"] = targetBytes
-		return json.Marshal(object)
-	}
-	return json.Marshal(struct {
-		Target commandTarget `json:"target"`
-		Value  any           `json:"value"`
-	}{
-		Target: d.target,
-		Value:  d.data,
-	})
 }
