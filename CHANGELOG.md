@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.7
+
+### Changed
+- Reuse opskit-core's shared secure-backend guard for stored credentials; behavior is unchanged.
+
 ## v0.2.6
 
 ### Fixed
