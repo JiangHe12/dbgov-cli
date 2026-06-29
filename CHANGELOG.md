@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.14
+
+### Changed
+- Installer environment variables now prefer the family-standard `DBGOV_DOWNLOAD_MIRROR` and `DBGOV_SKIP_VERIFY` names; deprecated `DBGOV_CLI_DOWNLOAD_MIRROR` and `DBGOV_CLI_SKIP_VERIFY` remain supported.
+
 ## v0.2.13
 
 ### Changed

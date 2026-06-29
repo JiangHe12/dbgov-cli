@@ -1,7 +1,7 @@
 ---
 name: dbgov-cli
 description: Governed database operations via CLI — query, schema diff/plan/apply, governed DML, GitOps import/reconcile/rollback, audit. MySQL and PostgreSQL.
-allowed-tools: Bash(dbgov-cli:*), Bash(go:*)
+allowed-tools: Bash(dbgov:*), Bash(dbgov-cli:*), Bash(go:*)
 ---
 
 # dbgov-cli — AI Agent Reference

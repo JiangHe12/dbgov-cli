@@ -33,8 +33,12 @@ function isAllowedRedirectHost(urlStr) {
   }
 }
 
+function envWithDeprecatedAlias(primary, deprecatedName) {
+  return process.env[primary] || process.env[deprecatedName] || '';
+}
+
 function applyMirror(canonicalUrl) {
-  const mirror = process.env.DBGOV_CLI_DOWNLOAD_MIRROR;
+  const mirror = envWithDeprecatedAlias('DBGOV_DOWNLOAD_MIRROR', 'DBGOV_CLI_DOWNLOAD_MIRROR');
   if (!mirror) return canonicalUrl;
   return mirror.replace(/\/+$/, '') + '/' + canonicalUrl;
 }
@@ -167,8 +171,8 @@ function parseChecksums(text) {
 }
 
 async function verifyDownloadedBinary(binaryPath, binaryName) {
-  if (process.env.DBGOV_CLI_SKIP_VERIFY === '1') {
-    console.log('Verification skipped (DBGOV_CLI_SKIP_VERIFY=1)');
+  if (envWithDeprecatedAlias('DBGOV_SKIP_VERIFY', 'DBGOV_CLI_SKIP_VERIFY') === '1') {
+    console.log('Verification skipped (DBGOV_SKIP_VERIFY=1)');
     return;
   }
 
@@ -180,14 +184,14 @@ async function verifyDownloadedBinary(binaryPath, binaryName) {
   } catch (err) {
     throw new Error(
       `Could not fetch canonical checksums.txt from ${checksumsUrl}: ${err.message}. ` +
-      'Set DBGOV_CLI_SKIP_VERIFY=1 to install without checksum verification.'
+      'Set DBGOV_SKIP_VERIFY=1 to install without checksum verification.'
     );
   }
 
   if (!checksums[binaryName]) {
     throw new Error(
       `No checksum found for ${binaryName}. ` +
-      'Set DBGOV_CLI_SKIP_VERIFY=1 to install without checksum verification.'
+      'Set DBGOV_SKIP_VERIFY=1 to install without checksum verification.'
     );
   }
 

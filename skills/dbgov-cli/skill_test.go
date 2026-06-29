@@ -55,7 +55,7 @@ func TestSkillFrontmatter(t *testing.T) {
 		"---\nname: dbgov-cli",
 		"description: Governed database operations via CLI",
 		"MySQL and PostgreSQL",
-		"allowed-tools: Bash(dbgov-cli:*), Bash(go:*)",
+		"allowed-tools: Bash(dbgov:*), Bash(dbgov-cli:*), Bash(go:*)",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("SKILL.md frontmatter missing %q", want)
