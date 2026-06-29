@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -69,13 +70,13 @@ type CapTool struct {
 }
 
 type CapSupported struct {
-	ContextAPIVersion string        `json:"contextApiVersion"`
-	AuditAPIVersion   string        `json:"auditApiVersion"`
-	Engines           []CapEngine   `json:"engines"`
-	Schema            string        `json:"schema"`
-	RiskModel         []CapRisk     `json:"riskModel"`
-	AllowFlags        []string      `json:"allowFlags"`
-	Governance        CapGovernance `json:"governance"`
+	ContextAPIVersions []string      `json:"contextApiVersions"`
+	AuditAPIVersions   []string      `json:"auditApiVersions"`
+	Engines            []CapEngine   `json:"engines"`
+	Schema             string        `json:"schema"`
+	RiskModel          []CapRisk     `json:"riskModel"`
+	AllowFlags         []string      `json:"allowFlags"`
+	Governance         CapGovernance `json:"governance"`
 }
 
 type CapEngine struct {
@@ -106,8 +107,8 @@ func capabilitiesData() CapabilitiesData {
 	return CapabilitiesData{
 		Tool: CapTool{Name: "dbgov", Version: version},
 		Supported: CapSupported{
-			ContextAPIVersion: "dbgov.io/context/v1",
-			AuditAPIVersion:   "dbgov.io/audit/v1",
+			ContextAPIVersions: []string{"dbgov.io/context/v1"},
+			AuditAPIVersions:   []string{"dbgov.io/audit/v1"},
 			Engines: []CapEngine{
 				{
 					Name:   "mysql",
@@ -190,8 +191,8 @@ func newCapabilitiesCmd(f *cliFlags) *cobra.Command {
 				return nil
 			}
 			rows := [][]string{
-				{"contextApiVersion", data.Supported.ContextAPIVersion},
-				{"auditApiVersion", data.Supported.AuditAPIVersion},
+				{"contextApiVersions", strings.Join(data.Supported.ContextAPIVersions, ", ")},
+				{"auditApiVersions", strings.Join(data.Supported.AuditAPIVersions, ", ")},
 				{"engines", "mysql available; postgres available"},
 				{"schema", data.Supported.Schema},
 				{"authorization", "R1/R2/R3 require --yes; R2/R3 require --ticket; R3 requires --allow-*"},

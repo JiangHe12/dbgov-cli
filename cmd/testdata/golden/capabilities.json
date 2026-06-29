@@ -8,8 +8,12 @@
       "version": "dev"
     },
     "supported": {
-      "contextApiVersion": "dbgov.io/context/v1",
-      "auditApiVersion": "dbgov.io/audit/v1",
+      "contextApiVersions": [
+        "dbgov.io/context/v1"
+      ],
+      "auditApiVersions": [
+        "dbgov.io/audit/v1"
+      ],
       "engines": [
         {
           "name": "mysql",

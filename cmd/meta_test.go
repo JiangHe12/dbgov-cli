@@ -109,6 +109,38 @@ func TestCapabilitiesPlain(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesJSONFamilySchema(t *testing.T) {
+	var out, errOut bytes.Buffer
+	cmd := NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"-o", "json", "capabilities"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v, stderr=%s", err, errOut.String())
+	}
+	var env struct {
+		Data struct {
+			Supported struct {
+				ContextAPIVersions []string `json:"contextApiVersions"`
+				AuditAPIVersions   []string `json:"auditApiVersions"`
+			} `json:"supported"`
+			Domain json.RawMessage `json:"domain"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("capabilities output is not JSON: %v\n%s", err, out.String())
+	}
+	if strings.Join(env.Data.Supported.ContextAPIVersions, ",") != "dbgov.io/context/v1" {
+		t.Fatalf("context API versions = %#v", env.Data.Supported.ContextAPIVersions)
+	}
+	if strings.Join(env.Data.Supported.AuditAPIVersions, ",") != "dbgov.io/audit/v1" {
+		t.Fatalf("audit API versions = %#v", env.Data.Supported.AuditAPIVersions)
+	}
+	if len(env.Data.Domain) != 0 {
+		t.Fatalf("domain = %s, want omitted", env.Data.Domain)
+	}
+}
+
 func TestGoldenCapabilities(t *testing.T) {
 	var out, errOut bytes.Buffer
 	cmd := NewRootCmd()
