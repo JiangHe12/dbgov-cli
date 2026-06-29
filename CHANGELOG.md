@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.11
+
+### Changed
+- Simplified `capabilities -o plain` output to a script-friendly command list.
+
 ## v0.2.10
 
 ### Changed

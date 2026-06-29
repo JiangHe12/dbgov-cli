@@ -153,6 +153,25 @@ func capabilitiesData() CapabilitiesData {
 	}
 }
 
+func capabilityPlainCommands() []string {
+	return []string{
+		"ctx",
+		"schema",
+		"data",
+		"export",
+		"import",
+		"reconcile",
+		"rollback",
+		"audit",
+		"install",
+		"version",
+		"capabilities",
+		"doctor",
+		"query",
+		"explain",
+	}
+}
+
 func newCapabilitiesCmd(f *cliFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "capabilities",
@@ -165,8 +184,8 @@ func newCapabilitiesCmd(f *cliFlags) *cobra.Command {
 				return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "Capabilities", Data: data})
 			}
 			if f.Output == "plain" {
-				for _, engine := range data.Supported.Engines {
-					_, _ = fmt.Fprintf(p.Out, "%s\t%s\n", engine.Name, engine.Status)
+				for _, command := range capabilityPlainCommands() {
+					_, _ = fmt.Fprintln(p.Out, command)
 				}
 				return nil
 			}
