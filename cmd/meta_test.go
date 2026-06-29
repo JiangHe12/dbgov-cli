@@ -25,7 +25,7 @@ func TestVersionJSON(t *testing.T) {
 		Data       struct {
 			Version string `json:"version"`
 			Commit  string `json:"commit"`
-			Date    string `json:"date"`
+			Built   string `json:"built"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
@@ -34,8 +34,25 @@ func TestVersionJSON(t *testing.T) {
 	if env.APIVersion != "dbgov.io/v1" || env.Kind != "VersionInfo" || !env.Success {
 		t.Fatalf("unexpected envelope: %+v", env)
 	}
-	if env.Data.Version != "v0.0.0-test" || env.Data.Commit != "deadbeef" || env.Data.Date != "2026-06-02" {
+	if env.Data.Version != "v0.0.0-test" || env.Data.Commit != "deadbeef" || env.Data.Built != "2026-06-02" {
 		t.Fatalf("unexpected version data: %+v", env.Data)
+	}
+}
+
+func TestVersionTable(t *testing.T) {
+	SetVersionInfo("v0.0.0-test", "deadbeef", "2026-06-02")
+	defer SetVersionInfo("dev", "", "")
+
+	var out, errOut bytes.Buffer
+	cmd := NewRootCmd()
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"-o", "table", "version"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v, stderr=%s", err, errOut.String())
+	}
+	if want := "dbgov-cli v0.0.0-test (commit: deadbeef, built: 2026-06-02)\n"; out.String() != want {
+		t.Fatalf("unexpected version table: %q", out.String())
 	}
 }
 

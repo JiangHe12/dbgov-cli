@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.2.10
+
+### Changed
+- Aligned `version` output with the family format: table output is a single line and JSON exposes `built` with `unknown` build metadata defaults.
+
 ## v0.2.9
 
 ### Changed
