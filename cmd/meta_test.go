@@ -32,7 +32,7 @@ func TestVersionJSON(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("version output is not JSON: %v\n%s", err, out.String())
 	}
-	if env.APIVersion != "dbgov.io/v1" || env.Kind != "VersionInfo" || !env.Success {
+	if env.APIVersion != "dbgov-cli.io/v1" || env.Kind != "VersionInfo" || !env.Success {
 		t.Fatalf("unexpected envelope: %+v", env)
 	}
 	if env.Data.Version != "v0.0.0-test" || env.Data.Commit != "deadbeef" || env.Data.Built != "2026-06-02" {
@@ -130,10 +130,10 @@ func TestCapabilitiesJSONFamilySchema(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
 		t.Fatalf("capabilities output is not JSON: %v\n%s", err, out.String())
 	}
-	if strings.Join(env.Data.Supported.ContextAPIVersions, ",") != "dbgov.io/context/v1" {
+	if strings.Join(env.Data.Supported.ContextAPIVersions, ",") != "dbgov-cli.io/context/v1" {
 		t.Fatalf("context API versions = %#v", env.Data.Supported.ContextAPIVersions)
 	}
-	if strings.Join(env.Data.Supported.AuditAPIVersions, ",") != "dbgov.io/audit/v1" {
+	if strings.Join(env.Data.Supported.AuditAPIVersions, ",") != "dbgov-cli.io/audit/v1" {
 		t.Fatalf("audit API versions = %#v", env.Data.Supported.AuditAPIVersions)
 	}
 	if len(env.Data.Domain) != 0 {

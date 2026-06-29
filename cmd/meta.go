@@ -12,7 +12,7 @@ import (
 var (
 	version = "dev"
 	commit  = unknownBuildValue
-	date    = unknownBuildValue
+	built   = unknownBuildValue
 )
 
 const unknownBuildValue = "unknown"
@@ -23,12 +23,12 @@ type versionInfo struct {
 	Version string `json:"version"`
 }
 
-func SetVersionInfo(v, c, d string) {
+func SetVersionInfo(v, c, b string) {
 	if v != "" {
 		version = v
 	}
 	commit = buildMetadataValue(c)
-	date = buildMetadataValue(d)
+	built = buildMetadataValue(b)
 }
 
 func buildMetadataValue(value string) string {
@@ -44,7 +44,7 @@ func newVersionCmd(f *cliFlags) *cobra.Command {
 		Short: "Show version information",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			info := versionInfo{Built: date, Commit: commit, Version: version}
+			info := versionInfo{Built: built, Commit: commit, Version: version}
 			p := newPrinter(f)
 			if f.Output == "json" {
 				return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "VersionInfo", Data: info})
@@ -107,8 +107,8 @@ func capabilitiesData() CapabilitiesData {
 	return CapabilitiesData{
 		Tool: CapTool{Name: "dbgov", Version: version},
 		Supported: CapSupported{
-			ContextAPIVersions: []string{"dbgov.io/context/v1"},
-			AuditAPIVersions:   []string{"dbgov.io/audit/v1"},
+			ContextAPIVersions: []string{"dbgov-cli.io/context/v1"},
+			AuditAPIVersions:   []string{"dbgov-cli.io/audit/v1"},
 			Engines: []CapEngine{
 				{
 					Name:   "mysql",

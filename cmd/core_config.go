@@ -9,24 +9,26 @@ import (
 	"github.com/JiangHe12/opskit-core/printer"
 	"github.com/JiangHe12/opskit-core/safety"
 	"github.com/JiangHe12/opskit-core/telemetry"
+
+	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 )
 
 func init() {
 	apperrors.Configure(apperrors.Options{
-		APIVersion: "dbgov.io/v1",
+		APIVersion: "dbgov-cli.io/v1",
 		Suggestions: map[apperrors.ErrorCode]string{
 			apperrors.CodeCredentialStoreMissing: "Re-run dbgov ctx set with a password, or set DBGOV_PASSWORD.",
 		},
 	})
 	audit.Configure(audit.Config{
-		APIVersion:         "dbgov.io/audit/v1",
+		APIVersion:         "dbgov-cli.io/audit/v1",
 		ConfigDirName:      ".dbgov",
 		PrivateKeyEnvVar:   "DBGOV_AUDIT_PRIVATE_KEY",
 		TargetTypeJSONName: "objectType",
 	})
-	corectx.Configure(corectx.Options{APIVersion: "dbgov.io/context/v1", ConfigDirName: ".dbgov"})
+	corectx.Configure(corectx.Options{APIVersion: dbgovctx.SupportedContextAPIVersion, ConfigDirName: ".dbgov"})
 	lockfile.Configure(lockfile.Options{TimeoutEnvVar: "DBGOV_LOCK_TIMEOUT"})
-	printer.Configure(printer.Options{APIVersion: "dbgov.io/v1", JSONEnvelopeByDefault: true})
+	printer.Configure(printer.Options{APIVersion: "dbgov-cli.io/v1", JSONEnvelopeByDefault: true})
 	safety.Configure(safety.Config{
 		Prompt:                   "Proceed with database operation? [y/N] ",
 		OperatorEnvVar:           "DBGOV_OPERATOR",

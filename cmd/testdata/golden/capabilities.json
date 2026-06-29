@@ -1,5 +1,5 @@
 {
-  "apiVersion": "dbgov.io/v1",
+  "apiVersion": "dbgov-cli.io/v1",
   "kind": "Capabilities",
   "success": true,
   "data": {
@@ -9,10 +9,10 @@
     },
     "supported": {
       "contextApiVersions": [
-        "dbgov.io/context/v1"
+        "dbgov-cli.io/context/v1"
       ],
       "auditApiVersions": [
-        "dbgov.io/audit/v1"
+        "dbgov-cli.io/audit/v1"
       ],
       "engines": [
         {

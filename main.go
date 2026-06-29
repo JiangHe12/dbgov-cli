@@ -13,11 +13,11 @@ import (
 var (
 	version string
 	commit  string
-	date    string
+	built   string
 )
 
 func main() {
-	cmd.SetVersionInfo(version, commit, date)
+	cmd.SetVersionInfo(version, commit, built)
 	cmd.SetSkillFS(skillEmbedFS)
 	if err := cmd.NewRootCmd().Execute(); err != nil {
 		if outputFlagFromArgs(os.Args[1:]) == "json" {

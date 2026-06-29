@@ -24,6 +24,25 @@ jobs:
           go-version: 'stable'
           cache: true
 
+      - name: Run test suite
+        run: go test ./... -count=1
+
+  integration-test-db:
+    needs: integration-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+          cache: true
+
       - name: Start MySQL
         run: docker compose -f docker-compose.integration.yml up -d
 
@@ -64,7 +83,7 @@ jobs:
         run: docker compose -f docker-compose.integration.yml down -v
 
   release:
-    needs: integration-test
+    needs: [integration-test, integration-test-db]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -92,7 +111,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           COMMIT=$(git rev-parse --short HEAD)
-          BUILT=$(date +%Y-%m-%d)
+          BUILT=$(date -u +%Y-%m-%d)
 
           EXT=""
           if [ "$GOOS" = "windows" ]; then
@@ -101,7 +120,7 @@ jobs:
 
           OUTPUT="dbgov-cli-${GOOS}-${GOARCH}${EXT}"
 
-          go build -ldflags "-X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILT}" -o "${OUTPUT}" .
+          go build -ldflags "-X main.version=${VERSION} -X main.commit=${COMMIT} -X main.built=${BUILT}" -o "${OUTPUT}" .
 
           sha256sum "${OUTPUT}" > "${OUTPUT}.sha256"
 

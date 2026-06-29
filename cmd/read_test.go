@@ -825,7 +825,7 @@ func TestCtxExportRedactsCredentialByDefault(t *testing.T) {
 		t.Fatalf("ctx export leaked password:\n%s", out)
 	}
 	for _, want := range []string{
-		"apiVersion: dbgov.io/ctx-export/v1",
+		"apiVersion: dbgov-cli.io/ctx-export/v1",
 		"name: local",
 		"password: <REDACTED>",
 	} {
@@ -871,7 +871,7 @@ func TestCtxImportRedactedCredentialClearsPasswordAndAudits(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(home, "config.yaml")
-	importPath := writeTestFile(t, home, "ctx.yaml", `apiVersion: dbgov.io/ctx-export/v1
+	importPath := writeTestFile(t, home, "ctx.yaml", `apiVersion: dbgov-cli.io/ctx-export/v1
 name: dev
 context:
     engine: mysql
@@ -919,7 +919,7 @@ func TestCtxImportVersionRenameForceAndNonInteractive(t *testing.T) {
 		t.Fatalf("error code = %s, want %s", appErr.Code, apperrors.CodeUnsupportedProtocol)
 	}
 
-	importPath := writeTestFile(t, home, "good.yaml", `apiVersion: dbgov.io/ctx-export/v1
+	importPath := writeTestFile(t, home, "good.yaml", `apiVersion: dbgov-cli.io/ctx-export/v1
 name: dev
 context:
     engine: mysql
@@ -940,6 +940,17 @@ context:
 	if err != nil {
 		t.Fatalf("ctx import --force error = %v", err)
 	}
+	legacyPath := writeTestFile(t, home, "legacy.yaml", `apiVersion: dbgov.io/ctx-export/v1
+name: legacy
+context:
+    engine: mysql
+    host: 127.0.0.1
+    port: 3306
+`)
+	_, err = executeCommandForTest("--config", configPath, "ctx", "import", "-f", legacyPath)
+	if err != nil {
+		t.Fatalf("legacy ctx import error = %v", err)
+	}
 	dbgovctx.SetConfigPath(configPath)
 	defer dbgovctx.SetConfigPath("")
 	cfg, err := dbgovctx.Load()
@@ -948,6 +959,9 @@ context:
 	}
 	if got := cfg.Contexts["copy"].Password; got != "secret" {
 		t.Fatalf("renamed context password = %q, want secret", got)
+	}
+	if _, ok := cfg.Contexts["legacy"]; !ok {
+		t.Fatalf("legacy context was not imported: %#v", cfg.Contexts)
 	}
 
 	_, err = executeCommandForTest("--non-interactive", "--config", filepath.Join(home, "other.yaml"), "ctx", "import", "-f", importPath)

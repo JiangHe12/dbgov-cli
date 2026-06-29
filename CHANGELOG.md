@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.3.1
+
+### Changed
+- Internal: release version injection now uses `main.version`, `main.commit`, and `main.built` for family workflow consistency.
+
+## v0.3.0
+
+### Changed
+- **BREAKING**: `apiVersion` changed from `dbgov.io/v1` to `dbgov-cli.io/v1` for family namespace alignment. Context and audit namespaces now use `dbgov-cli.io/*`; legacy context config and ctx export documents using `dbgov.io/*` remain readable and are migrated on use.
+
 ## v0.2.14
 
 ### Changed

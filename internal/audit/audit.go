@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	APIVersion     = "dbgov.io/audit/v1"
+	APIVersion     = "dbgov-cli.io/audit/v1"
 	KindAuditEvent = "AuditEvent"
 )
 
