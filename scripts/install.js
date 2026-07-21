@@ -6,11 +6,11 @@ const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
 const { URL } = require('url');
-const { createWriteStream } = require('fs');
 
 const pkg = require('../package.json');
 const VERSION = pkg.version;
 const REPO = 'JiangHe12/dbgov-cli';
+const TIMEOUT_MS = 30000;
 
 const ALLOWED_REDIRECT_HOSTS = new Set([
   'github.com',
@@ -25,9 +25,7 @@ const ALLOWED_REDIRECT_HOSTS = new Set([
 function isAllowedRedirectHost(urlStr) {
   try {
     const parsed = new URL(urlStr);
-    if (ALLOWED_REDIRECT_HOSTS.has(parsed.hostname)) return true;
-    if (parsed.hostname.endsWith('.github.io')) return true;
-    return false;
+    return ALLOWED_REDIRECT_HOSTS.has(parsed.hostname) || parsed.hostname.endsWith('.github.io');
   } catch {
     return false;
   }
@@ -79,17 +77,30 @@ function getDownloadUrl() {
   return applyMirror(`https://github.com/${REPO}/releases/download/v${VERSION}/${binary}`);
 }
 
+function request(url, onResponse) {
+  const req = pickClient(url).get(url, onResponse);
+  req.setTimeout(TIMEOUT_MS, () => {
+    req.destroy(new Error(`Download timed out after ${TIMEOUT_MS / 1000}s`));
+  });
+  return req;
+}
+
+function redirectTarget(currentUrl, response) {
+  return new URL(response.headers.location, currentUrl).toString();
+}
+
 function download(url, dest, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     if (redirectCount > 5) {
       reject(new Error('Too many redirects'));
       return;
     }
-    const file = createWriteStream(dest);
 
-    pickClient(url).get(url, { timeout: 30000 }, (response) => {
-      if (response.statusCode === 302 || response.statusCode === 301) {
-        const target = response.headers.location;
+    const req = request(url, (response) => {
+      if (response.statusCode === 301 || response.statusCode === 302 ||
+          response.statusCode === 307 || response.statusCode === 308) {
+        response.resume();
+        const target = redirectTarget(url, response);
         if (!isAllowedRedirectHost(target)) {
           reject(new Error(`Redirect to non-allowed host rejected: ${target}`));
           return;
@@ -99,16 +110,21 @@ function download(url, dest, redirectCount = 0) {
       }
 
       if (response.statusCode !== 200) {
+        response.resume();
         reject(new Error(`Download failed: ${response.statusCode}`));
         return;
       }
 
+      const file = fs.createWriteStream(dest);
       response.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve();
+      file.on('finish', () => file.close(resolve));
+      file.on('error', (err) => {
+        response.destroy();
+        fs.unlink(dest, () => {});
+        reject(err);
       });
-    }).on('error', (err) => {
+    });
+    req.on('error', (err) => {
       fs.unlink(dest, () => {});
       reject(err);
     });
@@ -119,31 +135,41 @@ function getChecksumsUrl() {
   return `https://github.com/${REPO}/releases/download/v${VERSION}/checksums.txt`;
 }
 
-function downloadToString(url, maxRedirects = 5) {
+function downloadToString(url, redirectsLeft = 5) {
   return new Promise((resolve, reject) => {
-    pickClient(url).get(url, { timeout: 30000 }, (response) => {
-      if (response.statusCode === 302 || response.statusCode === 301) {
-        if (maxRedirects <= 0) {
+    const req = request(url, (response) => {
+      if (response.statusCode === 301 || response.statusCode === 302 ||
+          response.statusCode === 307 || response.statusCode === 308) {
+        response.resume();
+        if (redirectsLeft <= 0) {
           reject(new Error('Too many redirects'));
           return;
         }
-        downloadToString(response.headers.location, maxRedirects - 1).then(resolve).catch(reject);
+        const target = redirectTarget(url, response);
+        if (!isAllowedRedirectHost(target)) {
+          reject(new Error(`Redirect to non-allowed host rejected: ${target}`));
+          return;
+        }
+        downloadToString(target, redirectsLeft - 1).then(resolve).catch(reject);
         return;
       }
 
       if (response.statusCode !== 200) {
+        response.resume();
         reject(new Error(`Download failed: ${response.statusCode}`));
         return;
       }
 
       let data = '';
+      response.setEncoding('utf8');
       response.on('data', (chunk) => {
         data += chunk;
       });
       response.on('end', () => {
         resolve(data);
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
   });
 }
 
@@ -242,4 +268,15 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  _test: {
+    ALLOWED_REDIRECT_HOSTS,
+    download,
+    downloadToString,
+    request,
+  },
+};

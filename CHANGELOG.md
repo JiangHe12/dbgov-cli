@@ -15,6 +15,7 @@
 
 - Hardened read-only SQL classification against writable CTEs, locking clauses, side-effecting functions, and MySQL variable assignment; accepted queries and EXPLAIN operations now run in explicitly rolled-back read-only transactions.
 - Governed DML revalidates its EXPLAIN binding before execution, snapshots are bound to their context and physical database target, and applicable PostgreSQL DDL batches execute transactionally with fixed-schema qualification.
+- Hardened the npm installer against redirect-time file truncation, stalled requests, unsafe checksum redirects, and unhandled 307/308 or relative redirects.
 
 ### Security
 
