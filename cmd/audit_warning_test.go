@@ -39,9 +39,7 @@ func TestAuditWriteFailureDoesNotReplaceOriginalExitCode(t *testing.T) {
 	secureMutationAuditTestParent(t, home)
 	blockDefaultAuditPath(t, home, ".dbgov")
 	malformed := filepath.Join(home, "malformed.log")
-	if err := os.WriteFile(malformed, []byte("{not-json}\n"), 0o600); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	writePrivateAuditTestFile(t, malformed, []byte("{not-json}\n"))
 
 	stderr, err := executeDbgovWithStderr(t,
 		"--config", filepath.Join(home, "config.yaml"),
@@ -93,5 +91,15 @@ func blockDefaultAuditPath(t *testing.T, home, configDir string) {
 	path := filepath.Join(home, configDir, "audit.log")
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		t.Fatalf("MkdirAll(%s) error = %v", path, err)
+	}
+}
+
+func writePrivateAuditTestFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := secureMutationSpoolFile(path); err != nil {
+		t.Fatalf("secure audit test file: %v", err)
 	}
 }
