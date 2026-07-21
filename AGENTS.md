@@ -23,7 +23,7 @@ go vet -tags=integration ./...  # compiles the //go:build integration tests
 npm pack --dry-run              # must list exactly the 5 files in Release & Versioning
 ```
 
-Real-backend integration tests (`//go:build integration`) for MySQL and PostgreSQL are env-gated (skipped unless `DBGOV_TEST_MYSQL_DSN` / `DBGOV_TEST_POSTGRES_DSN` is set). They run against live databases in the nightly `integration.yml` workflow and the release-gate `integration-test` job via `docker-compose.integration.yml` — not on push/PR.
+Real-backend integration tests (`//go:build integration`) for MySQL and PostgreSQL are env-gated (skipped locally unless `DBGOV_TEST_MYSQL_DSN` / `DBGOV_TEST_POSTGRES_DSN` is set). Nightly and release workflows set `DBGOV_TEST_REQUIRED=1`, so missing endpoints fail instead of producing a green skip, and run against digest-pinned live databases via `docker-compose.integration.yml` — not on push/PR.
 
 ## Governance Rules
 
@@ -54,5 +54,5 @@ Release only when the user explicitly asks; the pipeline is tag-triggered. To cu
 1. `package.json` → `"version": "X.Y.Z"`.
 2. `CHANGELOG.md` → add a section headed exactly `## vX.Y.Z`. It must equal the git tag with no trailing text — `release.yml` extracts the release notes by matching that exact line. Promote entries from `## [Unreleased]`.
 3. Run Build & Verify; `npm pack --dry-run` must still list exactly: `LICENSE`, `README.md`, `package.json`, `bin/dbgov-cli.js`, `scripts/install.js`.
-4. Commit, then create and push the tag `vX.Y.Z`. The tag triggers `.github/workflows/release.yml`: integration tests → multi-platform build → cosign signing → checksums → GitHub Release → npm publish via OIDC Trusted Publishing.
+4. Commit, then create a signed annotated tag `vX.Y.Z` with the maintainer's GitHub-registered SSH signing key and push it. The release preflight requires the tag, `package.json`, and the exact changelog heading to agree, and requires GitHub's REST API to report the tag signature as verified. The tag then triggers `.github/workflows/release.yml`: integration tests → multi-platform build → cosign signing → checksums → GitHub Release → npm publish via OIDC Trusted Publishing.
 5. Never hand-edit release artifacts or publish manually.

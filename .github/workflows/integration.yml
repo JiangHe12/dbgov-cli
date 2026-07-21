@@ -1,12 +1,12 @@
 name: Integration
 
 # Real-backend integration tests (//go:build integration) against live MySQL
-# and PostgreSQL containers from docker-compose.integration.yml. Runs nightly
-# and on manual dispatch only — separate from the push/PR CI so a slow database
-# boot or a transient registry flake never blocks everyday commits. (The
-# release pipeline runs the same suite as a release gate.)
+# and PostgreSQL containers from docker-compose.integration.yml. Runs nightly,
+# on manual dispatch, and as the reusable release gate. It stays separate from
+# push/PR CI so a slow database boot does not block everyday commits.
 
 on:
+  workflow_call: {}
   schedule:
     - cron: '0 5 * * *'   # daily 05:00 UTC
   workflow_dispatch: {}
@@ -34,6 +34,7 @@ jobs:
 
       - name: Run integration suite
         env:
+          DBGOV_TEST_REQUIRED: '1'
           DBGOV_TEST_MYSQL_DSN: root:dbgov-root@tcp(127.0.0.1:3306)/test
           DBGOV_TEST_MYSQL_DATABASE: test
           DBGOV_TEST_POSTGRES_DSN: postgres://postgres:dbgov-postgres@127.0.0.1:5432/test?sslmode=disable

@@ -26,4 +26,4 @@ Use the Go version configured by CI. Never commit generated credentials, local c
 
 ## Releases
 
-Maintainers cut releases from `main` with `v*` tags; the steps live in `AGENTS.md`. Do not push tags unless explicitly authorized.
+Maintainers cut releases from `main` with GitHub-verified signed annotated `v*` tags; the steps live in `AGENTS.md`. Do not push tags unless explicitly authorized.

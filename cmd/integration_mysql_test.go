@@ -15,10 +15,7 @@ import (
 )
 
 func TestMySQLIntegrationQueryExplain(t *testing.T) {
-	dsn := os.Getenv("DBGOV_TEST_MYSQL_DSN")
-	if dsn == "" {
-		t.Skip("DBGOV_TEST_MYSQL_DSN is not set")
-	}
+	dsn := requiredDBIntegrationEnv(t, "DBGOV_TEST_MYSQL_DSN")
 	database := os.Getenv("DBGOV_TEST_MYSQL_DATABASE")
 	if database == "" {
 		database = "dbgov_it"
@@ -61,10 +58,7 @@ func TestMySQLIntegrationQueryExplain(t *testing.T) {
 }
 
 func TestMySQLIntegrationSchema(t *testing.T) {
-	dsn := os.Getenv("DBGOV_TEST_MYSQL_DSN")
-	if dsn == "" {
-		t.Skip("DBGOV_TEST_MYSQL_DSN is not set")
-	}
+	dsn := requiredDBIntegrationEnv(t, "DBGOV_TEST_MYSQL_DSN")
 	database := os.Getenv("DBGOV_TEST_MYSQL_DATABASE")
 	if database == "" {
 		database = "dbgov_it"

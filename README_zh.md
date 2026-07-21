@@ -267,6 +267,7 @@ dbgov install claude --skills --yes # 也支持:codex、opencode、copilot、cur
 
 ## 🔏 供应链可信与校验
 
+- **已验证发布标签**——仅当 signed annotated tag 经 GitHub 验证，且精确匹配 `package.json`、`CHANGELOG.md` 与最新拉取的 `origin/main` 时才开始发布；CI 与真实数据库集成会在该标签提交上重跑。
 - **签名二进制**——每个发布产物都用 [cosign](https://github.com/sigstore/cosign) 无密钥(OIDC)签名;签名的 `checksums.txt` 覆盖全平台。
 - **npm provenance**——由 CI 经 OpenID Connect 发布,带 [provenance 溯源声明](https://docs.npmjs.com/generating-provenance-statements),将包与本仓库及工作流关联。
 - **校验式安装**——npm postinstall 在安装前对照签名的 `checksums.txt` 校验二进制 SHA-256。
@@ -286,7 +287,7 @@ go vet -tags=integration ./...
 npm pack --dry-run
 ```
 
-MySQL / PostgreSQL 集成测试通过 `DBGOV_TEST_MYSQL_DSN` 与 `DBGOV_TEST_POSTGRES_DSN` 选择性开启。详见 [CONTRIBUTING.md](CONTRIBUTING.md) 与安全策略 [SECURITY.md](SECURITY.md)。
+MySQL / PostgreSQL 集成测试通过 `DBGOV_TEST_MYSQL_DSN` 与 `DBGOV_TEST_POSTGRES_DSN` 选择性开启。nightly 与发布 CI 使用固定摘要的容器并启用 required 模式，缺少 DSN 时会失败，不会把真实后端测试静默跳过为绿色。详见 [CONTRIBUTING.md](CONTRIBUTING.md) 与安全策略 [SECURITY.md](SECURITY.md)。
 
 dbgov-cli 构建于共享治理引擎 [`opskit-core`](https://github.com/JiangHe12/opskit-core) 之上,是面向 AI 智能体的 **opskit** 治理型 CLI 家族的一员——同族还有 [`srvgov-cli`](https://www.npmjs.com/package/srvgov-cli)(远程服务器)、[`cfgov-cli`](https://www.npmjs.com/package/cfgov-cli)(配置 & Sentinel 规则)与 [`mqgov-cli`](https://www.npmjs.com/package/mqgov-cli)(消息中间件)。
 

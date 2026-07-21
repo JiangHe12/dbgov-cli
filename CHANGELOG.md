@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Security
+
+- Release automation now requires a GitHub-verified signed annotated tag whose
+  version matches `package.json`, an exact literal changelog heading, and the
+  freshly fetched `origin/main` commit; complete CI/vulnerability and real-DB
+  gates rerun on that tag commit before publication can start.
+- MySQL and PostgreSQL integration images are pinned to the digests exercised
+  by the successful v0.4.0 release run, and CI now fails rather than silently
+  skipping the real-database suite when a required endpoint is missing.
+
 ## v0.4.0
 
 ### Added

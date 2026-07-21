@@ -9,6 +9,7 @@ name: CI
 # job so platform-specific issues are visible without changing the Linux gate.
 
 on:
+  workflow_call: {}
   pull_request:
     branches:
       - main

@@ -1,6 +1,6 @@
 services:
   mysql:
-    image: mysql:8.4
+    image: mysql:8.4@sha256:c592c15aaf4a1961e15d82eb31ea5987dda862d1c4b1e93424438c0e91dc1f8d
     environment:
       MYSQL_ROOT_PASSWORD: dbgov-root
       MYSQL_DATABASE: test
@@ -13,7 +13,7 @@ services:
       retries: 20
       start_period: 20s
   postgres:
-    image: postgres:17
+    image: postgres:17@sha256:a426e44bac0b759c95894d68e1a0ac03ecc20b619f498a91aae373bf06d8508d
     environment:
       POSTGRES_PASSWORD: dbgov-postgres
       POSTGRES_DB: test

@@ -13,10 +13,7 @@ import (
 )
 
 func TestPostgresIntegrationQueryExplain(t *testing.T) {
-	dsn := os.Getenv("DBGOV_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("DBGOV_TEST_POSTGRES_DSN is not set")
-	}
+	dsn := requiredDBIntegrationEnv(t, "DBGOV_TEST_POSTGRES_DSN")
 	database := os.Getenv("DBGOV_TEST_POSTGRES_DATABASE")
 	if database == "" {
 		database = "postgres"
@@ -46,10 +43,7 @@ func TestPostgresIntegrationQueryExplain(t *testing.T) {
 }
 
 func TestPostgresIntegrationSchema(t *testing.T) {
-	dsn := os.Getenv("DBGOV_TEST_POSTGRES_DSN")
-	if dsn == "" {
-		t.Skip("DBGOV_TEST_POSTGRES_DSN is not set")
-	}
+	dsn := requiredDBIntegrationEnv(t, "DBGOV_TEST_POSTGRES_DSN")
 	database := os.Getenv("DBGOV_TEST_POSTGRES_DATABASE")
 	if database == "" {
 		database = "postgres"

@@ -267,6 +267,7 @@ dbgov install claude --skills --yes # also: codex, opencode, copilot, cursor, wi
 
 ## 🔏 Trust & verification
 
+- **Verified release tags** — publication starts only from a GitHub-verified signed annotated tag that exactly matches `package.json`, `CHANGELOG.md`, and freshly fetched `origin/main`; CI and real database integrations rerun on that tag commit.
 - **Signed binaries** — every release artifact is signed with [cosign](https://github.com/sigstore/cosign) (keyless / OIDC); a signed `checksums.txt` covers all platforms.
 - **npm provenance** — published from CI via OpenID Connect with [provenance attestations](https://docs.npmjs.com/generating-provenance-statements) tying the package to this repo and workflow.
 - **Verified installs** — the npm postinstall checks the binary's SHA-256 against the signed `checksums.txt` before installing.
@@ -286,7 +287,7 @@ go vet -tags=integration ./...
 npm pack --dry-run
 ```
 
-MySQL / PostgreSQL integration tests are opt-in via `DBGOV_TEST_MYSQL_DSN` and `DBGOV_TEST_POSTGRES_DSN`. See [CONTRIBUTING.md](CONTRIBUTING.md) and the security policy in [SECURITY.md](SECURITY.md).
+MySQL / PostgreSQL integration tests are opt-in via `DBGOV_TEST_MYSQL_DSN` and `DBGOV_TEST_POSTGRES_DSN`. Nightly and release CI use digest-pinned containers and required mode, so a missing DSN fails rather than silently skipping the real-backend suite. See [CONTRIBUTING.md](CONTRIBUTING.md) and the security policy in [SECURITY.md](SECURITY.md).
 
 dbgov-cli is built on the shared [`opskit-core`](https://github.com/JiangHe12/opskit-core) governance engine and is part of the **opskit** family of governed CLIs for AI agents — alongside [`srvgov-cli`](https://www.npmjs.com/package/srvgov-cli) (remote servers), [`cfgov-cli`](https://www.npmjs.com/package/cfgov-cli) (config & Sentinel rules), and [`mqgov-cli`](https://www.npmjs.com/package/mqgov-cli) (message brokers).
 
