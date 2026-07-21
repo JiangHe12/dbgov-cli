@@ -13,7 +13,7 @@ import (
 )
 
 func TestEventAppendRecordVerifyAndQueryRaw(t *testing.T) {
-	home := t.TempDir()
+	home := resolvedTempDir(t)
 	if err := os.Remove(home); err != nil {
 		t.Fatalf("Remove(test home) error = %v", err)
 	}
@@ -83,7 +83,7 @@ func TestEventAppendRecordVerifyAndQueryRaw(t *testing.T) {
 }
 
 func TestAppendAndHistoricalSanitizeRemoveRawSensitiveFields(t *testing.T) {
-	home := t.TempDir()
+	home := resolvedTempDir(t)
 	if err := os.Remove(home); err != nil {
 		t.Fatalf("Remove(test home) error = %v", err)
 	}
@@ -151,6 +151,15 @@ func TestAppendAndHistoricalSanitizeRemoveRawSensitiveFields(t *testing.T) {
 		historical.Error.Message != "" {
 		t.Fatalf("historical event was not sanitized: %#v", historical)
 	}
+}
+
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(test temp dir) error = %v", err)
+	}
+	return dir
 }
 
 func TestHistoricalSanitizeDropsUntrustedFingerprintsAndMutationShape(t *testing.T) {

@@ -18,6 +18,21 @@ func secureMutationAuditTestParent(t *testing.T, path string) {
 }
 
 func secureMutationAuditTestParentPath(path string) error {
+	userSID, _, _, err := trustedMutationSpoolSIDs()
+	if err != nil {
+		return err
+	}
+	if err := windows.SetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION,
+		userSID,
+		nil,
+		nil,
+		nil,
+	); err != nil {
+		return err
+	}
 	return setMutationSpoolACL(path, windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT)
 }
 

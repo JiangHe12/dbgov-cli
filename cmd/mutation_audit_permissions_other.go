@@ -125,7 +125,7 @@ func verifyMutationSpoolOwner(info os.FileInfo, path string) error {
 
 func hasTrustedMutationSpoolOwner(info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && uint64(stat.Uid) == uint64(os.Geteuid())
+	return ok && int64(stat.Uid) == int64(os.Geteuid())
 }
 
 func commitMutationSpoolFile(from, to string) error {

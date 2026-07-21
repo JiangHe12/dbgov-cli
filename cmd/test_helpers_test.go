@@ -41,7 +41,15 @@ func secureTemporaryTestHome() error {
 	if err != nil {
 		return err
 	}
+	temp, err = filepath.EvalSymlinks(temp)
+	if err != nil {
+		return err
+	}
 	home, err = filepath.Abs(home)
+	if err != nil {
+		return err
+	}
+	home, err = filepath.EvalSymlinks(home)
 	if err != nil {
 		return err
 	}
