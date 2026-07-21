@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 )
 
 type Schema struct {
@@ -87,22 +86,272 @@ type RiskSummary struct {
 	Destructive bool `json:"destructive"`
 }
 
-var createTableRE = regexp.MustCompile(`(?is)^\s*CREATE\s+TABLE\s+(?:` + "`" + `([^` + "`" + `]+)` + "`" + `|"((?:""|[^"])*)"|([a-zA-Z_][a-zA-Z0-9_]*))\s*\((.*)\)\s*(?:[a-z].*)?;?\s*$`)
-
 func ParseDesiredSQL(sqlText string) (Schema, error) {
 	trimmed := strings.TrimSpace(sqlText)
-	matches := createTableRE.FindStringSubmatch(trimmed)
-	if matches == nil {
+	tableName, body, ok := parseCreateTableEnvelope(trimmed)
+	if !ok {
 		return Schema{}, apperrors.New(apperrors.CodeNotImplemented, "unsupported DDL: only simple CREATE TABLE statements are supported", nil)
 	}
-	tableName := firstNonEmpty(matches[1], strings.ReplaceAll(matches[2], `""`, `"`), matches[3])
-	columns, err := parseColumns(matches[4])
+	columns, err := parseColumns(body)
 	if err != nil {
 		return Schema{}, err
 	}
 	return Schema{Tables: map[string]Table{
 		tableName: {Name: tableName, Columns: columns},
 	}}, nil
+}
+
+type ddlScanner struct {
+	sql string
+	pos int
+}
+
+func parseCreateTableEnvelope(sqlText string) (tableName, body string, ok bool) {
+	scanner := ddlScanner{sql: sqlText}
+	if !scanner.consumeWord("create") || !scanner.consumeWord("table") {
+		return "", "", false
+	}
+	scanner.skipSpace()
+	qualifierQuote := byte(0)
+	if scanner.peek() == '"' || scanner.peek() == '`' {
+		qualifierQuote = scanner.peek()
+	}
+	tableName, ok = scanner.readIdentifier()
+	if !ok {
+		return "", "", false
+	}
+	scanner.skipSpace()
+	if scanner.peek() == '.' {
+		if !isPublicSchemaQualifier(tableName, qualifierQuote) {
+			return "", "", false
+		}
+		scanner.pos++
+		tableName, ok = scanner.readIdentifier()
+		if !ok {
+			return "", "", false
+		}
+		scanner.skipSpace()
+	}
+	if scanner.peek() != '(' {
+		return "", "", false
+	}
+	bodyStart := scanner.pos + 1
+	bodyEnd, ok := scanner.skipBalancedBody()
+	if !ok || !validCreateTableTail(scanner.sql[scanner.pos:]) {
+		return "", "", false
+	}
+	return tableName, scanner.sql[bodyStart:bodyEnd], true
+}
+
+func isPublicSchemaQualifier(value string, quote byte) bool {
+	switch quote {
+	case 0:
+		return strings.EqualFold(value, "public")
+	case '"':
+		return value == "public"
+	default:
+		return false
+	}
+}
+
+func (s *ddlScanner) consumeWord(want string) bool {
+	s.skipSpace()
+	start := s.pos
+	for s.pos < len(s.sql) && isDDLIdentifierPart(s.sql[s.pos]) {
+		s.pos++
+	}
+	if start == s.pos || !strings.EqualFold(s.sql[start:s.pos], want) {
+		s.pos = start
+		return false
+	}
+	return true
+}
+
+func (s *ddlScanner) readIdentifier() (string, bool) {
+	s.skipSpace()
+	if s.pos >= len(s.sql) {
+		return "", false
+	}
+	switch s.sql[s.pos] {
+	case '`', '"':
+		quote := s.sql[s.pos]
+		s.pos++
+		var value strings.Builder
+		for s.pos < len(s.sql) {
+			if s.sql[s.pos] != quote {
+				value.WriteByte(s.sql[s.pos])
+				s.pos++
+				continue
+			}
+			s.pos++
+			if s.pos < len(s.sql) && s.sql[s.pos] == quote {
+				value.WriteByte(quote)
+				s.pos++
+				continue
+			}
+			return value.String(), value.Len() > 0
+		}
+		return "", false
+	default:
+		if !isDDLIdentifierStart(s.sql[s.pos]) {
+			return "", false
+		}
+		start := s.pos
+		s.pos++
+		for s.pos < len(s.sql) && isDDLIdentifierPart(s.sql[s.pos]) {
+			s.pos++
+		}
+		return s.sql[start:s.pos], true
+	}
+}
+
+//nolint:gocyclo // CREATE TABLE bodies require one quote/comment-aware pass to identify the actual closing parenthesis.
+func (s *ddlScanner) skipBalancedBody() (int, bool) {
+	if s.peek() != '(' {
+		return 0, false
+	}
+	depth := 0
+	for s.pos < len(s.sql) {
+		switch s.sql[s.pos] {
+		case '\'', '"', '`':
+			if !s.skipQuoted(s.sql[s.pos]) {
+				return 0, false
+			}
+		case '(':
+			depth++
+			s.pos++
+		case ')':
+			depth--
+			if depth < 0 {
+				return 0, false
+			}
+			bodyEnd := s.pos
+			s.pos++
+			if depth == 0 {
+				return bodyEnd, true
+			}
+		case ';':
+			return 0, false
+		case '-', '/':
+			start := s.pos
+			if !s.skipComment() {
+				return 0, false
+			}
+			if s.pos == start {
+				s.pos++
+			}
+		default:
+			s.pos++
+		}
+	}
+	return 0, false
+}
+
+func (s *ddlScanner) skipQuoted(quote byte) bool {
+	s.pos++
+	for s.pos < len(s.sql) {
+		switch s.sql[s.pos] {
+		case '\\':
+			start := s.pos
+			for s.pos < len(s.sql) && s.sql[s.pos] == '\\' {
+				s.pos++
+			}
+			if s.pos < len(s.sql) && s.sql[s.pos] == quote && (s.pos-start)%2 != 0 {
+				return false
+			}
+		case quote:
+			s.pos++
+			if s.pos < len(s.sql) && s.sql[s.pos] == quote {
+				s.pos++
+				continue
+			}
+			return true
+		default:
+			s.pos++
+		}
+	}
+	return false
+}
+
+func (s *ddlScanner) skipComment() bool {
+	if s.pos+1 >= len(s.sql) {
+		return true
+	}
+	switch s.sql[s.pos : s.pos+2] {
+	case "--":
+		s.pos += 2
+		for s.pos < len(s.sql) && s.sql[s.pos] != '\n' && s.sql[s.pos] != '\r' {
+			s.pos++
+		}
+		return true
+	case "/*":
+		end := strings.Index(s.sql[s.pos+2:], "*/")
+		if end < 0 {
+			return false
+		}
+		s.pos += end + 4
+		return true
+	default:
+		return true
+	}
+}
+
+func (s *ddlScanner) skipSpace() {
+	for s.pos < len(s.sql) {
+		switch s.sql[s.pos] {
+		case ' ', '\t', '\n', '\r', '\v', '\f':
+			s.pos++
+		default:
+			return
+		}
+	}
+}
+
+func (s *ddlScanner) peek() byte {
+	if s.pos >= len(s.sql) {
+		return 0
+	}
+	return s.sql[s.pos]
+}
+
+func validCreateTableTail(tail string) bool {
+	tail = strings.TrimSpace(tail)
+	if tail == "" || tail == ";" {
+		return true
+	}
+	if strings.HasSuffix(tail, ";") {
+		tail = strings.TrimSpace(strings.TrimSuffix(tail, ";"))
+	}
+	if tail == "" || !validDDLFragment(tail, true) {
+		return tail == ""
+	}
+	first := firstDDLWord(tail)
+	switch first {
+	case "auto_increment", "character", "collate", "comment", "compression", "default", "encryption",
+		"engine", "inherits", "key_block_size", "on", "partition", "row_format", "stats_persistent",
+		"tablespace", "using", "with", "without":
+		return !containsDangerousDDLWord(tail)
+	default:
+		return false
+	}
+}
+
+func firstDDLWord(fragment string) string {
+	scanner := ddlScanner{sql: fragment}
+	scanner.skipSpace()
+	start := scanner.pos
+	for scanner.pos < len(scanner.sql) && isDDLIdentifierPart(scanner.sql[scanner.pos]) {
+		scanner.pos++
+	}
+	return strings.ToLower(scanner.sql[start:scanner.pos])
+}
+
+func isDDLIdentifierStart(ch byte) bool {
+	return ch == '_' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z'
+}
+
+func isDDLIdentifierPart(ch byte) bool {
+	return isDDLIdentifierStart(ch) || ch >= '0' && ch <= '9' || ch == '$'
 }
 
 func LoadDesiredDir(dir string) (Schema, error) {
@@ -156,7 +405,10 @@ func SchemaFromDDLMap(tables map[string]string) (Schema, error) {
 }
 
 func parseColumns(body string) ([]Column, error) {
-	parts := splitColumnParts(body)
+	parts, err := splitColumnParts(body)
+	if err != nil {
+		return nil, err
+	}
 	columns := make([]Column, 0, len(parts))
 	for _, part := range parts {
 		fields := strings.Fields(strings.TrimSpace(part))
@@ -175,6 +427,9 @@ func parseColumns(body string) ([]Column, error) {
 		columnType := columnTypeFromFields(fields[1:])
 		if columnType == "" {
 			return nil, apperrors.New(apperrors.CodeNotImplemented, fmt.Sprintf("unsupported column definition: %s", strings.TrimSpace(part)), nil)
+		}
+		if !validDDLFragment(columnType, false) || containsDangerousDDLWord(columnType, "after", "first", "using") {
+			return nil, apperrors.New(apperrors.CodeValidationFailed, fmt.Sprintf("unsafe column type in definition: %s", strings.TrimSpace(part)), nil)
 		}
 		columnType, autoIncrement := normalizeAutoIncrementType(columnType, fields[1:])
 		columns = append(columns, Column{Name: name, Type: columnType, AutoIncrement: autoIncrement})
@@ -237,15 +492,6 @@ func isColumnConstraintKeyword(field string) bool {
 	}
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func trimSQLIdent(value string) string {
 	if strings.HasPrefix(value, "`") && strings.HasSuffix(value, "`") {
 		return strings.TrimSuffix(strings.TrimPrefix(value, "`"), "`")
@@ -256,27 +502,135 @@ func trimSQLIdent(value string) string {
 	return value
 }
 
-func splitColumnParts(body string) []string {
+//nolint:gocyclo // Column splitting must keep quote, comment, and parenthesis state in one auditable pass.
+func splitColumnParts(body string) ([]string, error) {
 	var parts []string
 	start := 0
 	depth := 0
-	for i, r := range body {
-		switch r {
+	scanner := ddlScanner{sql: body}
+	for scanner.pos < len(scanner.sql) {
+		switch scanner.sql[scanner.pos] {
+		case '\'', '"', '`':
+			if !scanner.skipQuoted(scanner.sql[scanner.pos]) {
+				return nil, apperrors.New(apperrors.CodeValidationFailed, "unsupported DDL: unterminated quoted value in CREATE TABLE", nil)
+			}
 		case '(':
 			depth++
+			scanner.pos++
 		case ')':
-			if depth > 0 {
-				depth--
+			if depth == 0 {
+				return nil, apperrors.New(apperrors.CodeValidationFailed, "unsupported DDL: unbalanced column type parentheses", nil)
 			}
+			depth--
+			scanner.pos++
 		case ',':
 			if depth == 0 {
-				parts = append(parts, body[start:i])
-				start = i + 1
+				parts = append(parts, body[start:scanner.pos])
+				start = scanner.pos + 1
+			}
+			scanner.pos++
+		case ';':
+			return nil, apperrors.New(apperrors.CodeValidationFailed, "unsupported DDL: statement separator inside CREATE TABLE", nil)
+		case '#':
+			return nil, apperrors.New(apperrors.CodeValidationFailed, "unsupported DDL: MySQL hash comments are not allowed in CREATE TABLE", nil)
+		case '-', '/':
+			commentStart := scanner.pos
+			if !scanner.skipComment() {
+				return nil, apperrors.New(apperrors.CodeValidationFailed, "unsupported DDL: unterminated comment in CREATE TABLE", nil)
+			}
+			if scanner.pos == commentStart {
+				scanner.pos++
+			}
+		default:
+			scanner.pos++
+		}
+	}
+	if depth != 0 {
+		return nil, apperrors.New(apperrors.CodeValidationFailed, "unsupported DDL: unbalanced column type parentheses", nil)
+	}
+	parts = append(parts, body[start:])
+	return parts, nil
+}
+
+//nolint:gocyclo // Raw column types are rendered into DDL, so validation must account for every quoted and nested form.
+func validDDLFragment(fragment string, allowComments bool) bool {
+	scanner := ddlScanner{sql: fragment}
+	depth := 0
+	for scanner.pos < len(scanner.sql) {
+		switch scanner.sql[scanner.pos] {
+		case '\'', '"', '`':
+			if !scanner.skipQuoted(scanner.sql[scanner.pos]) {
+				return false
+			}
+		case '(':
+			depth++
+			scanner.pos++
+		case ')':
+			if depth == 0 {
+				return false
+			}
+			depth--
+			scanner.pos++
+		case ';':
+			return false
+		case '#':
+			if !allowComments {
+				return false
+			}
+			scanner.pos++
+		case '-', '/':
+			start := scanner.pos
+			if !scanner.skipComment() || (!allowComments && scanner.pos != start) {
+				return false
+			}
+			if scanner.pos == start {
+				scanner.pos++
+			}
+		default:
+			scanner.pos++
+		}
+	}
+	return depth == 0
+}
+
+func containsDangerousDDLWord(fragment string, additional ...string) bool {
+	scanner := ddlScanner{sql: fragment}
+	for scanner.pos < len(scanner.sql) {
+		switch scanner.sql[scanner.pos] {
+		case '\'', '"', '`':
+			if !scanner.skipQuoted(scanner.sql[scanner.pos]) {
+				return true
+			}
+		case '-', '/':
+			start := scanner.pos
+			if !scanner.skipComment() {
+				return true
+			}
+			if scanner.pos == start {
+				scanner.pos++
+			}
+		default:
+			if !isDDLIdentifierStart(scanner.sql[scanner.pos]) {
+				scanner.pos++
+				continue
+			}
+			start := scanner.pos
+			scanner.pos++
+			for scanner.pos < len(scanner.sql) && isDDLIdentifierPart(scanner.sql[scanner.pos]) {
+				scanner.pos++
+			}
+			switch strings.ToLower(scanner.sql[start:scanner.pos]) {
+			case "alter", "create", "delete", "drop", "grant", "insert", "revoke", "truncate", "update":
+				return true
+			}
+			for _, word := range additional {
+				if strings.EqualFold(scanner.sql[start:scanner.pos], word) {
+					return true
+				}
 			}
 		}
 	}
-	parts = append(parts, body[start:])
-	return parts
+	return false
 }
 
 func Diff(current, desired Schema) DiffResult {

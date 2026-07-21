@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	coreaudit "github.com/JiangHe12/opskit-core/audit"
+	coreaudit "github.com/JiangHe12/opskit-core/v2/audit"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
@@ -228,10 +228,11 @@ func TestRedactSQLTruthTable(t *testing.T) {
 	}
 }
 
-func TestEmitAuditRedactsStatementAndFailedStatement(t *testing.T) {
+func TestEmitAuditFingerprintsStatementAndFailedStatement(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	secureMutationAuditTestParent(t, home)
 
 	event := dbgaudit.New(
 		dbgaudit.EventTypeDataExec,
@@ -257,10 +258,14 @@ func TestEmitAuditRedactsStatementAndFailedStatement(t *testing.T) {
 			t.Fatalf("audit leaked %q:\n%s", secret, output)
 		}
 	}
-	for _, preserved := range []string{"audit_user", "failed_user", "caching_sha2_password", "[REDACTED]"} {
-		if !strings.Contains(output, preserved) {
-			t.Fatalf("audit lost %q:\n%s", preserved, output)
+	for _, raw := range []string{"audit_user", "failed_user", "caching_sha2_password", "[REDACTED]"} {
+		if strings.Contains(output, raw) {
+			t.Fatalf("audit retained raw SQL fragment %q:\n%s", raw, output)
 		}
+	}
+	if !strings.Contains(output, `"statementFingerprint":"sha256:`) ||
+		!strings.Contains(output, `"failedStatementFingerprint":"sha256:`) {
+		t.Fatalf("audit lacks SQL fingerprints:\n%s", output)
 	}
 }
 

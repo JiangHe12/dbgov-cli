@@ -10,6 +10,7 @@ func TestSchemaDiffUsesFakeBackendAndReportsDestructiveChange(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
+	secureMutationAuditTestParent(t, tmp)
 	desired := writeTestFile(t, tmp, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100));`)
 	var out, errOut bytes.Buffer
 	cmd := NewRootCmd()
@@ -30,12 +31,16 @@ func TestSchemaDiffUsesFakeBackendAndReportsDestructiveChange(t *testing.T) {
 }
 
 func TestCtxSetUseCurrentDeleteLifecycle(t *testing.T) {
-	configPath := t.TempDir() + "/config.yaml"
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	secureMutationAuditTestParent(t, home)
+	configPath := home + "/config.yaml"
 	var out, errOut bytes.Buffer
 	cmd := NewRootCmd()
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--config", configPath, "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1", "--port", "3306", "--database", "demo", "--server", "mysql://127.0.0.1:3306"})
+	cmd.SetArgs([]string{"--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1", "--port", "3306", "--database", "demo", "--server", "mysql://127.0.0.1:3306"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("ctx set error = %v", err)
 	}
@@ -44,7 +49,7 @@ func TestCtxSetUseCurrentDeleteLifecycle(t *testing.T) {
 	cmd = NewRootCmd()
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--config", configPath, "ctx", "use", "local"})
+	cmd.SetArgs([]string{"--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "use", "local"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("ctx use error = %v", err)
 	}
@@ -64,7 +69,7 @@ func TestCtxSetUseCurrentDeleteLifecycle(t *testing.T) {
 	cmd = NewRootCmd()
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
-	cmd.SetArgs([]string{"--config", configPath, "ctx", "delete", "local"})
+	cmd.SetArgs([]string{"--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-delete", "ctx", "delete", "local"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("ctx delete error = %v", err)
 	}

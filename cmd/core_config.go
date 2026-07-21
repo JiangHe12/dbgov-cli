@@ -1,14 +1,14 @@
 package cmd
 
 import (
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/audit"
-	"github.com/JiangHe12/opskit-core/credstore"
-	corectx "github.com/JiangHe12/opskit-core/ctx"
-	"github.com/JiangHe12/opskit-core/lockfile"
-	"github.com/JiangHe12/opskit-core/printer"
-	"github.com/JiangHe12/opskit-core/safety"
-	"github.com/JiangHe12/opskit-core/telemetry"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/audit"
+	"github.com/JiangHe12/opskit-core/v2/credstore"
+	corectx "github.com/JiangHe12/opskit-core/v2/ctx"
+	"github.com/JiangHe12/opskit-core/v2/lockfile"
+	"github.com/JiangHe12/opskit-core/v2/printer"
+	"github.com/JiangHe12/opskit-core/v2/safety"
+	"github.com/JiangHe12/opskit-core/v2/telemetry"
 
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 )
@@ -31,7 +31,6 @@ func init() {
 	printer.Configure(printer.Options{APIVersion: "dbgov-cli.io/v1", JSONEnvelopeByDefault: true})
 	safety.Configure(safety.Config{
 		Prompt:                   "Proceed with database operation? [y/N] ",
-		OperatorEnvVar:           "DBGOV_OPERATOR",
 		RoleAssignmentHintFormat: "assign one with: dbgov ctx role set <context> --target-operator=%s --role=%s",
 	})
 	telemetry.Configure(telemetry.Config{

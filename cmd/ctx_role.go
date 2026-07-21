@@ -3,10 +3,11 @@ package cmd
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
@@ -16,6 +17,7 @@ import (
 type roleOptions struct {
 	targetOperator string
 	role           string
+	dryRun         bool
 }
 
 type roleItem struct {
@@ -44,6 +46,7 @@ func ctxRoleSetCmd(f *cliFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&opts.targetOperator, "target-operator", "", "Operator identity to assign")
 	cmd.Flags().StringVar(&opts.role, "role", "", "Role: reader, writer, admin")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Preview the role change without authorization or writes")
 	return cmd
 }
 
@@ -58,6 +61,7 @@ func ctxRoleUnsetCmd(f *cliFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&opts.targetOperator, "target-operator", "", "Operator identity to remove")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Preview the role change without authorization or writes")
 	return cmd
 }
 
@@ -73,6 +77,7 @@ func ctxRoleListCmd(f *cliFlags) *cobra.Command {
 }
 
 func runCtxRoleSet(f *cliFlags, contextName string, opts roleOptions) error {
+	opts.targetOperator = strings.TrimSpace(opts.targetOperator)
 	if opts.targetOperator == "" {
 		return apperrors.New(apperrors.CodeUsageError, "--target-operator is required", nil)
 	}
@@ -83,21 +88,57 @@ func runCtxRoleSet(f *cliFlags, contextName string, opts roleOptions) error {
 	if err != nil {
 		return err
 	}
-	if ctx.Roles == nil {
-		ctx.Roles = map[string]string{}
+	if opts.dryRun {
+		return printControlChangePreview(f, controlChangePreview{
+			Action:         "role.set",
+			Context:        contextName,
+			TargetOperator: opts.targetOperator,
+			Role:           opts.role,
+		})
 	}
-	ctx.Roles[opts.targetOperator] = opts.role
-	if err := dbgovctx.SetContext(contextName, ctx); err != nil {
+	if err := authorizeContextControl(f, contextName, ctx, safety.AllowRoleChange, f.AllowRoleChange); err != nil {
 		return err
 	}
 	event := roleAuditEvent(f, dbgaudit.EventTypeRoleAssign, contextName, opts.targetOperator)
 	event.Role = opts.role
-	emitAudit(f, event, nil)
-	newPrinter(f).Success(fmt.Sprintf("role %q assigned to %q in context %q", opts.role, opts.targetOperator, contextName))
-	return nil
+	event.Risk = "R3"
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeRoleAssign), map[string]string{
+		"targetOperator": opts.targetOperator,
+		"role":           opts.role,
+	})
+	metadata.Items = 1
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeRoleAssign),
+		Event:    event,
+		Metadata: metadata,
+	})
+	if err != nil {
+		return err
+	}
+	attempted := 0
+	if err := dbgovctx.Update(func(current *dbgovctx.Config) error {
+		if err := verifyContextPreChangePolicy(current, contextName, contextName, ctx); err != nil {
+			return err
+		}
+		attempted = 1
+		updated := current.Contexts[contextName]
+		if updated.Roles == nil {
+			updated.Roles = map[string]string{}
+		}
+		updated.Roles[opts.targetOperator] = opts.role
+		current.Contexts[contextName] = updated
+		return nil
+	}); err != nil {
+		return finishMutationAuditProgress(handle, 1, 0, attempted, err)
+	}
+	if err := finishBatchMutationAudit(handle, 1, 1, nil); err != nil {
+		return err
+	}
+	return newPrinter(f).Success(fmt.Sprintf("role %q assigned to %q in context %q", opts.role, opts.targetOperator, contextName))
 }
 
 func runCtxRoleUnset(f *cliFlags, contextName string, opts roleOptions) error {
+	opts.targetOperator = strings.TrimSpace(opts.targetOperator)
 	if opts.targetOperator == "" {
 		return apperrors.New(apperrors.CodeUsageError, "--target-operator is required", nil)
 	}
@@ -105,18 +146,51 @@ func runCtxRoleUnset(f *cliFlags, contextName string, opts roleOptions) error {
 	if err != nil {
 		return err
 	}
-	if ctx.Roles != nil {
-		delete(ctx.Roles, opts.targetOperator)
-		if len(ctx.Roles) == 0 {
-			ctx.Roles = nil
-		}
+	if opts.dryRun {
+		return printControlChangePreview(f, controlChangePreview{
+			Action:         "role.unset",
+			Context:        contextName,
+			TargetOperator: opts.targetOperator,
+		})
 	}
-	if err := dbgovctx.SetContext(contextName, ctx); err != nil {
+	if err := authorizeContextControl(f, contextName, ctx, safety.AllowRoleChange, f.AllowRoleChange); err != nil {
 		return err
 	}
-	emitAudit(f, roleAuditEvent(f, dbgaudit.EventTypeRoleRevoke, contextName, opts.targetOperator), nil)
-	newPrinter(f).Success(fmt.Sprintf("role removed from %q in context %q", opts.targetOperator, contextName))
-	return nil
+	event := roleAuditEvent(f, dbgaudit.EventTypeRoleRevoke, contextName, opts.targetOperator)
+	event.Risk = "R3"
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeRoleRevoke), opts.targetOperator)
+	metadata.Items = 1
+	metadata.Deletes = 1
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeRoleRevoke),
+		Event:    event,
+		Metadata: metadata,
+	})
+	if err != nil {
+		return err
+	}
+	attempted := 0
+	if err := dbgovctx.Update(func(current *dbgovctx.Config) error {
+		if err := verifyContextPreChangePolicy(current, contextName, contextName, ctx); err != nil {
+			return err
+		}
+		attempted = 1
+		updated := current.Contexts[contextName]
+		if updated.Roles != nil {
+			delete(updated.Roles, opts.targetOperator)
+			if len(updated.Roles) == 0 {
+				updated.Roles = nil
+			}
+		}
+		current.Contexts[contextName] = updated
+		return nil
+	}); err != nil {
+		return finishMutationAuditProgress(handle, 1, 0, attempted, err)
+	}
+	if err := finishBatchMutationAudit(handle, 1, 1, nil); err != nil {
+		return err
+	}
+	return newPrinter(f).Success(fmt.Sprintf("role removed from %q in context %q", opts.targetOperator, contextName))
 }
 
 func runCtxRoleList(f *cliFlags, contextName string) error {
@@ -130,19 +204,17 @@ func runCtxRoleList(f *cliFlags, contextName string) error {
 		return p.JSONList("RoleList", items, len(items), 1, len(items), false)
 	}
 	if len(items) == 0 {
-		p.Info("(no roles assigned)")
-		return nil
+		return p.Info("(no roles assigned)")
 	}
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
 		rows = append(rows, []string{item.Operator, item.Role})
 	}
-	p.Table([]string{"OPERATOR", "ROLE"}, rows)
-	return nil
+	return p.Table([]string{"OPERATOR", "ROLE"}, rows)
 }
 
 func loadContextForRole(name string) (dbgovctx.Context, error) {
-	cfg, err := dbgovctx.Load()
+	cfg, err := dbgovctx.LoadReadOnly()
 	if err != nil {
 		return dbgovctx.Context{}, err
 	}

@@ -4,23 +4,28 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 )
 
 type Backend struct {
-	Schema      schema.Schema
-	Executed    []string
-	FailAt      int
-	ExplainRows int64
-	ExplainErr  error
-	DMLAffected int64
-	DMLErr      error
-	ExecutedDML []string
-	DDLs        map[string]string
-	TableDDLErr error
+	Schema           schema.Schema
+	Executed         []string
+	FailAt           int
+	ExplainRows      int64
+	ExplainErr       error
+	BoundExplainRows *int64
+	BoundExplainErr  error
+	BoundCommitErr   error
+	DMLAffected      int64
+	DMLErr           error
+	ExecutedDML      []string
+	DDLs             map[string]string
+	TableDDLErr      error
+	CloseErr         error
+	CloseCalls       int
 }
 
 func New() *Backend {
@@ -38,6 +43,11 @@ func New() *Backend {
 }
 
 func (b *Backend) Ping(context.Context) error { return nil }
+
+func (b *Backend) Close() error {
+	b.CloseCalls++
+	return b.CloseErr
+}
 
 func (b *Backend) IntrospectSchema(context.Context) (schema.Schema, error) {
 	return b.Schema, nil
@@ -58,11 +68,7 @@ func (b *Backend) Explain(context.Context, string) (dbbackend.ExplainResult, err
 	if rows == 0 {
 		rows = 2
 	}
-	return dbbackend.ExplainResult{
-		Columns:       []string{"id", "select_type", "table", "rows"},
-		Rows:          [][]string{{"1", "SIMPLE", "users", fmt.Sprint(rows)}},
-		EstimatedRows: rows,
-	}, nil
+	return fakeExplainResult(rows), nil
 }
 
 func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
@@ -112,4 +118,45 @@ func (b *Backend) ExecDML(ctx context.Context, sql string) (int64, error) {
 	}
 	b.ExecutedDML = append(b.ExecutedDML, sql)
 	return b.DMLAffected, nil
+}
+
+func (b *Backend) ExecDMLBound(ctx context.Context, sql string, binding dbbackend.DMLPlanBinding) (int64, error) {
+	if binding.PlanFingerprint == "" {
+		return 0, apperrors.New(apperrors.CodeValidationFailed, "DML plan binding is required", nil)
+	}
+	if b.BoundExplainErr != nil {
+		return 0, b.BoundExplainErr
+	}
+	rows := b.ExplainRows
+	if rows == 0 {
+		rows = 2
+	}
+	if b.BoundExplainRows != nil {
+		rows = *b.BoundExplainRows
+	}
+	current := fakeExplainResult(rows)
+	if current.PlanFingerprint != binding.PlanFingerprint || current.EstimatedRows != binding.EstimatedRows {
+		return 0, apperrors.New(apperrors.CodeConflict, "DML plan changed after authorization; preview and authorize again", nil)
+	}
+	affected, err := b.ExecDML(ctx, sql)
+	if err != nil {
+		return affected, err
+	}
+	if b.BoundCommitErr != nil {
+		return affected, dbbackend.NewCommitIndeterminateError(b.BoundCommitErr)
+	}
+	return affected, nil
+}
+
+func fakeExplainResult(rows int64) dbbackend.ExplainResult {
+	result := dbbackend.QueryResult{
+		Columns: []string{"id", "select_type", "table", "rows"},
+		Rows:    [][]string{{"1", "SIMPLE", "users", fmt.Sprint(rows)}},
+	}
+	return dbbackend.ExplainResult{
+		Columns:         result.Columns,
+		Rows:            result.Rows,
+		EstimatedRows:   rows,
+		PlanFingerprint: dbbackend.PlanFingerprint(result),
+	}
 }

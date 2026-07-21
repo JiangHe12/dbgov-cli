@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.0
+
+### Added
+
+- Added two-phase mutation auditing with intent-before-effect, correlated outcomes, and commit-aware durable replay for definitely uncommitted audit outcomes.
+
+### Changed
+
+- **BREAKING**: Context replacement, selection, import, credential migration, role changes, and confirmed audit pruning are fixed R3 governance operations with precise `--allow-*` authorization.
+- Updated to `opskit-core/v2` v2.0.0. Confirmed audit pruning is now authenticated, checkpoint-aware, bound to the exact rotation set, and recorded in a sibling control log.
+
+### Fixed
+
+- Hardened read-only SQL classification against writable CTEs, locking clauses, side-effecting functions, and MySQL variable assignment; accepted queries and EXPLAIN operations now run in explicitly rolled-back read-only transactions.
+- Governed DML revalidates its EXPLAIN binding before execution, snapshots are bound to their context and physical database target, and applicable PostgreSQL DDL batches execute transactionally with fixed-schema qualification.
+
+### Security
+
+- Authorization identity now derives from the local OS user and hostname. Persisted audit and telemetry use fingerprints and bounded counters instead of raw tickets, reasons, SQL, database targets, output, or backend error text.
+
 ## v0.3.2
 
 ### Changed

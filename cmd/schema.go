@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/printer"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/printer"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
@@ -64,6 +63,9 @@ type schemaDumpTable struct {
 
 type schemaPlan struct {
 	Statements            []schemaPlanStatement `json:"statements"`
+	PlannedStatements     int                   `json:"plannedStatements"`
+	PlanFingerprint       string                `json:"planFingerprint,omitempty"`
+	TargetFingerprint     string                `json:"targetFingerprint,omitempty"`
 	OverallRisk           string                `json:"overallRisk"`
 	Destructive           bool                  `json:"destructive"`
 	Warnings              []string              `json:"warnings,omitempty"`
@@ -178,7 +180,7 @@ func schemaDiffCmd(f *cliFlags) *cobra.Command {
 	return cmd
 }
 
-func runSchemaDiff(f *cliFlags, opts schemaDiffOptions) error {
+func runSchemaDiff(f *cliFlags, opts schemaDiffOptions) (resultErr error) {
 	if err := safety.Authorize(safety.R0, safety.Options{Operator: currentOperator(f)}); err != nil {
 		return err
 	}
@@ -194,6 +196,7 @@ func runSchemaDiff(f *cliFlags, opts schemaDiffOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(b, &resultErr, backendCloseRead)
 	current, err := b.IntrospectSchema(commandContext(f))
 	if err != nil {
 		return err
@@ -203,7 +206,7 @@ func runSchemaDiff(f *cliFlags, opts schemaDiffOptions) error {
 	return printSchemaDiff(f, meta, diff)
 }
 
-func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) error {
+func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) (resultErr error) {
 	if err := authorizeRead(f); err != nil {
 		return err
 	}
@@ -219,6 +222,7 @@ func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(b, &resultErr, backendCloseRead)
 	current, err := b.IntrospectSchema(commandContext(f))
 	if err != nil {
 		event := dbgaudit.New(dbgaudit.EventTypeSchemaPlan, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "plan"))
@@ -237,7 +241,7 @@ func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) error {
 	return printSchemaPlan(f, meta, targetRead, plan)
 }
 
-func runSchemaApply(f *cliFlags, opts schemaApplyOptions) error {
+func runSchemaApply(f *cliFlags, opts schemaApplyOptions) (resultErr error) {
 	desiredBytes, err := os.ReadFile(opts.file)
 	if err != nil {
 		return err
@@ -250,6 +254,7 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(b, &resultErr, backendCloseMutation)
 	current, err := b.IntrospectSchema(commandContext(f))
 	if err != nil {
 		event := newSchemaApplyAuditEvent(f, meta, schemaPlan{})
@@ -284,29 +289,34 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) error {
 		emitAudit(f, event, nil)
 		return err
 	}
+	statements := schemaPlanStatements(plan)
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeSchemaApply), statements)
+	metadata.Items = len(statements)
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeSchemaApply),
+		Event:    newSchemaApplyAuditEvent(f, meta, plan),
+		Metadata: metadata,
+	})
+	if err != nil {
+		return err
+	}
 	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "apply")
 	if err != nil {
-		event := newSchemaApplyAuditEvent(f, meta, plan)
-		emitAudit(f, event, err)
-		return err
+		return finishSkippedMutationAudit(handle, len(statements), err)
 	}
 
-	statements := schemaPlanStatements(plan)
 	executed, err := b.ExecDDL(commandContext(f), statements)
-	event := newSchemaApplyAuditEvent(f, meta, plan)
-	event.SnapshotID = snapshotID
-	event.Executed = executed
+	handle.spec.Event.SnapshotID = snapshotID
 	if err != nil && executed < len(statements) {
-		event.FailedStatement = statements[executed]
+		handle.spec.Event.FailedStatement = statements[executed]
 	}
-	emitAudit(f, event, err)
-	if err != nil {
-		return err
+	if auditErr := finishBatchMutationAudit(handle, len(statements), executed, err); auditErr != nil {
+		return auditErr
 	}
 	return printSchemaPlan(f, meta, targetWrite, plan)
 }
 
-func runSchemaList(f *cliFlags, opts schemaReadOptions) error {
+func runSchemaList(f *cliFlags, opts schemaReadOptions) (resultErr error) {
 	if err := authorizeRead(f); err != nil {
 		return err
 	}
@@ -314,6 +324,7 @@ func runSchemaList(f *cliFlags, opts schemaReadOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(b, &resultErr, backendCloseRead)
 	current, err := b.IntrospectSchema(commandContext(f))
 	event := dbgaudit.New(dbgaudit.EventTypeSchemaList, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "list"))
 	event.Risk = "R0"
@@ -324,7 +335,7 @@ func runSchemaList(f *cliFlags, opts schemaReadOptions) error {
 	return printSchemaList(f, meta, current)
 }
 
-func runSchemaDescribe(f *cliFlags, opts schemaReadOptions, table string) error {
+func runSchemaDescribe(f *cliFlags, opts schemaReadOptions, table string) (resultErr error) {
 	if err := authorizeRead(f); err != nil {
 		return err
 	}
@@ -332,6 +343,7 @@ func runSchemaDescribe(f *cliFlags, opts schemaReadOptions, table string) error 
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(b, &resultErr, backendCloseRead)
 	current, err := b.IntrospectSchema(commandContext(f))
 	event := dbgaudit.New(dbgaudit.EventTypeSchemaDescribe, currentOperator(f), auditContext(meta), auditTarget(meta, "table", table))
 	event.Risk = "R0"
@@ -350,7 +362,7 @@ func runSchemaDescribe(f *cliFlags, opts schemaReadOptions, table string) error 
 }
 
 //nolint:dupl // Schema dump and export share the same governed read/audit flow with different event types.
-func runSchemaDump(f *cliFlags, opts schemaReadOptions) error {
+func runSchemaDump(f *cliFlags, opts schemaReadOptions) (resultErr error) {
 	if err := authorizeRead(f); err != nil {
 		return err
 	}
@@ -358,6 +370,11 @@ func runSchemaDump(f *cliFlags, opts schemaReadOptions) error {
 	if err != nil {
 		return err
 	}
+	closeSemantics := backendCloseRead
+	if opts.dir != "" {
+		closeSemantics = backendCloseMutation
+	}
+	defer finishBackendClose(b, &resultErr, closeSemantics)
 	current, err := b.IntrospectSchema(commandContext(f))
 	if err != nil {
 		event := dbgaudit.New(dbgaudit.EventTypeSchemaDump, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "dump"))
@@ -366,20 +383,59 @@ func runSchemaDump(f *cliFlags, opts schemaReadOptions) error {
 		return err
 	}
 
-	result, opErr := dumpSchema(commandContext(f), b, current, opts.dir)
-
 	event := dbgaudit.New(dbgaudit.EventTypeSchemaDump, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "dump"))
 	event.Risk = "R0"
-	emitAudit(f, event, opErr)
+	result, opErr := collectSchemaDump(commandContext(f), b, current)
 	if opErr != nil {
+		emitAudit(f, event, opErr)
 		return opErr
+	}
+	if opts.dir == "" {
+		emitAudit(f, event, nil)
+		return printSchemaDump(f, meta, result)
+	}
+	targetDir, err := canonicalLocalMutationDirectory(opts.dir)
+	if err != nil {
+		emitAudit(f, event, err)
+		return err
+	}
+	relativePaths, err := schemaDumpRelativePaths(result)
+	if err != nil {
+		emitAudit(f, event, err)
+		return err
+	}
+	if err := preflightPrivateMutationFiles(targetDir, relativePaths); err != nil {
+		emitAudit(f, event, err)
+		return err
+	}
+	event.Target = auditTarget(meta, "directory", targetDir)
+	event.Risk = effectiveRiskLabel("R1", meta)
+	if err := authorizeWrite(f, safety.R1, meta, nil, nil); err != nil {
+		event.Status = dbgaudit.StatusDenied
+		setAuditError(&event, err)
+		emitAudit(f, event, nil)
+		return err
+	}
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeSchemaDump), result.Tables)
+	metadata.Items = len(result.Tables)
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeSchemaDump),
+		Event:    event,
+		Metadata: metadata,
+	})
+	if err != nil {
+		return err
+	}
+	result, attempted, opErr := writeSchemaDump(targetDir, result)
+	if auditErr := finishMutationAuditProgress(handle, metadata.Items, len(result.Files), attempted, opErr); auditErr != nil {
+		return auditErr
 	}
 	return printSchemaDump(f, meta, result)
 }
 
-func dumpSchema(ctx context.Context, b interface {
+func collectSchemaDump(ctx context.Context, b interface {
 	TableDDL(context.Context, string) (string, error)
-}, current schema.Schema, dir string,
+}, current schema.Schema,
 ) (schemaDumpResult, error) {
 	result := schemaDumpResult{}
 	for _, name := range sortedTableNames(current) {
@@ -387,20 +443,51 @@ func dumpSchema(ctx context.Context, b interface {
 		if err != nil {
 			return result, err
 		}
-		if dir == "" {
-			result.Tables = append(result.Tables, schemaDumpTable{Name: name, DDL: ddl})
-			continue
-		}
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return result, err
-		}
-		path := filepath.Join(dir, name+".sql")
-		if err := os.WriteFile(path, []byte(formatDDLStatement(ddl)), 0o600); err != nil {
-			return result, err
+		result.Tables = append(result.Tables, schemaDumpTable{Name: name, DDL: ddl})
+	}
+	return result, nil
+}
+
+func writeSchemaDump(dir string, source schemaDumpResult) (schemaDumpResult, int, error) {
+	result := schemaDumpResult{Files: []string{}}
+	relativePaths, err := schemaDumpRelativePaths(source)
+	if err != nil {
+		return result, 0, err
+	}
+	if err := ensurePrivateMutationDirectory(dir); err != nil {
+		return result, 0, err
+	}
+	attempted := 0
+	for index, table := range source.Tables {
+		attempted++
+		path, err := writePrivateMutationFile(dir, relativePaths[index], []byte(formatDDLStatement(table.DDL)))
+		if err != nil {
+			return result, attempted, err
 		}
 		result.Files = append(result.Files, path)
 	}
-	return result, nil
+	return result, attempted, nil
+}
+
+func schemaDumpRelativePaths(source schemaDumpResult) ([]string, error) {
+	relativePaths := make([]string, 0, len(source.Tables))
+	seen := make(map[string]struct{}, len(source.Tables))
+	for _, table := range source.Tables {
+		if err := validateMutationBasename(table.Name); err != nil {
+			return nil, err
+		}
+		relativePath, err := cleanMutationRelativePath(table.Name + ".sql")
+		if err != nil {
+			return nil, err
+		}
+		key := mutationPathKey(relativePath)
+		if _, exists := seen[key]; exists {
+			return nil, mutationPathCollisionError(relativePath)
+		}
+		seen[key] = struct{}{}
+		relativePaths = append(relativePaths, relativePath)
+	}
+	return relativePaths, nil
 }
 
 func printSchemaDiff(f *cliFlags, meta contextMeta, diff schema.DiffResult) error {
@@ -417,9 +504,10 @@ func printSchemaDiff(f *cliFlags, meta contextMeta, diff schema.DiffResult) erro
 	if f.Output == "json" {
 		return p.JSONData("SchemaDiff", dataWithTarget(diff, meta, targetRead))
 	}
-	printTargetHeader(p, meta, targetRead)
-	p.Table([]string{"ACTION", "TABLE", "COLUMN", "TYPE", "RISK", "NOTE"}, rows)
-	return nil
+	if err := printTargetHeader(p, meta, targetRead); err != nil {
+		return err
+	}
+	return p.Table([]string{"ACTION", "TABLE", "COLUMN", "TYPE", "RISK", "NOTE"}, rows)
 }
 
 func buildSchemaPlan(b interface {
@@ -441,6 +529,7 @@ func buildSchemaPlanFromDiff(b interface {
 	}
 	plan := schemaPlan{
 		Statements:            make([]schemaPlanStatement, 0, len(diff.Changes)),
+		PlannedStatements:     len(statements),
 		OverallRisk:           string(risk.OverallRisk),
 		Destructive:           risk.Destructive,
 		Warnings:              diff.Warnings,
@@ -469,7 +558,9 @@ func printSchemaPlan(f *cliFlags, meta contextMeta, mode targetMode, plan schema
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaPlan", Data: dataWithTarget(plan, meta, mode)})
 	}
-	printTargetHeader(p, meta, mode)
+	if err := printTargetHeader(p, meta, mode); err != nil {
+		return err
+	}
 	rows := make([][]string, 0, len(plan.Statements))
 	for _, stmt := range plan.Statements {
 		note := ""
@@ -478,15 +569,21 @@ func printSchemaPlan(f *cliFlags, meta contextMeta, mode targetMode, plan schema
 		}
 		rows = append(rows, []string{stmt.SQL, string(stmt.Action), stmt.Table, stmt.Column, stmt.Risk, note})
 	}
-	p.Table([]string{"SQL", "ACTION", "TABLE", "COLUMN", "RISK", "NOTE"}, rows)
+	if err := p.Table([]string{"SQL", "ACTION", "TABLE", "COLUMN", "RISK", "NOTE"}, rows); err != nil {
+		return err
+	}
 	if len(plan.Warnings) > 0 {
-		_, _ = fmt.Fprintf(p.Out, "\nWarnings:\n")
+		if err := p.Info("\nWarnings:"); err != nil {
+			return err
+		}
 		for _, warning := range plan.Warnings {
-			_, _ = fmt.Fprintf(p.Out, "- %s\n", warning)
+			if err := p.Info("- " + warning); err != nil {
+				return err
+			}
 		}
 	}
 	if plan.RequiredAuthorization != "" {
-		_, _ = fmt.Fprintf(p.Out, "\nRequired authorization: %s\n", plan.RequiredAuthorization)
+		return p.Info("\nRequired authorization: " + plan.RequiredAuthorization)
 	}
 	return nil
 }
@@ -502,9 +599,10 @@ func printSchemaList(f *cliFlags, meta contextMeta, current schema.Schema) error
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaTableList", Data: dataWithTarget(result, meta, targetRead)})
 	}
-	printTargetHeader(p, meta, targetRead)
-	p.Table([]string{"TABLE"}, rows)
-	return nil
+	if err := printTargetHeader(p, meta, targetRead); err != nil {
+		return err
+	}
+	return p.Table([]string{"TABLE"}, rows)
 }
 
 func printSchemaDescribe(f *cliFlags, meta contextMeta, table schema.Table) error {
@@ -512,7 +610,9 @@ func printSchemaDescribe(f *cliFlags, meta contextMeta, table schema.Table) erro
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaDescribe", Data: dataWithTarget(schemaDescribeResult{Table: table}, meta, targetRead)})
 	}
-	printTargetHeader(p, meta, targetRead)
+	if err := printTargetHeader(p, meta, targetRead); err != nil {
+		return err
+	}
 	rows := make([][]string, 0, len(table.Columns))
 	for _, col := range table.Columns {
 		def := ""
@@ -521,8 +621,7 @@ func printSchemaDescribe(f *cliFlags, meta contextMeta, table schema.Table) erro
 		}
 		rows = append(rows, []string{col.Name, col.Type, fmt.Sprintf("%t", col.Nullable), def, col.Key})
 	}
-	p.Table([]string{"COLUMN", "TYPE", "NULLABLE", "DEFAULT", "KEY"}, rows)
-	return nil
+	return p.Table([]string{"COLUMN", "TYPE", "NULLABLE", "DEFAULT", "KEY"}, rows)
 }
 
 func printSchemaDump(f *cliFlags, meta contextMeta, result schemaDumpResult) error {
@@ -534,14 +633,15 @@ func printSchemaDump(f *cliFlags, meta contextMeta, result schemaDumpResult) err
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "SchemaDump", Data: dataWithTarget(result, meta, targetRead)})
 	}
-	printTargetHeader(p, meta, targetRead)
+	if err := printTargetHeader(p, meta, targetRead); err != nil {
+		return err
+	}
 	if len(result.Files) > 0 {
 		rows := make([][]string, 0, len(result.Files))
 		for _, file := range result.Files {
 			rows = append(rows, []string{file})
 		}
-		p.Table([]string{"FILE"}, rows)
-		return nil
+		return p.Table([]string{"FILE"}, rows)
 	}
 	var out strings.Builder
 	for i, table := range result.Tables {
@@ -550,8 +650,7 @@ func printSchemaDump(f *cliFlags, meta contextMeta, result schemaDumpResult) err
 		}
 		out.WriteString(formatDDLStatement(table.DDL))
 	}
-	p.Content("SchemaDump", out.String())
-	return nil
+	return p.Content("SchemaDump", out.String())
 }
 
 func formatDDLStatement(ddl string) string {

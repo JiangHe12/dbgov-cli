@@ -29,15 +29,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        go-version: ['stable']
+        include:
+          - os: ubuntu-latest
+            go-version: '1.25.x'
+          - os: ubuntu-latest
+            go-version: 'stable'
+          - os: macos-latest
+            go-version: 'stable'
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ matrix.go-version }}
           cache: true
@@ -52,8 +57,8 @@ jobs:
             exit 1
           fi
 
-      - name: go vet
-        run: go vet ./...
+      - name: go vet (including integration-tagged files)
+        run: go vet -tags=integration ./...
 
       - name: go build
         run: go build ./...
@@ -62,7 +67,7 @@ jobs:
         run: go test ./... -count=1
 
       - name: Run race detector (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
         run: go test -race -count=1 ./...
 
   lint:
@@ -75,16 +80,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 'stable'
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.12.2
           args: --timeout=5m
@@ -99,10 +104,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 'stable'
           cache: true
@@ -119,16 +124,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 'stable'
           cache: true
 
-      - name: go vet
-        run: go vet ./...
+      - name: go vet (including integration-tagged files)
+        run: go vet -tags=integration ./...
 
       - name: go build
         run: go build ./...
@@ -145,10 +150,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 'stable'
           cache: true
@@ -176,7 +181,7 @@ jobs:
           DBGOV_TEST_MYSQL_DATABASE: test
           DBGOV_TEST_POSTGRES_DSN: postgres://postgres:dbgov-postgres@127.0.0.1:5432/test?sslmode=disable
           DBGOV_TEST_POSTGRES_DATABASE: test
-        run: go test ./... -count=1
+        run: go test -tags=integration ./... -count=1
 
       - name: Tear down databases
         if: always()

@@ -1,6 +1,6 @@
 package safety
 
-import coresafety "github.com/JiangHe12/opskit-core/safety"
+import coresafety "github.com/JiangHe12/opskit-core/v2/safety"
 
 type Risk = coresafety.Risk
 
@@ -27,6 +27,10 @@ const (
 	AllowDestructive     AllowFlag = "allow-destructive"
 	AllowNoWhere         AllowFlag = "allow-no-where"
 	AllowProductionPrune AllowFlag = "allow-production-prune"
+	AllowContextChange   AllowFlag = "allow-context-change"
+	AllowContextDelete   AllowFlag = "allow-context-delete"
+	AllowRoleChange      AllowFlag = "allow-role-change"
+	AllowAuditPrune      AllowFlag = "allow-audit-prune"
 )
 
 var (

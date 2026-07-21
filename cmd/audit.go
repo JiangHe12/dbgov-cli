@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
-	coreaudit "github.com/JiangHe12/opskit-core/audit"
-	"github.com/JiangHe12/opskit-core/printer"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	coreaudit "github.com/JiangHe12/opskit-core/v2/audit"
+	"github.com/JiangHe12/opskit-core/v2/printer"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 )
@@ -79,7 +79,7 @@ func auditVerifyCmd(f *cliFlags) *cobra.Command {
 			return runAuditVerify(f, opts)
 		},
 	}
-	cmd.Flags().BoolVar(&opts.strict, "strict", false, "Fail when verification reports malformed or schema errors")
+	cmd.Flags().BoolVar(&opts.strict, "strict", false, "Fail when verification reports malformed entries or invariant violations")
 	cmd.Flags().StringVar(&opts.path, "path", "", "Audit log path")
 	return cmd
 }
@@ -113,6 +113,7 @@ func runAuditQuery(f *cliFlags, opts auditQueryOptions) error {
 			result.Malformed++
 			continue
 		}
+		event = dbgaudit.Sanitize(event)
 		if !matchesDbgovAuditFilter(event, opts) {
 			continue
 		}
@@ -203,7 +204,7 @@ func strictVerifyError(result coreaudit.VerifyResult, strict bool) error {
 	if !strict {
 		return nil
 	}
-	if result.Malformed > 0 || result.SchemaErrors > 0 || result.TimestampOrderViolations > 0 {
+	if result.HasProblems() {
 		return apperrors.New(apperrors.CodeValidationFailed, "audit verification failed", nil)
 	}
 	return nil
@@ -230,13 +231,15 @@ func printAuditQuery(f *cliFlags, result auditQueryResult) error {
 			event.Risk,
 			event.Status,
 			event.Context.Name,
-			event.Ticket,
-			event.Target.Object,
+			event.TicketFingerprint,
+			event.Target.Fingerprint,
 		})
 	}
-	p.Table([]string{"TIMESTAMP", "TYPE", "OPERATOR", "RISK", "STATUS", "CONTEXT", "TICKET", "OBJECT"}, rows)
+	if err := p.Table([]string{"TIMESTAMP", "TYPE", "OPERATOR", "RISK", "STATUS", "CONTEXT", "TICKET_FINGERPRINT", "TARGET_FINGERPRINT"}, rows); err != nil {
+		return err
+	}
 	if result.Malformed > 0 {
-		_, _ = fmt.Fprintf(p.Out, "\nMalformed entries skipped: %d\n", result.Malformed)
+		return p.Info(fmt.Sprintf("\nMalformed entries skipped: %d", result.Malformed))
 	}
 	return nil
 }
@@ -246,12 +249,33 @@ func printAuditVerify(f *cliFlags, result coreaudit.VerifyResult) error {
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "AuditVerifyResult", Data: result})
 	}
-	p.Table([]string{"TOTAL", "VALID", "MALFORMED", "SCHEMA_ERRORS", "TIMESTAMP_ORDER_VIOLATIONS"}, [][]string{{
+	return p.Table([]string{
+		"TOTAL",
+		"VALID",
+		"MALFORMED",
+		"SCHEMA_ERRORS",
+		"TIMESTAMP_ORDER_VIOLATIONS",
+		"AUTHENTICATED",
+		"LEGACY_UNAUTHENTICATED",
+		"ENCRYPTED_OPAQUE",
+		"INTEGRITY_ERRORS",
+		"SEQUENCE_VIOLATIONS",
+		"CHECKPOINT_VIOLATIONS",
+		"TRUNCATION_DETECTED",
+		"LOCK_PRESENT",
+	}, [][]string{{
 		fmt.Sprint(result.Total),
 		fmt.Sprint(result.Valid),
 		fmt.Sprint(result.Malformed),
 		fmt.Sprint(result.SchemaErrors),
 		fmt.Sprint(result.TimestampOrderViolations),
+		fmt.Sprint(result.Authenticated),
+		fmt.Sprint(result.LegacyUnauthenticated),
+		fmt.Sprint(result.EncryptedOpaque),
+		fmt.Sprint(result.IntegrityErrors),
+		fmt.Sprint(result.SequenceViolations),
+		fmt.Sprint(result.CheckpointViolations),
+		fmt.Sprint(result.TruncationDetected),
+		fmt.Sprint(result.Lock.Present),
 	}})
-	return nil
 }

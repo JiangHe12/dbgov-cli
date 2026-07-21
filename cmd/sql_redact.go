@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/JiangHe12/opskit-core/redact"
+	"github.com/JiangHe12/opskit-core/v2/redact"
 )
 
 const (

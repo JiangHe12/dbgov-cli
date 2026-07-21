@@ -24,10 +24,10 @@ allowed-tools: Bash(dbgov:*), Bash(dbgov-cli:*), Bash(go:*)
 
 | Risk | Rule | Examples |
 |---|---|---|
-| R0 | Free to run; still audited | `query` read-only SQL, `explain`, `schema list`, `schema describe`, `schema dump`, `schema diff`, `schema plan`, `audit query`, `audit verify`, `version`, `capabilities`, `doctor` |
-| R1 | Requires `--yes` or interactive confirmation | `schema apply` adding columns, `data exec` with `WHERE` and small impact, incremental `import` |
+| R0 | Free to run; still audited | `query` read-only SQL, `explain`, `schema list`, `schema describe`, `schema dump` to stdout, `schema diff`, `schema plan`, `audit query`, `audit verify`, `version`, `capabilities`, `doctor` |
+| R1 | Requires `--yes` or interactive confirmation | `schema dump --dir`, `export`, `install --skills`, `schema apply` adding columns, `data exec` with `WHERE` and small impact, incremental `import` |
 | R2 | Requires `--ticket` plus `--yes` | `data exec` with `WHERE` but EXPLAIN estimated rows over the threshold, default 1000; R1 operations in a protected context |
-| R3 | Requires `--ticket`, the relevant `--allow-*` flag, and `--yes` | destructive schema changes, no-WHERE UPDATE/DELETE, production prune, destructive rollback |
+| R3 | Requires `--ticket`, the relevant `--allow-*` flag, and `--yes` | destructive schema changes, no-WHERE UPDATE/DELETE, production prune, destructive rollback, context replacement/deletion, credential migration, role changes |
 
 `--yes` only confirms R1. It does not satisfy R2 or R3 by itself. Never auto-supply `--ticket`, `--allow-*`, or high-risk `--yes`; surface the missing authorization to the user. `--ticket` must be non-empty for R2/R3. If the active context sets a `ticketPattern` via `ctx set --ticket-pattern`, the ticket must match it; by default no pattern is enforced.
 
@@ -40,6 +40,9 @@ allowed-tools: Bash(dbgov:*), Bash(dbgov-cli:*), Bash(go:*)
 | `dbgov-cli reconcile --prune` dropping tables | `--allow-production-prune` |
 | `dbgov-cli rollback --to` restoring structure with dropped columns | `--allow-destructive` |
 | `dbgov-cli rollback --to` restoring structure with dropped tables | `--allow-production-prune` |
+| `dbgov-cli ctx set`, `ctx use`, `ctx import`, or `ctx migrate-credentials` | `--allow-context-change` |
+| `dbgov-cli ctx delete` | `--allow-context-delete` |
+| `dbgov-cli ctx role set` or `ctx role unset` | `--allow-role-change` |
 
 Rollback has an R2 floor even when the generated plan is incremental. If rollback includes both dropped columns and dropped tables, both allow flags are required.
 
@@ -55,9 +58,15 @@ RBAC applies to write paths only. If roles are configured for a context:
 
 Use `dbgov-cli ctx role set`, `dbgov-cli ctx role unset`, and `dbgov-cli ctx role list` to manage local context roles.
 
+Governance-control writes are authorized against pre-change policy. Context replacement, deletion, and role changes use the target policy. A new context uses the persisted current context's policy; with no current context, bootstrap still requires R3 authorization. `ctx use` uses the old persisted current policy, or the destination policy when no current context exists. Use `--dry-run` to preview `ctx set`, `ctx use`, `ctx delete`, `ctx import`, `ctx migrate-credentials`, and role changes without authorization or writes.
+
+### Trusted Operator Identity
+
+Authorization and audit identity always use the local OS `username@hostname`. The deprecated global `--operator` identity override and `DBGOV_OPERATOR` are ignored; never rely on either for role selection. This prevents CLI-local identity spoofing, but a human and an AI process under the same OS account still have the same identity. Until an external signed approval source is configured or the agent runs under a separately protected OS account, local RBAC is not a security boundary between that human and AI. Never treat access to the OS account as human approval.
+
 ### Snapshots and Rollback
 
-Before schema mutations (`schema apply`, `import`, `reconcile`, `rollback`), dbgov captures a pre-change schema DDL snapshot. Rollback restores structure only for MySQL and PostgreSQL: dropped data is not recovered. dbgov prints a data-loss warning during rollback planning and execution.
+Before schema mutations (`schema apply`, `import`, `reconcile`, `rollback`), dbgov captures a pre-change schema DDL snapshot bound to the context and physical database target. Legacy snapshots without a target binding can still be listed but cannot be executed. Rollback restores structure only for MySQL and PostgreSQL: dropped data is not recovered. Dry-run returns a fingerprinted `SchemaPlan`; successful execution returns an honest `RollbackResult` with planned/applied counts and `dataRestored: false`.
 
 ### Audit
 
@@ -67,20 +76,26 @@ Every operation, including denied and failed operations, appends a JSON audit ev
 dbgov-cli audit query -o json
 dbgov-cli audit verify -o json
 dbgov-cli audit prune --before 30d -o json
-dbgov-cli audit prune --keep-last 10 --confirm -o json
+dbgov-cli audit prune --keep-last 10 --confirm --yes --ticket <ticket> --allow-audit-prune -o json
 ```
 
-`audit prune` only deletes rotated audit logs. It never deletes the active `audit.log`; it is dry-run by default and requires `--confirm` to remove files.
+`audit prune` only deletes same-directory rotations named exactly `<active>.YYYYMMDD-HHMMSS[.<positive-ordinal>].log` and never the active `audit.log`. It is dry-run by default. Confirmed pruning is a fixed R3 evidence-destruction operation requiring `--confirm`, `--yes`, a non-empty human ticket, and the exact `--allow-audit-prune`. It authorizes against the persisted current-context policy (empty only when no current context exists), never a `--context` override. Dry-run returns before authorization without deleting evidence. Confirmed pruning reloads policy under the context-config lock and holds that lock through intent, deletion, and outcome; control evidence is written to the sibling `.<audit-base>-control` log. Audit core v2 then binds the complete previewed rotation set under the audit-path lock, verifies the authenticated chain and stable identities, advances the checkpoint, and durably deletes the selected oldest prefix. Any policy, candidate, identity, or evidence change fails closed; successful JSON output reports `checkpointState`.
+
+Real mutations emit a `dbgov-cli.io/mutation-audit/v1` intent after validation and authorization and before the first target side effect, followed by an outcome with the same `mutationId`. Intent persistence failure blocks execution. Audit core v2's durable commit state is authoritative: only known-not-committed outcomes are durably spooled beside the audit log; known-committed or indeterminate outcomes are never queued because the record may already exist. An indeterminate replay is atomically marked `.indeterminate`, and later replay fails closed until an operator reconciles the audit record. Never retry the target mutation blindly; retryable queued outcomes replay before the next intent. Correlate or deduplicate with `(mutationId, phase)`.
+
+Audit and telemetry persistence uses domain-separated SHA-256 fingerprints plus lengths or bounded counts instead of raw tickets, reasons, SQL, target database/object values, bodies, output, or backend error text. `audit query` also sanitizes legacy records before returning them.
 
 ### Credentials
 
 Runtime commands resolve stored credstore references first. If the selected context has no stored credential, they fall back to `DBGOV_PASSWORD`; prefer this for non-interactive automation. `ctx set --password` must use `--credential-backend keychain` or `--credential-backend encrypted-file`; plain-yaml `ctx set --password` is rejected. Legacy/imported inline passwords remain readable for migration compatibility.
 
 ```bash
-dbgov-cli ctx migrate-credentials --to encrypted-file -o json
-dbgov-cli ctx migrate-credentials --to keychain --context prod -o json
-dbgov-cli ctx set prod --credential-backend keychain --password '<password>' -o json
+dbgov-cli ctx migrate-credentials --to encrypted-file --dry-run -o json
+dbgov-cli ctx migrate-credentials --to keychain --context prod --dry-run -o json
+dbgov-cli ctx set prod --credential-backend keychain --password '<password>' --dry-run -o json
 ```
+
+Actual credential migration or persistence is an R3 context change and requires a human-supplied ticket, `--allow-context-change`, and explicit confirmation.
 
 ---
 
@@ -96,10 +111,12 @@ dbgov-cli ctx current -o json
 If no context exists, ask the user for MySQL or PostgreSQL host, database, username, and credential handling, then create and select one:
 
 ```bash
-dbgov-cli ctx set prod --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected -o json
-dbgov-cli ctx set prod-pg --engine postgres --host 127.0.0.1 --port 5432 --database app --username appuser --env prod --protected -o json
-dbgov-cli ctx use prod -o json
+dbgov-cli ctx set prod --engine mysql --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected --dry-run -o json
+dbgov-cli ctx set prod-pg --engine postgres --host 127.0.0.1 --port 5432 --database app --username appuser --env prod --protected --dry-run -o json
+dbgov-cli ctx use prod --dry-run -o json
 ```
+
+After previewing, surface the required R3 `--ticket`, `--allow-context-change`, and `--yes` approval to the human. Do not create the context until those values are supplied by the human-controlled workflow.
 
 For commands that connect, supply `DBGOV_PASSWORD='<password>'` in the environment unless the context stores a secure credstore reference.
 
@@ -122,16 +139,16 @@ dbgov-cli doctor auth -o json
 ```bash
 dbgov-cli ctx list -o json
 dbgov-cli ctx current -o json
-dbgov-cli ctx set <name> --engine mysql --host <host> --port 3306 --database <db> --username <user> -o json
-dbgov-cli ctx use <name> -o json
-dbgov-cli ctx delete <name> -o json
-dbgov-cli ctx role set <context> --target-operator alice --role writer -o json
-dbgov-cli ctx role unset <context> --target-operator alice -o json
+dbgov-cli ctx set <name> --engine mysql --host <host> --port 3306 --database <db> --username <user> --dry-run -o json
+dbgov-cli ctx use <name> --dry-run -o json
+dbgov-cli ctx delete <name> --dry-run -o json
+dbgov-cli ctx role set <context> --target-operator <os-user@hostname> --role writer --dry-run -o json
+dbgov-cli ctx role unset <context> --target-operator <os-user@hostname> --dry-run -o json
 dbgov-cli ctx role list <context> -o json
 dbgov-cli ctx export <name> -o json
 dbgov-cli ctx export <name> --include-credentials -o json
-dbgov-cli ctx import -f ctx.yaml --rename <new-name> --force -o json
-dbgov-cli ctx migrate-credentials --to encrypted-file --context <name> -o json
+dbgov-cli ctx import -f ctx.yaml --rename <new-name> --force --dry-run -o json
+dbgov-cli ctx migrate-credentials --to encrypted-file --context <name> --dry-run -o json
 ```
 
 `ctx export` redacts `password` by default. `--include-credentials` only includes plaintext credentials when they are stored inline in legacy contexts (`plain-yaml` or an empty/unset credential backend); encrypted-file, keychain, and vault credentials must be shared out of band. `ctx import` accepts portable context YAML, supports `--rename` and `--force`, and leaves redacted credentials empty so the operator can supply `DBGOV_PASSWORD` at runtime or run `dbgov-cli ctx set <name> --credential-backend keychain --password=...`.
@@ -144,7 +161,7 @@ Read-only SQL:
 dbgov-cli query --sql "SELECT id, name FROM users" -o json
 ```
 
-`query` rejects writes. Use `data exec` for DML and `schema apply` for DDL.
+`query` rejects writable CTEs, row-locking clauses, file/session/administrative side-effect functions, and MySQL user-variable assignment. It runs accepted SQL in a database read-only transaction and rolls that transaction back after reading the result. JSON preserves SQL `NULL` as `null` and keeps it distinct from `""`; table output displays it as `NULL`. Custom functions and views cannot be proven side-effect-free lexically, so production contexts must still use a database account whose privileges are read-only. Use `data exec` for DML and `schema apply` for DDL.
 
 Execution plan and estimated impact:
 
@@ -157,7 +174,7 @@ dbgov-cli explain --sql "SELECT * FROM users WHERE active = 1" -o json
 ```bash
 dbgov-cli schema list -o json
 dbgov-cli schema describe users -o json
-dbgov-cli schema dump --dir ./schema -o json
+dbgov-cli schema dump --dir ./schema --yes -o json
 dbgov-cli schema diff -f desired.sql -o json
 dbgov-cli schema plan -f desired.sql -o json
 ```
@@ -221,7 +238,7 @@ dbgov-cli data exec -f change.sql --dry-run -o json
 Export current schema:
 
 ```bash
-dbgov-cli export --dir ./schema -o json
+dbgov-cli export --dir ./schema --yes -o json
 ```
 
 Import desired schema directory:
@@ -269,7 +286,7 @@ dbgov-cli rollback --to <snapshot-id> --ticket DB-123 --yes -o json
 dbgov-cli rollback --to <snapshot-id> --ticket DB-123 --allow-destructive --allow-production-prune --yes -o json
 ```
 
-Rollback restores schema structure only. Dropped table/column data is not recovered.
+Rollback restores schema structure only. Dropped table/column data is not recovered. Treat the returned plan/target fingerprints and `dataRestored: false` as authoritative.
 
 ### Audit
 
@@ -277,12 +294,12 @@ Rollback restores schema structure only. Dropped table/column data is not recove
 dbgov-cli audit query --since 24h --risk R2 -o json
 dbgov-cli audit verify -o json
 dbgov-cli audit prune --before 30d -o json
-dbgov-cli audit prune --keep-last 20 --confirm -o json
+dbgov-cli audit prune --keep-last 20 --confirm --yes --ticket <ticket> --allow-audit-prune -o json
 ```
 
 Use `--path` only when inspecting a non-default audit log:
 
 ```bash
 dbgov-cli audit query --path ./audit.log --limit 50 --reverse -o json
-dbgov-cli audit prune --path ./audit.log --before 2026-06-01 --confirm -o json
+dbgov-cli audit prune --path ./audit.log --before 2026-06-01 --confirm --yes --ticket <ticket> --allow-audit-prune -o json
 ```

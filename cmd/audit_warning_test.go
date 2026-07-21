@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 )
 
 const auditWarningText = "warning: failed to write audit log:"
@@ -16,6 +16,7 @@ func TestAuditWriteFailureWarnsWithoutFailingSuccessfulCommand(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	secureMutationAuditTestParent(t, home)
 	blockDefaultAuditPath(t, home, ".dbgov")
 
 	stderr, err := executeDbgovWithStderr(t,
@@ -35,6 +36,7 @@ func TestAuditWriteFailureDoesNotReplaceOriginalExitCode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	secureMutationAuditTestParent(t, home)
 	blockDefaultAuditPath(t, home, ".dbgov")
 	malformed := filepath.Join(home, "malformed.log")
 	if err := os.WriteFile(malformed, []byte("{not-json}\n"), 0o600); err != nil {

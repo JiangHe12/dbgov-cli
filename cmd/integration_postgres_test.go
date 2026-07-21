@@ -25,6 +25,11 @@ func TestPostgresIntegrationQueryExplain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("postgres.New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Errorf("backend.Close() error = %v", err)
+		}
+	})
 	if err := backend.Ping(context.Background()); err != nil {
 		t.Fatalf("Ping() error = %v", err)
 	}
@@ -53,6 +58,11 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("postgres.New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Errorf("backend.Close() error = %v", err)
+		}
+	})
 	ctx := context.Background()
 	_, _ = backend.ExecDDL(ctx, []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_shared_seq";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`, `DROP SEQUENCE IF EXISTS "dbgov_pg_shared_sequence";`})
 	t.Cleanup(func() {
@@ -94,7 +104,8 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TableDDL() error = %v", err)
 	}
-	if !strings.Contains(ddl, `CREATE TABLE "dbgov_pg_child"`) || !strings.Contains(ddl, `FOREIGN KEY ("parent_id") REFERENCES "dbgov_pg_parent" ("id")`) {
+	if !strings.Contains(ddl, `CREATE TABLE "public"."dbgov_pg_child"`) ||
+		!strings.Contains(ddl, `FOREIGN KEY ("parent_id") REFERENCES "public"."dbgov_pg_parent" ("id")`) {
 		t.Fatalf("unexpected TableDDL:\n%s", ddl)
 	}
 	serialDDL, err := backend.TableDDL(ctx, "dbgov_pg_serial")
@@ -118,8 +129,8 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderDDL() error = %v", err)
 	}
-	if statements[0] != `ALTER TABLE "dbgov_pg_parent" ADD COLUMN "note" text;` ||
-		statements[1] != `ALTER TABLE "dbgov_pg_parent" ALTER COLUMN "name" TYPE character varying(200);` {
+	if statements[0] != `ALTER TABLE "public"."dbgov_pg_parent" ADD COLUMN "note" text;` ||
+		statements[1] != `ALTER TABLE "public"."dbgov_pg_parent" ALTER COLUMN "name" TYPE character varying(200);` {
 		t.Fatalf("RenderDDL statements = %+v", statements)
 	}
 	affected, err := backend.ExecDML(ctx, `UPDATE "dbgov_pg_parent" SET "name" = 'changed' WHERE "id" = 1`)

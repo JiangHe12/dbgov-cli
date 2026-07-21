@@ -44,7 +44,7 @@ Include, when possible:
 
 ## Governance Safety
 
-dbgov-cli enforces R0-R3 write governance, records denied and failed attempts, captures schema snapshots before schema mutations, and treats MySQL rollback as structure-only and potentially lossy.
+dbgov-cli enforces R0-R3 write governance, records denied and failed attempts, captures schema snapshots before schema mutations, and treats MySQL and PostgreSQL rollback as structure-only and potentially lossy.
 
 AI agents and automation must not auto-fill `--ticket`, `--allow-*`, or high-risk `--yes`. Missing authorization must be surfaced to the human operator or change system.
 
@@ -60,4 +60,4 @@ Release artifacts are built by GitHub Actions. npm installation downloads platfo
 - Use secure credential backends.
 - Archive audit logs to controlled storage.
 - Keep the CLI updated.
-- Run production automation with explicit operator identity and change tickets.
+- Run production automation under the intended local OS account; audit identity is the trusted `username@hostname`, while change tickets remain human-supplied.

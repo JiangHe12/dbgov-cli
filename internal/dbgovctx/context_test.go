@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	corectx "github.com/JiangHe12/opskit-core/ctx"
+	corectx "github.com/JiangHe12/opskit-core/v2/ctx"
 )
 
 func TestLoadMigratesLegacyContextAPIVersion(t *testing.T) {
@@ -41,5 +41,41 @@ contexts:
 	}
 	if strings.Contains(string(updated), legacyContextAPIVersion) || !strings.Contains(string(updated), SupportedContextAPIVersion) {
 		t.Fatalf("context file was not migrated:\n%s", updated)
+	}
+}
+
+func TestLoadReadOnlyDoesNotMigrateLegacyContextAPIVersion(t *testing.T) {
+	corectx.Configure(corectx.Options{APIVersion: SupportedContextAPIVersion, ConfigDirName: ".dbgov"})
+	t.Cleanup(func() {
+		corectx.Configure(corectx.Options{APIVersion: "opskit-core.io/context/v1", ConfigDirName: ".opskit"})
+		SetConfigPath("")
+	})
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	original := []byte(`apiVersion: dbgov.io/context/v1
+current-context: dev
+contexts:
+    dev:
+        engine: mysql
+        host: 127.0.0.1
+        port: 3306
+`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	SetConfigPath(configPath)
+
+	cfg, err := LoadReadOnly()
+	if err != nil {
+		t.Fatalf("LoadReadOnly() error = %v", err)
+	}
+	if cfg.APIVersion != SupportedContextAPIVersion || cfg.CurrentContext != "dev" {
+		t.Fatalf("read-only config = %+v", cfg)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("LoadReadOnly() changed legacy config:\n%s", after)
 	}
 }

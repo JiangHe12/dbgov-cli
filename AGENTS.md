@@ -28,8 +28,10 @@ Real-backend integration tests (`//go:build integration`) for MySQL and PostgreS
 ## Governance Rules
 
 - R0 reads are free but still audited. R1 needs `--yes`. R2 also needs a non-empty `--ticket`. R3 also needs the precise `--allow-*` flag(s). Protected contexts raise every operation one tier.
-- DML impact must come from `EXPLAIN`; rollback restores structure only for MySQL and PostgreSQL, so dropped data is never recovered.
+- DML impact must come from `EXPLAIN`, and governed execution must revalidate the exact plan binding; rollback snapshots must match the selected physical target and restore structure only, so dropped data is never recovered.
 - AI agents must never auto-fill `--ticket`, `--allow-*`, or a high-risk `--yes`. Impact and blast radius must come from the CLI's own `plan` / `diff` / `explain` / `--dry-run` output, never from model guesses.
+- Confirmed `audit prune` is a fixed R3 evidence-destruction operation requiring `--confirm`, `--yes`, a ticket, and the exact `--allow-audit-prune`. It uses the trusted OS operator and persisted current-context policy; dry-run returns before authorization and performs no deletion. Its control intent/outcome is written to sibling `.<audit-base>-control`, never the target evidence namespace. Confirmed pruning delegates the locked transaction to audit core v2, which binds the complete previewed rotation set, verifies authenticated history and stable file identities, advances the checkpoint, and durably removes only the selected oldest prefix. Invalid, changed, non-regular, or unreadable evidence fails closed.
+- Every real mutation persists a sanitized `dbgov-cli.io/mutation-audit/v1` intent before its first target side effect and a correlated outcome afterward. Intent failure blocks execution. Core v2 commit state is authoritative: only a known-not-committed outcome enters the owner-only adjacent replay spool; known-committed and indeterminate outcomes are never queued because the record may already exist. If replay itself becomes indeterminate, the entry is atomically marked `.indeterminate` and later replay fails closed until manual reconciliation. Never persist raw tickets, reasons, SQL, target database/object values, bodies, output, or backend error text in audit or telemetry.
 
 ## Code Conventions
 

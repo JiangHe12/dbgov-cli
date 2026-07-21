@@ -27,6 +27,11 @@ func TestMySQLIntegrationQueryExplain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mysql.New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Errorf("backend.Close() error = %v", err)
+		}
+	})
 	ctx := context.Background()
 	if err := backend.Ping(ctx); err != nil {
 		t.Fatalf("Ping() error = %v", err)
@@ -68,6 +73,11 @@ func TestMySQLIntegrationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mysql.New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Errorf("backend.Close() error = %v", err)
+		}
+	})
 	ctx := context.Background()
 	suffix := mysqlIntegrationName("schema")
 	parentTable := suffix + "_parent"

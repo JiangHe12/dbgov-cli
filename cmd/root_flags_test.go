@@ -10,7 +10,14 @@ func TestGlobalFlagsHelp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	for _, flag := range []string{"--debug", "--trace", "--no-color"} {
+	for _, flag := range []string{
+		"--debug",
+		"--trace",
+		"--no-color",
+		"--allow-context-change",
+		"--allow-context-delete",
+		"--allow-role-change",
+	} {
 		if !strings.Contains(out, flag) {
 			t.Fatalf("help missing %s:\n%s", flag, out)
 		}

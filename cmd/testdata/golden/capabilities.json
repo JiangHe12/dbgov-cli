@@ -14,6 +14,12 @@
       "auditApiVersions": [
         "dbgov-cli.io/audit/v1"
       ],
+      "mutationAuditApiVersions": [
+        "dbgov-cli.io/mutation-audit/v1"
+      ],
+      "errorCodes": [
+        "AUDIT_INCOMPLETE"
+      ],
       "engines": [
         {
           "name": "mysql",
@@ -63,10 +69,14 @@
       "allowFlags": [
         "--allow-destructive",
         "--allow-no-where",
-        "--allow-production-prune"
+        "--allow-production-prune",
+        "--allow-context-change",
+        "--allow-context-delete",
+        "--allow-role-change",
+        "--allow-audit-prune"
       ],
       "governance": {
-        "audit": "append-only JSONL with optional age encryption",
+        "audit": "sanitized append-only JSONL; mutations use durable intent/outcome records and outcome replay",
         "rbac": "opt-in roles reader/writer/admin",
         "dryRun": true,
         "otel": true

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 )
 
 func TestContractExitCodes(t *testing.T) {
@@ -98,10 +98,10 @@ func TestContractJSONOutput(t *testing.T) {
 		{name: "ctx list", args: []string{"-o", "json", "ctx", "list"}},
 		{name: "ctx current", setup: func(t *testing.T, home string) []string {
 			t.Helper()
-			if _, err := executeCommandForTest("--config", home+"/config.yaml", "ctx", "set", "dev", "--engine", "mysql", "--host", "127.0.0.1", "--database", "app"); err != nil {
+			if _, err := executeCommandForTest("--config", home+"/config.yaml", "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "dev", "--engine", "mysql", "--host", "127.0.0.1", "--database", "app"); err != nil {
 				t.Fatalf("ctx set error = %v", err)
 			}
-			if _, err := executeCommandForTest("--config", home+"/config.yaml", "ctx", "use", "dev"); err != nil {
+			if _, err := executeCommandForTest("--config", home+"/config.yaml", "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "use", "dev"); err != nil {
 				t.Fatalf("ctx use error = %v", err)
 			}
 			return []string{"--config", home + "/config.yaml", "-o", "json", "ctx", "current"}
@@ -211,10 +211,10 @@ func setContractHome(t *testing.T) string {
 
 func createTargetContext(t *testing.T, configPath string) {
 	t.Helper()
-	if _, err := executeCommandForTest("--config", configPath, "ctx", "set", "dev", "--engine", "mysql", "--host", "127.0.0.1", "--port", "3307", "--database", "app"); err != nil {
+	if _, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "dev", "--engine", "mysql", "--host", "127.0.0.1", "--port", "3307", "--database", "app"); err != nil {
 		t.Fatalf("ctx set error = %v", err)
 	}
-	if _, err := executeCommandForTest("--config", configPath, "ctx", "use", "dev"); err != nil {
+	if _, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "use", "dev"); err != nil {
 		t.Fatalf("ctx use error = %v", err)
 	}
 }

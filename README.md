@@ -63,7 +63,7 @@ This installs a tiny launcher; on first run it downloads the right pre-built bin
 <summary>Other ways to install</summary>
 
 - **Direct download** — grab the binary from the [Releases page](https://github.com/JiangHe12/dbgov-cli/releases), verify it against the cosign-signed `checksums.txt`, put it on your `PATH`, and rename it to `dbgov`.
-- **From source** — `go install github.com/JiangHe12/dbgov-cli@latest` (Go 1.22+).
+- **From source** — `go install github.com/JiangHe12/dbgov-cli@latest` (Go 1.25+).
 
 ```bash
 dbgov version
@@ -79,8 +79,11 @@ dbgov doctor config -o json     # static + read-only diagnostics
 ```bash
 # 1. Point dbgov at your database (stored as a reusable "context"; password stays out of YAML)
 dbgov ctx set prod --engine mysql \
-  --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected
-dbgov ctx use prod
+  --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected --dry-run
+dbgov ctx set prod --engine mysql \
+  --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected \
+  --ticket <human-ticket> --allow-context-change --yes
+dbgov ctx use prod --ticket <human-ticket> --allow-context-change --yes
 export DBGOV_PASSWORD='***'   # consumed when commands connect if the context has no stored credential
 
 # 2. Read — read-only SQL is free (R0) and rejects writes
@@ -112,7 +115,7 @@ Every command is sorted into a **risk tier**. The more dangerous it is, the more
 | **R0** | Reads & inspection (`query`, `explain`, `schema list/describe/dump/diff/plan`, `audit`, `doctor`) | Nothing — but it's still audited |
 | **R1** | Small, safe writes (add a column, `data exec` with `WHERE` and small estimated impact) | `--yes` (or interactive confirmation) |
 | **R2** | Elevated writes (`data exec` whose `EXPLAIN` rows exceed the threshold; any R1 in a protected context) | `--yes` **and** a non-empty `--ticket` |
-| **R3** | Destructive operations (drop/modify column, no-`WHERE` `UPDATE`/`DELETE`, prune, destructive rollback) | The above **plus** the precise `--allow-*` flag |
+| **R3** | Destructive operations and governance-control changes (context replacement/deletion, credential migration, role changes) | The above **plus** the precise `--allow-*` flag |
 
 **R3 allow flags** — destruction is never implicit:
 
@@ -122,13 +125,19 @@ Every command is sorted into a **risk tier**. The more dangerous it is, the more
 | `data exec` with a no-`WHERE` `UPDATE`/`DELETE` | `--allow-no-where` |
 | `reconcile --prune` dropping tables | `--allow-production-prune` |
 | `rollback --to` that drops columns / tables | `--allow-destructive` / `--allow-production-prune` |
+| `ctx set` / `ctx use` / `ctx import` / `ctx migrate-credentials` | `--allow-context-change` |
+| `ctx delete` | `--allow-context-delete` |
+| `ctx role set` / `ctx role unset` | `--allow-role-change` |
+| confirmed `audit prune` | `--allow-audit-prune` |
 
-**RBAC** (when roles are configured on a context): `reader` → max R0, `writer` → max R2, `admin` → max R3.
+**RBAC** (when roles are configured on a context): `reader` → max R0, `writer` → max R2, `admin` → max R3. Governance-control writes are authorized against the target's **pre-change** policy. A new context uses the persisted current context's policy; without a current context, bootstrap still requires R3 authorization.
+
+The authorization and audit identity is always the trusted local OS identity `username@hostname`. The deprecated global `--operator` override and `DBGOV_OPERATOR` are ignored. This prevents a CLI argument or environment variable from impersonating another role, but it cannot distinguish a human from an AI process running under the same OS account. Until an external signed approval source is configured or automation runs as a separately protected OS account, local RBAC alone is not a security boundary between that human and AI.
 
 Three rules keep this safe — especially for automation:
 
-1. **Impact comes from the database, not a guess.** Use `explain` / `schema plan` / `--dry-run`. dbgov fails closed rather than estimating.
-2. **Mutations are snapshotted first.** Rollback restores *structure* only — dropped row data is never recovered (dbgov warns you loudly).
+1. **Impact comes from the database, not a guess.** Use `explain` / `schema plan` / `--dry-run`. dbgov fails closed rather than estimating. For governed `UPDATE` / `DELETE`, execution revalidates the exact EXPLAIN fingerprint and row estimate in the same transaction before changing data.
+2. **Mutations are snapshotted first.** New snapshots are bound to their context and physical database target; an unbound legacy snapshot remains listable but cannot be executed. Rollback restores *structure* only — dropped row data is never recovered (dbgov warns you loudly and returns `dataRestored: false`).
 3. **🤖 AI agents must never invent `--ticket`, `--allow-*`, or a high-risk `--yes`.** Those are *human* authorization inputs. An agent should surface "this needs approval X" and stop.
 
 ---
@@ -144,6 +153,8 @@ Three rules keep this safe — especially for automation:
 dbgov query   --sql "SELECT ..." -o json          # read-only; rejects writes (R0)
 dbgov explain --sql "SELECT ..." -o json          # execution plan + estimated rows (R0)
 ```
+
+`query` rejects writable CTEs, row-locking clauses, file/session/administrative side-effect functions, and MySQL user-variable assignment. Accepted queries run inside a database read-only transaction that is explicitly rolled back after rows are consumed. JSON preserves SQL `NULL` as `null` (distinct from `""`), while table output renders it as `NULL`. Because custom functions and views cannot be proven side-effect-free lexically, production contexts must still use a database account whose privileges are read-only.
 </details>
 
 <details>
@@ -152,7 +163,8 @@ dbgov explain --sql "SELECT ..." -o json          # execution plan + estimated r
 ```bash
 dbgov schema list                       -o json   # R0
 dbgov schema describe <table>           -o json   # R0
-dbgov schema dump  --dir ./schema       -o json   # R0
+dbgov schema dump                         -o json   # R0 (stdout)
+dbgov schema dump  --dir ./schema --yes -o json   # R1 (local files)
 dbgov schema diff  -f desired.sql       -o json   # R0
 dbgov schema plan  -f desired.sql       -o json   # R0 — treat plan risk as authoritative
 dbgov schema apply -f desired.sql --dry-run -o json
@@ -160,7 +172,7 @@ dbgov schema apply -f desired.sql --yes                                  -o json
 dbgov schema apply -f desired.sql --ticket DB-123 --allow-destructive --yes -o json # R3 (destructive)
 ```
 
-> Auto-increment columns are modeled as a normalized boolean across both engines; create / diff / apply / snapshot / rollback are preserved, but PostgreSQL `serial`-vs-identity, `ALWAYS`-vs-`BY DEFAULT`, and sequence start/increment options are intentionally **not** preserved.
+> Auto-increment columns are modeled as a normalized boolean across both engines; create / diff / apply / snapshot / rollback are preserved, but PostgreSQL `serial`-vs-identity, `ALWAYS`-vs-`BY DEFAULT`, and sequence start/increment options are intentionally **not** preserved. Generated PostgreSQL table DDL is explicitly qualified to the fixed `public` schema, and applicable DDL batches execute in one transaction.
 </details>
 
 <details>
@@ -179,7 +191,7 @@ dbgov data exec -f change.sql --dry-run -o json                     # read DML f
 <summary><b>GitOps schema</b> — export · import · reconcile · rollback</summary>
 
 ```bash
-dbgov export --dir ./schema -o json                               # dump current schema to files
+dbgov export --dir ./schema --yes -o json                         # R1; dump current schema to files
 dbgov import ./schema --dry-run -o json
 dbgov import ./schema --yes -o json                               # R1 / R3 if destructive
 dbgov reconcile ./schema --dry-run -o json                        # detect drift
@@ -189,6 +201,8 @@ dbgov rollback list -o json                                       # list pre-cha
 dbgov rollback --to <snapshot-id> --dry-run -o json
 dbgov rollback --to <snapshot-id> --ticket DB-123 --yes -o json   # structure only; data not recovered
 ```
+
+Rollback dry-run returns a `SchemaPlan` with plan/target fingerprints. Successful execution returns `RollbackResult` with planned/applied statement counts, `scope: "schema-structure"`, and `dataRestored: false`.
 </details>
 
 <details>
@@ -196,31 +210,42 @@ dbgov rollback --to <snapshot-id> --ticket DB-123 --yes -o json   # structure on
 
 ```bash
 # Contexts (MySQL or PostgreSQL)
-dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> [--protected]
-dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> --credential-backend keychain|encrypted-file --password <secret>
-dbgov ctx use|list|current|delete
+dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> [--protected] --dry-run
+dbgov ctx set <name> ... --ticket <human-ticket> --allow-context-change --yes
+dbgov ctx set <name> --credential-backend keychain|encrypted-file --password <secret> --ticket <human-ticket> --allow-context-change --yes
+dbgov ctx list|current
+dbgov ctx use <name> --dry-run
+dbgov ctx use <name> --ticket <human-ticket> --allow-context-change --yes
+dbgov ctx delete <name> --dry-run
+dbgov ctx delete <name> --ticket <human-ticket> --allow-context-delete --yes
 dbgov ctx export <name> [--include-credentials] -o json
-dbgov ctx import -f ctx.yaml [--rename <new>] [--force] -o json
-dbgov ctx migrate-credentials --to encrypted-file|keychain [--context <name>] -o json
+dbgov ctx import -f ctx.yaml [--rename <new>] [--force] --dry-run -o json
+dbgov ctx migrate-credentials --to encrypted-file|keychain [--context <name>] --dry-run -o json
 
 # RBAC (write paths only): reader → R0, writer → R2, admin → R3
-dbgov ctx role set <context> --target-operator alice --role writer -o json
+dbgov ctx role set <context> --target-operator <os-user@hostname> --role writer --dry-run -o json
+dbgov ctx role set <context> --target-operator <os-user@hostname> --role writer --ticket <human-ticket> --allow-role-change --yes -o json
 dbgov ctx role list <context> -o json
 
 # Audit (tamper-evident; rotated logs only for prune)
 dbgov audit query  [--since 24h] [--risk R2] [--limit 50] -o json
 dbgov audit verify -o json
-dbgov audit prune  (--before <30d|YYYY-MM-DD> | --keep-last <n>) [--confirm] -o json
+dbgov audit prune  (--before <30d|YYYY-MM-DD> | --keep-last <n>) -o json
+dbgov audit prune  (--before <30d|YYYY-MM-DD> | --keep-last <n>) --confirm --yes --ticket <human-ticket> --allow-audit-prune -o json
 
 # Diagnostics & ecosystem
 dbgov doctor config|network|auth -o json
 dbgov capabilities -o json
 dbgov completion bash|zsh|fish|powershell
-dbgov install <agent> --skills      # install the dbgov AI skill (claude, codex, …)
+dbgov install <agent> --skills --yes # R1; install the dbgov AI skill (claude, codex, …)
 dbgov version
 ```
 
-> `audit prune` only deletes **rotated** logs (never the active `audit.log`), defaults to a dry-run, and needs `--confirm` to remove files. Set `DBGOV_OPERATOR` in CI to keep audit/RBAC identity stable.
+> `audit prune` only deletes same-directory rotations named exactly `<active>.YYYYMMDD-HHMMSS[.<positive-ordinal>].log` (never the active `audit.log`) and defaults to a dry-run. Confirmed pruning is a fixed R3 evidence-destruction operation requiring `--confirm`, `--yes`, a non-empty `--ticket`, and the exact `--allow-audit-prune`. It authorizes against the persisted current-context policy (or an empty policy when no current context exists); `--context` does not replace that policy. Dry-run returns before authorization and performs no deletion. Confirmed pruning reloads the policy under the context-config lock and holds that lock through intent, deletion, and outcome; control intent/outcome is written to the sibling `.<audit-base>-control` log, never the target evidence namespace. Audit core v2 then holds the audit-path lock, binds the complete previewed rotation set, verifies the authenticated chain and stable file identities, advances the checkpoint, and durably deletes only the selected oldest prefix. Policy, candidate, identity, or evidence changes fail closed; successful JSON output reports the resulting `checkpointState`. CI identity is derived from its OS user and hostname; `DBGOV_OPERATOR` does not override it.
+
+Every real mutation writes a `dbgov-cli.io/mutation-audit/v1` intent after validation and authorization but before the first target side effect, then writes a correlated outcome with the same `mutationId`. An intent write failure blocks the mutation. dbgov consumes audit core v2's durable commit state: only a known-not-committed outcome is stored in the owner-only adjacent `<audit.log>.outcome-spool`; known-committed and indeterminate outcomes are never queued because the record may already exist. If replay itself becomes indeterminate, dbgov atomically renames the entry with `.indeterminate` and all later replay fails closed until an operator reconciles the audit record. Retryable queued outcomes replay in order before the next intent; consumers deduplicate by `(mutationId, phase)`. Batch outcomes report bounded succeeded/failed/skipped counts.
+
+Persisted audit and telemetry never contain raw tickets, reasons, SQL, target database/object values, backend error text, bodies, or command output. Audit records use domain-separated SHA-256 fingerprints plus byte lengths or bounded counters; `audit query` applies the same sanitization to legacy records before returning them.
 
 For non-interactive runs, prefer `DBGOV_PASSWORD`; it is read when a command opens a connection and the selected context has no stored credential. To persist a password through `ctx set`, `--password` requires `--credential-backend keychain` or `--credential-backend encrypted-file`; plain-yaml `ctx set --password` is rejected. Legacy/imported inline credentials remain readable for migration and export compatibility.
 </details>
@@ -235,7 +260,7 @@ For non-interactive runs, prefer `DBGOV_PASSWORD`; it is read when a command ope
 - **Never self-fill `--ticket`, `--allow-*`, or a high-risk `--yes`.** Surface the required human approval and stop.
 
 ```bash
-dbgov install claude --skills     # also: codex, opencode, copilot, cursor, windsurf, aider, cc-switch
+dbgov install claude --skills --yes # also: codex, opencode, copilot, cursor, windsurf, aider, cc-switch
 ```
 
 ---
@@ -257,6 +282,8 @@ go build ./...
 go test -count=1 ./...
 gofmt -l main.go cmd internal      # must print nothing
 golangci-lint run --timeout=5m
+go vet -tags=integration ./...
+npm pack --dry-run
 ```
 
 MySQL / PostgreSQL integration tests are opt-in via `DBGOV_TEST_MYSQL_DSN` and `DBGOV_TEST_POSTGRES_DSN`. See [CONTRIBUTING.md](CONTRIBUTING.md) and the security policy in [SECURITY.md](SECURITY.md).

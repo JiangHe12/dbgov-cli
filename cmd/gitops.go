@@ -85,7 +85,7 @@ func newReconcileCmd(f *cliFlags) *cobra.Command {
 }
 
 //nolint:dupl // Export and schema dump share the same governed read/audit flow with different event types.
-func runExport(f *cliFlags, opts exportOptions) error {
+func runExport(f *cliFlags, opts exportOptions) (resultErr error) {
 	if err := authorizeRead(f); err != nil {
 		return err
 	}
@@ -93,6 +93,7 @@ func runExport(f *cliFlags, opts exportOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(b, &resultErr, backendCloseMutation)
 	current, err := b.IntrospectSchema(commandContext(f))
 	if err != nil {
 		event := dbgaudit.New(dbgaudit.EventTypeExport, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "export"))
@@ -100,17 +101,53 @@ func runExport(f *cliFlags, opts exportOptions) error {
 		emitAudit(f, event, err)
 		return err
 	}
-	result, err := dumpSchema(commandContext(f), b, current, opts.dir)
 	event := dbgaudit.New(dbgaudit.EventTypeExport, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "export"))
 	event.Risk = "R0"
-	emitAudit(f, event, err)
+	result, err := collectSchemaDump(commandContext(f), b, current)
+	if err != nil {
+		emitAudit(f, event, err)
+		return err
+	}
+	targetDir, err := canonicalLocalMutationDirectory(opts.dir)
+	if err != nil {
+		emitAudit(f, event, err)
+		return err
+	}
+	relativePaths, err := schemaDumpRelativePaths(result)
+	if err != nil {
+		emitAudit(f, event, err)
+		return err
+	}
+	if err := preflightPrivateMutationFiles(targetDir, relativePaths); err != nil {
+		emitAudit(f, event, err)
+		return err
+	}
+	event.Target = auditTarget(meta, "directory", targetDir)
+	event.Risk = effectiveRiskLabel("R1", meta)
+	if err := authorizeWrite(f, safety.R1, meta, nil, nil); err != nil {
+		event.Status = dbgaudit.StatusDenied
+		setAuditError(&event, err)
+		emitAudit(f, event, nil)
+		return err
+	}
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeExport), result.Tables)
+	metadata.Items = len(result.Tables)
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeExport),
+		Event:    event,
+		Metadata: metadata,
+	})
 	if err != nil {
 		return err
+	}
+	result, attempted, err := writeSchemaDump(targetDir, result)
+	if auditErr := finishMutationAuditProgress(handle, metadata.Items, len(result.Files), attempted, err); auditErr != nil {
+		return auditErr
 	}
 	return printSchemaDump(f, meta, result)
 }
 
-func runImport(f *cliFlags, opts importOptions) error {
+func runImport(f *cliFlags, opts importOptions) (resultErr error) {
 	desired, err := schema.LoadDesiredDir(opts.dir)
 	if err != nil {
 		return err
@@ -119,6 +156,7 @@ func runImport(f *cliFlags, opts importOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(b, &resultErr, backendCloseMutation)
 	current, err := b.IntrospectSchema(commandContext(f))
 	if err != nil {
 		event := newImportAuditEvent(f, meta, schemaPlan{})
@@ -153,29 +191,34 @@ func runImport(f *cliFlags, opts importOptions) error {
 		emitAudit(f, event, nil)
 		return err
 	}
+	statements := schemaPlanStatements(plan)
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeImport), statements)
+	metadata.Items = len(statements)
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeImport),
+		Event:    newImportAuditEvent(f, meta, plan),
+		Metadata: metadata,
+	})
+	if err != nil {
+		return err
+	}
 	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "import")
 	if err != nil {
-		event := newImportAuditEvent(f, meta, plan)
-		emitAudit(f, event, err)
-		return err
+		return finishSkippedMutationAudit(handle, len(statements), err)
 	}
 
-	statements := schemaPlanStatements(plan)
 	executed, err := b.ExecDDL(commandContext(f), statements)
-	event := newImportAuditEvent(f, meta, plan)
-	event.SnapshotID = snapshotID
-	event.Executed = executed
+	handle.spec.Event.SnapshotID = snapshotID
 	if err != nil && executed < len(statements) {
-		event.FailedStatement = statements[executed]
+		handle.spec.Event.FailedStatement = statements[executed]
 	}
-	emitAudit(f, event, err)
-	if err != nil {
-		return err
+	if auditErr := finishBatchMutationAudit(handle, len(statements), executed, err); auditErr != nil {
+		return auditErr
 	}
 	return printSchemaPlan(f, meta, targetWrite, plan)
 }
 
-func runReconcile(f *cliFlags, opts reconcileOptions) error {
+func runReconcile(f *cliFlags, opts reconcileOptions) (resultErr error) {
 	desired, err := schema.LoadDesiredDir(opts.dir)
 	if err != nil {
 		return err
@@ -184,6 +227,7 @@ func runReconcile(f *cliFlags, opts reconcileOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(b, &resultErr, backendCloseMutation)
 	current, err := b.IntrospectSchema(commandContext(f))
 	if err != nil {
 		event := newReconcileAuditEvent(f, meta, schemaPlan{})
@@ -220,24 +264,29 @@ func runReconcile(f *cliFlags, opts reconcileOptions) error {
 		emitAudit(f, event, nil)
 		return err
 	}
+	statements := schemaPlanStatements(plan)
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeReconcile), statements)
+	metadata.Items = len(statements)
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeReconcile),
+		Event:    newReconcileAuditEvent(f, meta, plan),
+		Metadata: metadata,
+	})
+	if err != nil {
+		return err
+	}
 	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "reconcile")
 	if err != nil {
-		event := newReconcileAuditEvent(f, meta, plan)
-		emitAudit(f, event, err)
-		return err
+		return finishSkippedMutationAudit(handle, len(statements), err)
 	}
 
-	statements := schemaPlanStatements(plan)
 	executed, err := b.ExecDDL(commandContext(f), statements)
-	event := newReconcileAuditEvent(f, meta, plan)
-	event.SnapshotID = snapshotID
-	event.Executed = executed
+	handle.spec.Event.SnapshotID = snapshotID
 	if err != nil && executed < len(statements) {
-		event.FailedStatement = statements[executed]
+		handle.spec.Event.FailedStatement = statements[executed]
 	}
-	emitAudit(f, event, err)
-	if err != nil {
-		return err
+	if auditErr := finishBatchMutationAudit(handle, len(statements), executed, err); auditErr != nil {
+		return auditErr
 	}
 	return printSchemaPlan(f, meta, targetWrite, plan)
 }

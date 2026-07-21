@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 
 	"github.com/JiangHe12/dbgov-cli/cmd"
 )
@@ -19,7 +22,10 @@ var (
 func main() {
 	cmd.SetVersionInfo(version, commit, built)
 	cmd.SetSkillFS(skillEmbedFS)
-	if err := cmd.NewRootCmd().Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err := cmd.ExecuteContext(ctx)
+	stop()
+	if err != nil {
 		if outputFlagFromArgs(os.Args[1:]) == "json" {
 			_ = apperrors.WriteJSON(os.Stderr, err)
 		} else {

@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/printer"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/printer"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
@@ -33,16 +33,18 @@ type dataExecPlan struct {
 	Kind                  string `json:"kind"`
 	HasWhere              bool   `json:"hasWhere"`
 	ImpactRows            *int64 `json:"impactRows,omitempty"`
+	PlanFingerprint       string `json:"planFingerprint,omitempty"`
 	Risk                  string `json:"risk"`
 	Destructive           bool   `json:"destructive"`
 	RequiredAuthorization string `json:"requiredAuthorization,omitempty"`
 }
 
 type dataExecResult struct {
-	SQL          string `json:"sql"`
-	Risk         string `json:"risk"`
-	ImpactRows   *int64 `json:"impactRows,omitempty"`
-	AffectedRows int64  `json:"affectedRows"`
+	SQL             string `json:"sql"`
+	Risk            string `json:"risk"`
+	ImpactRows      *int64 `json:"impactRows,omitempty"`
+	PlanFingerprint string `json:"planFingerprint,omitempty"`
+	AffectedRows    int64  `json:"affectedRows"`
 }
 
 func newDataCmd(f *cliFlags) *cobra.Command {
@@ -72,7 +74,7 @@ func dataExecCmd(f *cliFlags) *cobra.Command {
 	return cmd
 }
 
-func runDataExec(f *cliFlags, opts dataExecOptions) error {
+func runDataExec(f *cliFlags, opts dataExecOptions) (resultErr error) {
 	sqlText, err := readDMLStatement(opts)
 	if err != nil {
 		return err
@@ -81,6 +83,7 @@ func runDataExec(f *cliFlags, opts dataExecOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(backend, &resultErr, backendCloseMutation)
 	dialect := sqlclass.DialectForEngine(meta.Engine)
 	if sqlclass.HasMultipleStatements(sqlText, dialect) {
 		err := apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
@@ -124,14 +127,40 @@ func runDataExec(f *cliFlags, opts dataExecOptions) error {
 		return err
 	}
 
-	affected, err := backend.ExecDML(commandContext(f), sqlText)
 	event := newDataExecAuditEvent(f, meta, plan)
-	event.AffectedRows = &affected
-	emitAudit(f, event, err)
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeDataExec), plan)
+	metadata.Items = 1
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeDataExec),
+		Event:    event,
+		Metadata: metadata,
+	})
 	if err != nil {
 		return err
 	}
-	return printDataExecResult(f, meta, dataExecResult{SQL: sqlText, Risk: plan.Risk, ImpactRows: plan.ImpactRows, AffectedRows: affected})
+	affected, err := backend.ExecDMLBound(commandContext(f), sqlText, dbbackend.DMLPlanBinding{
+		PlanFingerprint: plan.PlanFingerprint,
+		EstimatedRows:   *plan.ImpactRows,
+	})
+	outcome := dbgaudit.MutationOutcome{AffectedRows: &affected}
+	switch {
+	case dbbackend.IsCommitIndeterminate(err):
+		outcome.Uncertain = 1
+	case err == nil:
+		outcome.Succeeded = 1
+	default:
+		outcome.Failed = 1
+	}
+	if auditErr := finishMutationAudit(handle, outcome, err); auditErr != nil {
+		return auditErr
+	}
+	return printDataExecResult(f, meta, dataExecResult{
+		SQL:             sqlText,
+		Risk:            plan.Risk,
+		ImpactRows:      plan.ImpactRows,
+		PlanFingerprint: plan.PlanFingerprint,
+		AffectedRows:    affected,
+	})
 }
 
 func readDMLStatement(opts dataExecOptions) (string, error) {
@@ -172,32 +201,36 @@ func buildDataExecPlan(ctx context.Context, backend interface {
 	}
 	switch kind {
 	case sqlclass.KindInsert:
-		plan.Risk = "R1"
-		plan.RequiredAuthorization = requiredAuthorization(sqlclassRisk(plan.Risk))
-		return plan, nil
 	case sqlclass.KindUpdate, sqlclass.KindDelete:
 		if !hasWhere {
 			plan.Risk = "R3"
 			plan.Destructive = true
 			plan.RequiredAuthorization = "R3 requires --yes or interactive confirmation, --ticket, and --allow-no-where"
-			return plan, nil
 		}
-		explain, err := backend.Explain(ctx, sqlText)
-		if err != nil {
-			return plan, apperrors.New(apperrors.CodeValidationFailed, "cannot estimate DML impact with EXPLAIN; refusing to continue", err)
-		}
-		impact := explain.EstimatedRows
-		plan.ImpactRows = &impact
-		if impact > defaultImpactThreshold {
-			plan.Risk = "R2"
-		} else {
-			plan.Risk = "R1"
-		}
-		plan.RequiredAuthorization = requiredAuthorization(sqlclassRisk(plan.Risk))
-		return plan, nil
 	default:
 		return plan, apperrors.New(apperrors.CodeValidationFailed, "unsupported DML kind", nil)
 	}
+
+	explain, err := backend.Explain(ctx, sqlText)
+	if err != nil {
+		return plan, apperrors.New(apperrors.CodeValidationFailed, "cannot estimate DML impact with EXPLAIN; refusing to continue", err)
+	}
+	if explain.EstimatedRows < 0 || explain.PlanFingerprint == "" {
+		return plan, apperrors.New(apperrors.CodeValidationFailed, "database returned an invalid DML impact plan; refusing to continue", nil)
+	}
+	impact := explain.EstimatedRows
+	plan.ImpactRows = &impact
+	plan.PlanFingerprint = explain.PlanFingerprint
+	if plan.Destructive {
+		return plan, nil
+	}
+	if impact > defaultImpactThreshold {
+		plan.Risk = "R2"
+	} else {
+		plan.Risk = "R1"
+	}
+	plan.RequiredAuthorization = requiredAuthorization(sqlclassRisk(plan.Risk))
+	return plan, nil
 }
 
 func printDataExecPlan(f *cliFlags, meta contextMeta, plan dataExecPlan) error {
@@ -206,10 +239,11 @@ func printDataExecPlan(f *cliFlags, meta contextMeta, plan dataExecPlan) error {
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecPlan", Data: dataWithTarget(plan, meta, targetWrite)})
 	}
-	printTargetHeader(p, meta, targetWrite)
+	if err := printTargetHeader(p, meta, targetWrite); err != nil {
+		return err
+	}
 	rows := [][]string{{plan.SQL, plan.Kind, fmtImpactRows(plan.ImpactRows), plan.Risk, plan.RequiredAuthorization}}
-	p.Table([]string{"SQL", "KIND", "IMPACT_ROWS", "RISK", "REQUIRED_AUTHORIZATION"}, rows)
-	return nil
+	return p.Table([]string{"SQL", "KIND", "IMPACT_ROWS", "RISK", "REQUIRED_AUTHORIZATION"}, rows)
 }
 
 func printDataExecResult(f *cliFlags, meta contextMeta, result dataExecResult) error {
@@ -218,9 +252,10 @@ func printDataExecResult(f *cliFlags, meta contextMeta, result dataExecResult) e
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DataExecResult", Data: dataWithTarget(result, meta, targetWrite)})
 	}
-	printTargetHeader(p, meta, targetWrite)
-	p.Table([]string{"SQL", "RISK", "IMPACT_ROWS", "AFFECTED_ROWS"}, [][]string{{result.SQL, result.Risk, fmtImpactRows(result.ImpactRows), fmt.Sprint(result.AffectedRows)}})
-	return nil
+	if err := printTargetHeader(p, meta, targetWrite); err != nil {
+		return err
+	}
+	return p.Table([]string{"SQL", "RISK", "IMPACT_ROWS", "AFFECTED_ROWS"}, [][]string{{result.SQL, result.Risk, fmtImpactRows(result.ImpactRows), fmt.Sprint(result.AffectedRows)}})
 }
 
 func newDataExecAuditEvent(f *cliFlags, meta contextMeta, plan dataExecPlan) dbgaudit.Event {

@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
-	coreaudit "github.com/JiangHe12/opskit-core/audit"
-	corecredstore "github.com/JiangHe12/opskit-core/credstore"
-	corectx "github.com/JiangHe12/opskit-core/ctx"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	coreaudit "github.com/JiangHe12/opskit-core/v2/audit"
+	corecredstore "github.com/JiangHe12/opskit-core/v2/credstore"
+	corectx "github.com/JiangHe12/opskit-core/v2/ctx"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
@@ -24,9 +24,18 @@ import (
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
+	"github.com/JiangHe12/dbgov-cli/internal/sqlclass"
 )
 
 var errFakeExplain = errors.New("fake explain failure")
+
+type fixedExplainBackend struct {
+	result dbbackend.ExplainResult
+}
+
+func (b fixedExplainBackend) Explain(context.Context, string) (dbbackend.ExplainResult, error) {
+	return b.result, nil
+}
 
 func TestQueryFakeBackendJSONAndAudit(t *testing.T) {
 	home := t.TempDir()
@@ -40,7 +49,11 @@ func TestQueryFakeBackendJSONAndAudit(t *testing.T) {
 		t.Fatalf("unexpected query output: %s", out)
 	}
 	evt := lastAuditEvent(t, home)
-	if evt.EventType != dbgaudit.EventTypeQuery || evt.Statement != "SELECT id, name FROM users" || evt.Target.ObjectType != "database" {
+	statementFingerprint, _ := dbgaudit.Fingerprint("statement", "SELECT id, name FROM users")
+	if evt.EventType != dbgaudit.EventTypeQuery ||
+		evt.Statement != "" ||
+		evt.StatementFingerprint != statementFingerprint ||
+		evt.Target.ObjectType != "database" {
 		t.Fatalf("audit event = %+v", evt)
 	}
 }
@@ -52,6 +65,31 @@ func TestQueryRejectsWriteSQL(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "query only accepts read-only SQL") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestQueryRejectsExecutingExplainAndDataModifyingCTE(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configPath := filepath.Join(home, "config.yaml")
+	if _, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "pg", "--engine", "postgres", "--host", "127.0.0.1", "--database", "demo"); err != nil {
+		t.Fatalf("ctx set postgres error = %v", err)
+	}
+	if _, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "use", "pg"); err != nil {
+		t.Fatalf("ctx use postgres error = %v", err)
+	}
+
+	tests := []string{
+		"EXPLAIN ANALYZE DELETE FROM users",
+		"WITH gone AS (DELETE FROM users RETURNING *) SELECT count(*) FROM gone",
+	}
+	for _, sqlText := range tests {
+		if _, err := executeCommandForTest("--config", configPath, "query", "--sql", sqlText, "--fake"); err == nil {
+			t.Fatalf("query accepted executing read-path SQL %q", sqlText)
+		} else if !strings.Contains(err.Error(), "query only accepts read-only SQL") {
+			t.Fatalf("query error for %q = %v", sqlText, err)
+		}
 	}
 }
 
@@ -77,10 +115,10 @@ func TestQueryUsesPostgresDialectForSelectedContext(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(home, "config.yaml")
-	if _, err := executeCommandForTest("--config", configPath, "ctx", "set", "pg", "--engine", "postgres", "--host", "127.0.0.1", "--database", "demo"); err != nil {
+	if _, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "pg", "--engine", "postgres", "--host", "127.0.0.1", "--database", "demo"); err != nil {
 		t.Fatalf("ctx set postgres error = %v", err)
 	}
-	if _, err := executeCommandForTest("--config", configPath, "ctx", "use", "pg"); err != nil {
+	if _, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "use", "pg"); err != nil {
 		t.Fatalf("ctx use postgres error = %v", err)
 	}
 	backend := fake.New()
@@ -105,7 +143,7 @@ func TestCtxSetAllowsPostgresDefaultPort(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(home, "config.yaml")
-	if _, err := executeCommandForTest("--config", configPath, "ctx", "set", "pg", "--engine", "postgres", "--host", "127.0.0.1", "--database", "demo"); err != nil {
+	if _, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "pg", "--engine", "postgres", "--host", "127.0.0.1", "--database", "demo"); err != nil {
 		t.Fatalf("ctx set postgres error = %v", err)
 	}
 	dbgovctx.SetConfigPath(configPath)
@@ -144,6 +182,7 @@ func TestBuildBackendAllowsPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildBackend(postgres) error = %v", err)
 	}
+	defer func() { _ = backend.Close() }()
 	if _, ok := backend.(*postgres.Backend); !ok {
 		t.Fatalf("backend type = %T, want *postgres.Backend", backend)
 	}
@@ -200,7 +239,9 @@ func TestSchemaListDescribeDumpFakeBackend(t *testing.T) {
 	if !strings.Contains(out, `"kind": "SchemaDescribe"`) || !strings.Contains(out, `"indexes"`) || !strings.Contains(out, `"foreignKeys"`) {
 		t.Fatalf("unexpected describe output: %s", out)
 	}
-	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeSchemaDescribe || evt.Target.Object != "users" {
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeSchemaDescribe ||
+		evt.Target.Object != "" ||
+		evt.Target.Fingerprint == "" {
 		t.Fatalf("describe audit event = %+v", evt)
 	}
 
@@ -234,7 +275,7 @@ func TestSchemaDumpWritesDirectory(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	dir := filepath.Join(home, "schema")
-	_, err := executeCommandForTest("schema", "dump", "--fake", "--dir", dir)
+	_, err := executeCommandForTest("--yes", "schema", "dump", "--fake", "--dir", dir)
 	if err != nil {
 		t.Fatalf("schema dump --dir error = %v", err)
 	}
@@ -244,6 +285,24 @@ func TestSchemaDumpWritesDirectory(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "CREATE TABLE `users`") {
 		t.Fatalf("dumped ddl = %s", string(data))
+	}
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeSchemaDump ||
+		evt.Target.Object != "" || evt.Target.Fingerprint == "" {
+		t.Fatalf("schema dump directory audit target = %+v", evt)
+	}
+}
+
+func TestSchemaDumpDirectoryRequiresR1Authorization(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, "schema")
+	_, err := executeCommandForTest("schema", "dump", "--fake", "--dir", dir)
+	if apperrors.AsAppError(err).Code != apperrors.CodeAuthorizationRequired {
+		t.Fatalf("schema dump authorization error = %v, want AUTHORIZATION_REQUIRED", err)
+	}
+	if _, statErr := os.Lstat(dir); !os.IsNotExist(statErr) {
+		t.Fatalf("denied schema dump created target directory: %v", statErr)
 	}
 }
 
@@ -298,8 +357,8 @@ func TestPostgresSchemaPlanUsesPostgresDDL(t *testing.T) {
 	}
 	sqlText := schemaPlanSQL(plan)
 	for _, want := range []string{
-		`ALTER TABLE "evil"";--" ADD COLUMN "new"";--" text;`,
-		`ALTER TABLE "evil"";--" ALTER COLUMN "name"";--" TYPE character varying(20);`,
+		`ALTER TABLE "public"."evil"";--" ADD COLUMN "new"";--" text;`,
+		`ALTER TABLE "public"."evil"";--" ALTER COLUMN "name"";--" TYPE character varying(20);`,
 	} {
 		if !strings.Contains(sqlText, want) {
 			t.Fatalf("postgres plan missing %q:\n%s", want, sqlText)
@@ -382,7 +441,7 @@ func TestSchemaApplyR3RequiresTicketAllowFlagAndYes(t *testing.T) {
 }
 
 func TestAuthorizeWriteRaisesProtectedR1ToR2(t *testing.T) {
-	flags := &cliFlags{Yes: true, NonInteractive: true, Operator: "alice"}
+	flags := &cliFlags{Yes: true, NonInteractive: true, trustedOperator: "alice"}
 	err := authorizeWrite(flags, safety.R1, contextMeta{Protected: true}, nil, nil)
 	if err == nil {
 		t.Fatal("expected protected R1 to require ticket after risk upgrade")
@@ -397,22 +456,22 @@ func TestAuthorizeWriteEnforcesRoles(t *testing.T) {
 	}
 	meta := contextMeta{Roles: roles}
 
-	if err := authorizeWrite(&cliFlags{Operator: "alice", Yes: true, NonInteractive: true}, safety.R1, meta, nil, nil); err == nil {
+	if err := authorizeWrite(&cliFlags{trustedOperator: "alice", Yes: true, NonInteractive: true}, safety.R1, meta, nil, nil); err == nil {
 		t.Fatal("reader should be denied for R1 writes")
 	}
-	if err := authorizeWrite(&cliFlags{Operator: "bob", Yes: true, NonInteractive: true, Ticket: "CHG-1"}, safety.R2, meta, nil, nil); err != nil {
+	if err := authorizeWrite(&cliFlags{trustedOperator: "bob", Yes: true, NonInteractive: true, Ticket: "CHG-1"}, safety.R2, meta, nil, nil); err != nil {
 		t.Fatalf("writer R2 should pass: %v", err)
 	}
-	if err := authorizeWrite(&cliFlags{Operator: "bob", Yes: true, NonInteractive: true, Ticket: "CHG-1"}, safety.R3, meta, []safety.AllowFlag{safety.AllowDestructive}, map[safety.AllowFlag]bool{safety.AllowDestructive: true}); err == nil {
+	if err := authorizeWrite(&cliFlags{trustedOperator: "bob", Yes: true, NonInteractive: true, Ticket: "CHG-1"}, safety.R3, meta, []safety.AllowFlag{safety.AllowDestructive}, map[safety.AllowFlag]bool{safety.AllowDestructive: true}); err == nil {
 		t.Fatal("writer should be denied for R3 writes")
 	}
-	if err := authorizeWrite(&cliFlags{Operator: "carol", Yes: true, NonInteractive: true, Ticket: "CHG-1"}, safety.R3, meta, []safety.AllowFlag{safety.AllowDestructive}, map[safety.AllowFlag]bool{safety.AllowDestructive: true}); err != nil {
+	if err := authorizeWrite(&cliFlags{trustedOperator: "carol", Yes: true, NonInteractive: true, Ticket: "CHG-1"}, safety.R3, meta, []safety.AllowFlag{safety.AllowDestructive}, map[safety.AllowFlag]bool{safety.AllowDestructive: true}); err != nil {
 		t.Fatalf("admin R3 should pass: %v", err)
 	}
-	if err := authorizeWrite(&cliFlags{Operator: "dave", Yes: true, NonInteractive: true}, safety.R1, meta, nil, nil); err == nil {
+	if err := authorizeWrite(&cliFlags{trustedOperator: "dave", Yes: true, NonInteractive: true}, safety.R1, meta, nil, nil); err == nil {
 		t.Fatal("operator without assigned role should be denied")
 	}
-	if err := authorizeWrite(&cliFlags{Operator: "dave", Yes: true, NonInteractive: true}, safety.R1, contextMeta{}, nil, nil); err != nil {
+	if err := authorizeWrite(&cliFlags{trustedOperator: "dave", Yes: true, NonInteractive: true}, safety.R1, contextMeta{}, nil, nil); err != nil {
 		t.Fatalf("empty Roles should preserve original write authorization: %v", err)
 	}
 }
@@ -459,7 +518,10 @@ func TestSchemaApplyAuditsPartialFailure(t *testing.T) {
 		t.Fatalf("executed = %+v, want one successful statement", backend.Executed)
 	}
 	evt := lastAuditEvent(t, home)
-	if evt.Status != dbgaudit.StatusFailed || evt.Executed != 1 || !strings.Contains(evt.FailedStatement, "DROP COLUMN") {
+	if evt.Status != dbgaudit.StatusPartial ||
+		evt.Executed != 1 ||
+		evt.FailedStatement != "" ||
+		evt.FailedStatementFingerprint == "" {
 		t.Fatalf("partial failure audit event = %+v", evt)
 	}
 }
@@ -484,16 +546,72 @@ func TestDataExecInsertR1RequiresYesAndAuditsAffectedRows(t *testing.T) {
 		t.Fatalf("denied insert audit event = %+v", evt)
 	}
 
-	_, err = executeCommandForTest("--yes", "data", "exec", "--sql", "INSERT INTO users(id) VALUES (1)", "--fake")
+	out, err := executeCommandForTest("--yes", "-o", "json", "data", "exec", "--sql", "INSERT INTO users(id) VALUES (1)", "--fake")
 	if err != nil {
 		t.Fatalf("insert exec error = %v", err)
+	}
+	if !strings.Contains(out, `"planFingerprint": "sha256:`) {
+		t.Fatalf("insert output missing plan binding: %s", out)
 	}
 	if len(backend.ExecutedDML) != 1 {
 		t.Fatalf("ExecutedDML = %+v", backend.ExecutedDML)
 	}
 	evt := lastAuditEvent(t, home)
-	if evt.Status != dbgaudit.StatusSucceeded || evt.Risk != "R1" || evt.AffectedRows == nil || *evt.AffectedRows != 4 {
+	if evt.Status != dbgaudit.StatusSucceeded ||
+		evt.Risk != "R1" ||
+		evt.ImpactRows == nil ||
+		*evt.ImpactRows != 2 ||
+		evt.AffectedRows == nil ||
+		*evt.AffectedRows != 4 {
 		t.Fatalf("insert audit event = %+v", evt)
+	}
+}
+
+func TestDataExecInsertSelectLargeImpactRequiresTicketAndBindsPlan(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	backend := fake.New()
+	backend.ExplainRows = 5000
+	backend.DMLAffected = 5000
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+	const statement = "INSERT INTO archive_users SELECT * FROM users"
+
+	_, err := executeCommandForTest("--yes", "data", "exec", "--sql", statement, "--fake")
+	if err == nil {
+		t.Fatal("expected large INSERT SELECT without ticket to be denied")
+	}
+	if len(backend.ExecutedDML) != 0 {
+		t.Fatalf("executed denied INSERT SELECT: %+v", backend.ExecutedDML)
+	}
+	if evt := lastAuditEvent(t, home); evt.Status != dbgaudit.StatusDenied ||
+		evt.Risk != "R2" ||
+		evt.ImpactRows == nil ||
+		*evt.ImpactRows != 5000 {
+		t.Fatalf("large INSERT SELECT denied audit event = %+v", evt)
+	}
+
+	changedRows := int64(5001)
+	backend.BoundExplainRows = &changedRows
+	_, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "data", "exec", "--sql", statement, "--fake")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeConflict {
+		t.Fatalf("changed INSERT SELECT plan error code = %s, want %s (err=%v)", got, apperrors.CodeConflict, err)
+	}
+	if len(backend.ExecutedDML) != 0 {
+		t.Fatalf("executed INSERT SELECT after plan change: %+v", backend.ExecutedDML)
+	}
+
+	backend.BoundExplainRows = nil
+	out, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "-o", "json", "data", "exec", "--sql", statement, "--fake")
+	if err != nil {
+		t.Fatalf("large INSERT SELECT authorized error = %v", err)
+	}
+	if !strings.Contains(out, `"planFingerprint": "sha256:`) {
+		t.Fatalf("large INSERT SELECT output missing plan binding: %s", out)
+	}
+	if len(backend.ExecutedDML) != 1 {
+		t.Fatalf("ExecutedDML = %+v", backend.ExecutedDML)
 	}
 }
 
@@ -514,6 +632,37 @@ func TestDataExecUpdateWhereSmallImpactR1(t *testing.T) {
 	evt := lastAuditEvent(t, home)
 	if evt.Risk != "R1" || evt.ImpactRows == nil || *evt.ImpactRows != 10 || evt.AffectedRows == nil || *evt.AffectedRows != 2 {
 		t.Fatalf("small update audit event = %+v", evt)
+	}
+}
+
+func TestDataExecCommitErrorAuditsUncertainOutcome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	backend := fake.New()
+	backend.ExplainRows = 10
+	backend.DMLAffected = 3
+	backend.BoundCommitErr = apperrors.New(apperrors.CodeBackendError, "commit result lost", nil)
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, err := executeCommandForTest("--yes", "data", "exec", "--sql", "UPDATE users SET name='x' WHERE id < 10", "--fake")
+	appErr := apperrors.AsAppError(err)
+	if appErr.Code != apperrors.CodePartialFailure || appErr.Retryable || !strings.Contains(appErr.Suggestion, "inspect") {
+		t.Fatalf("commit error = %+v, want non-retryable partial failure with inspection guidance", appErr)
+	}
+	if len(backend.ExecutedDML) != 1 {
+		t.Fatalf("ExecutedDML = %+v, want one attempted mutation", backend.ExecutedDML)
+	}
+	event := lastAuditEvent(t, home)
+	if event.Status != dbgaudit.StatusFailed ||
+		event.Outcome == nil ||
+		event.Outcome.Uncertain != 1 ||
+		event.Outcome.Succeeded != 0 ||
+		event.Outcome.Failed != 0 ||
+		event.AffectedRows == nil ||
+		*event.AffectedRows != 3 {
+		t.Fatalf("commit-indeterminate audit event = %+v", event)
 	}
 }
 
@@ -571,22 +720,40 @@ func TestDataExecDeleteNoWhereR3RequiresTicketAllowAndYes(t *testing.T) {
 	}
 
 	backend := fake.New()
+	backend.ExplainRows = 5000
 	restore := stubFakeBackend(t, backend)
 	defer restore()
+	changedRows := int64(5001)
+	backend.BoundExplainRows = &changedRows
 	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "data", "exec", "--sql", "DELETE FROM users", "--fake", "--allow-no-where")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeConflict {
+		t.Fatalf("changed no-WHERE plan error code = %s, want %s (err=%v)", got, apperrors.CodeConflict, err)
+	}
+	if len(backend.ExecutedDML) != 0 {
+		t.Fatalf("executed no-WHERE delete after plan change: %+v", backend.ExecutedDML)
+	}
+
+	backend.BoundExplainRows = nil
+	out, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "-o", "json", "data", "exec", "--sql", "DELETE FROM users", "--fake", "--allow-no-where")
 	if err != nil {
 		t.Fatalf("no-WHERE delete authorized error = %v", err)
+	}
+	if !strings.Contains(out, `"planFingerprint": "sha256:`) {
+		t.Fatalf("no-WHERE delete output missing plan binding: %s", out)
 	}
 	if len(backend.ExecutedDML) != 1 {
 		t.Fatalf("ExecutedDML = %+v", backend.ExecutedDML)
 	}
-	if evt := lastAuditEvent(t, home); evt.Risk != "R3" || !evt.Destructive {
+	if evt := lastAuditEvent(t, home); evt.Risk != "R3" ||
+		!evt.Destructive ||
+		evt.ImpactRows == nil ||
+		*evt.ImpactRows != 5000 {
 		t.Fatalf("no-WHERE delete audit event = %+v", evt)
 	}
 }
 
 func TestDataExecProtectedSmallUpdateUpgradesToR2(t *testing.T) {
-	flags := &cliFlags{Yes: true, NonInteractive: true, Operator: "alice"}
+	flags := &cliFlags{Yes: true, NonInteractive: true, trustedOperator: "alice"}
 	err := authorizeWrite(flags, safety.R1, contextMeta{Protected: true}, nil, nil)
 	if err == nil {
 		t.Fatal("expected protected R1 data exec to require ticket")
@@ -625,16 +792,25 @@ func TestCtxRoleSetListUnsetAndAudit(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(home, "config.yaml")
-	_, err := executeCommandForTest("--config", configPath, "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1", "--database", "demo")
+	operator, err := resolveTrustedOperator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1", "--database", "demo")
 	if err != nil {
 		t.Fatalf("ctx set error = %v", err)
 	}
-	_, err = executeCommandForTest("--config", configPath, "ctx", "role", "set", "local", "--target-operator", "alice", "--role", safety.RoleWriter)
+	_, err = executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-role-change", "ctx", "role", "set", "local", "--target-operator", operator, "--role", safety.RoleAdmin)
 	if err != nil {
 		t.Fatalf("ctx role set error = %v", err)
 	}
 	evt := lastAuditEvent(t, home)
-	if evt.EventType != dbgaudit.EventTypeRoleAssign || evt.Role != safety.RoleWriter || evt.Target.Object != "alice" || evt.Context.Name != "local" {
+	if evt.EventType != dbgaudit.EventTypeRoleAssign ||
+		evt.Role != safety.RoleAdmin ||
+		evt.Target.Object != "" ||
+		evt.Target.Fingerprint == "" ||
+		evt.Context.Name != "local" ||
+		evt.Risk != "R3" {
 		t.Fatalf("role assign audit event = %+v", evt)
 	}
 
@@ -642,16 +818,21 @@ func TestCtxRoleSetListUnsetAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ctx role list error = %v", err)
 	}
-	if !strings.Contains(out, `"operator": "alice"`) || !strings.Contains(out, `"role": "writer"`) {
+	if !strings.Contains(out, `"operator": `) || !strings.Contains(out, `"role": "admin"`) {
 		t.Fatalf("ctx role list output = %s", out)
 	}
 
-	_, err = executeCommandForTest("--config", configPath, "ctx", "role", "unset", "local", "--target-operator", "alice")
+	_, err = executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-role-change", "ctx", "role", "unset", "local", "--target-operator", operator)
 	if err != nil {
 		t.Fatalf("ctx role unset error = %v", err)
 	}
 	evt = lastAuditEvent(t, home)
-	if evt.EventType != dbgaudit.EventTypeRoleRevoke || evt.Role != "" || evt.Target.Object != "alice" || evt.Context.Name != "local" {
+	if evt.EventType != dbgaudit.EventTypeRoleRevoke ||
+		evt.Role != "" ||
+		evt.Target.Object != "" ||
+		evt.Target.Fingerprint == "" ||
+		evt.Context.Name != "local" ||
+		evt.Risk != "R3" {
 		t.Fatalf("role revoke audit event = %+v", evt)
 	}
 	dbgovctx.SetConfigPath(configPath)
@@ -673,7 +854,7 @@ func TestCtxRoleValidation(t *testing.T) {
 	if _, err := executeCommandForTest("--config", configPath, "ctx", "role", "set", "missing", "--target-operator", "alice", "--role", safety.RoleWriter); err == nil {
 		t.Fatal("expected missing context to fail")
 	}
-	_, err := executeCommandForTest("--config", configPath, "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1")
+	_, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "local", "--engine", "mysql", "--host", "127.0.0.1")
 	if err != nil {
 		t.Fatalf("ctx set error = %v", err)
 	}
@@ -703,7 +884,7 @@ func TestCtxMigrateCredentialsMigratesOnlyLiteralPasswords(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "migrate-credentials", "--to", "encrypted-file")
+	out, err := executeCommandForTest("--config", configPath, "-o", "json", "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "migrate-credentials", "--to", "encrypted-file")
 	if err != nil {
 		t.Fatalf("ctx migrate-credentials error = %v", err)
 	}
@@ -727,7 +908,10 @@ func TestCtxMigrateCredentialsMigratesOnlyLiteralPasswords(t *testing.T) {
 	if resolved != "secret" {
 		t.Fatalf("resolved migrated password = %q", resolved)
 	}
-	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeCredentialMigrate || evt.Context.Name != "literal" || evt.Target.Object != "encrypted-file" {
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeCredentialMigrate ||
+		evt.Context.Name != "literal" ||
+		evt.Target.Object != "" ||
+		evt.Target.Fingerprint == "" {
 		t.Fatalf("credential migrate audit event = %+v", evt)
 	}
 }
@@ -747,7 +931,7 @@ func TestCtxMigrateCredentialsContextFilterAndNoCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := executeCommandForTest("--config", configPath, "ctx", "migrate-credentials", "--to", "encrypted-file", "--context", "prod")
+	_, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "migrate-credentials", "--to", "encrypted-file", "--context", "prod")
 	if err != nil {
 		t.Fatalf("filtered migrate error = %v", err)
 	}
@@ -884,7 +1068,7 @@ context:
     env: dev
 `)
 
-	out, err := executeCommandForTest("--config", configPath, "-o", "json", "ctx", "import", "-f", importPath)
+	out, err := executeCommandForTest("--config", configPath, "-o", "json", "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "import", "-f", importPath)
 	if err != nil {
 		t.Fatalf("ctx import error = %v", err)
 	}
@@ -928,7 +1112,7 @@ context:
     password: secret
     credentialBackend: plain-yaml
 `)
-	_, err = executeCommandForTest("--config", configPath, "ctx", "import", "-f", importPath, "--rename", "copy")
+	_, err = executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "import", "-f", importPath, "--rename", "copy")
 	if err != nil {
 		t.Fatalf("ctx import --rename error = %v", err)
 	}
@@ -936,7 +1120,7 @@ context:
 	if err == nil {
 		t.Fatal("expected existing context import to require --force")
 	}
-	_, err = executeCommandForTest("--config", configPath, "ctx", "import", "-f", importPath, "--rename", "copy", "--force")
+	_, err = executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "import", "-f", importPath, "--rename", "copy", "--force")
 	if err != nil {
 		t.Fatalf("ctx import --force error = %v", err)
 	}
@@ -947,7 +1131,7 @@ context:
     host: 127.0.0.1
     port: 3306
 `)
-	_, err = executeCommandForTest("--config", configPath, "ctx", "import", "-f", legacyPath)
+	_, err = executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "import", "-f", legacyPath)
 	if err != nil {
 		t.Fatalf("legacy ctx import error = %v", err)
 	}
@@ -1025,11 +1209,44 @@ func TestDataExecDryRunDoesNotAuthorizeOrExecute(t *testing.T) {
 	if len(backend.ExecutedDML) != 0 {
 		t.Fatalf("dry-run executed DML: %+v", backend.ExecutedDML)
 	}
-	if !strings.Contains(out, `"kind": "DataExecPlan"`) || !strings.Contains(out, `"impactRows": 12`) {
+	if !strings.Contains(out, `"kind": "DataExecPlan"`) ||
+		!strings.Contains(out, `"impactRows": 12`) ||
+		!strings.Contains(out, `"planFingerprint": "sha256:`) {
 		t.Fatalf("dry-run output = %s", out)
 	}
 	if evt := lastAuditEvent(t, home); !evt.DryRun || evt.ImpactRows == nil || *evt.ImpactRows != 12 {
 		t.Fatalf("dry-run audit event = %+v", evt)
+	}
+}
+
+func TestDataExecBlocksWhenPlanChangesAfterAuthorization(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	backend := fake.New()
+	backend.ExplainRows = 10
+	changedRows := int64(5000)
+	backend.BoundExplainRows = &changedRows
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, err := executeCommandForTest(
+		"--yes",
+		"data", "exec",
+		"--sql", "UPDATE users SET name='x' WHERE id=1",
+		"--fake",
+	)
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeConflict {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeConflict, err)
+	}
+	if len(backend.ExecutedDML) != 0 {
+		t.Fatalf("executed DML after plan change: %+v", backend.ExecutedDML)
+	}
+	event := lastAuditEvent(t, home)
+	if event.Status != dbgaudit.StatusFailed ||
+		event.Error == nil ||
+		event.Error.Code != string(apperrors.CodeConflict) {
+		t.Fatalf("plan-change audit event = %+v", event)
 	}
 }
 
@@ -1056,6 +1273,35 @@ func TestDataExecRejectsNonDMLAndExplainFailure(t *testing.T) {
 	}
 }
 
+func TestBuildDataExecPlanRequiresExplainBindingForEveryDMLKind(t *testing.T) {
+	backend := fixedExplainBackend{result: dbbackend.ExplainResult{EstimatedRows: 1}}
+	tests := []struct {
+		name      string
+		statement string
+		kind      sqlclass.Kind
+		hasWhere  bool
+	}{
+		{name: "insert", statement: "INSERT INTO users(id) VALUES (1)", kind: sqlclass.KindInsert},
+		{name: "update with where", statement: "UPDATE users SET active=0 WHERE id=1", kind: sqlclass.KindUpdate, hasWhere: true},
+		{name: "update without where", statement: "UPDATE users SET active=0", kind: sqlclass.KindUpdate},
+		{name: "delete with where", statement: "DELETE FROM users WHERE id=1", kind: sqlclass.KindDelete, hasWhere: true},
+		{name: "delete without where", statement: "DELETE FROM users", kind: sqlclass.KindDelete},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := buildDataExecPlan(
+				context.Background(),
+				backend,
+				test.statement,
+				test.kind,
+				test.hasWhere,
+			); err == nil {
+				t.Fatal("buildDataExecPlan() error = nil, want missing plan fingerprint rejection")
+			}
+		})
+	}
+}
+
 func TestExportWritesSchemaDirectoryAndAudit(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1070,7 +1316,7 @@ func TestExportWritesSchemaDirectoryAndAudit(t *testing.T) {
 	defer restore()
 	dir := filepath.Join(home, "schema")
 
-	_, err := executeCommandForTest("export", "--dir", dir, "--fake")
+	_, err := executeCommandForTest("--yes", "export", "--dir", dir, "--fake")
 	if err != nil {
 		t.Fatalf("export error = %v", err)
 	}
@@ -1083,7 +1329,10 @@ func TestExportWritesSchemaDirectoryAndAudit(t *testing.T) {
 			t.Fatalf("%s.sql = %s", table, data)
 		}
 	}
-	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeExport || evt.Status != dbgaudit.StatusSucceeded {
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeExport ||
+		evt.Status != dbgaudit.StatusSucceeded ||
+		evt.Target.Object != "" ||
+		evt.Target.Fingerprint == "" {
 		t.Fatalf("export audit event = %+v", evt)
 	}
 }
@@ -1137,7 +1386,7 @@ func TestPostgresGitOpsAndRollbackUsePostgresDDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("postgres import error = %v\n%s", err, out)
 	}
-	if len(importBackend.Executed) != 1 || importBackend.Executed[0] != `CREATE TABLE "users" ("id" integer, "name" text);` {
+	if len(importBackend.Executed) != 1 || importBackend.Executed[0] != `CREATE TABLE "public"."users" ("id" integer, "name" text);` {
 		t.Fatalf("postgres import executed = %+v", importBackend.Executed)
 	}
 
@@ -1153,13 +1402,30 @@ func TestPostgresGitOpsAndRollbackUsePostgresDDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("postgres reconcile error = %v\n%s", err, out)
 	}
-	if len(reconcileBackend.Executed) != 1 || reconcileBackend.Executed[0] != `ALTER TABLE "users" DROP COLUMN "legacy";` {
+	if len(reconcileBackend.Executed) != 1 || reconcileBackend.Executed[0] != `ALTER TABLE "public"."users" DROP COLUMN "legacy";` {
 		t.Fatalf("postgres reconcile executed = %+v", reconcileBackend.Executed)
 	}
 
-	sourceID := captureSnapshotForTest(t, home, map[string]string{
-		"users": `CREATE TABLE "users" ("id" integer, "name" text);`,
-	})
+	sourceID := captureSnapshotWithMetaForTest(
+		t,
+		home,
+		dbgsnapshot.Meta{
+			Operator: "tester",
+			Command:  "apply",
+			Context:  "pg",
+			Target: &dbgsnapshot.Target{
+				Context:  "pg",
+				Engine:   "postgres",
+				Host:     "127.0.0.1",
+				Port:     5432,
+				Database: "app",
+				Schema:   "public",
+			},
+		},
+		map[string]string{
+			"users": `CREATE TABLE "public"."users" ("id" integer, "name" text);`,
+		},
+	)
 	rollbackBackend := newPostgresFakeBackend(schema.Schema{Tables: map[string]schema.Table{}})
 	restore = stubPostgresBackend(t, rollbackBackend)
 	out, err = executeCommandForTest("--config", configPath, "--yes", "--ticket", "CHG-2", "-o", "json", "rollback", "--to", sourceID)
@@ -1167,7 +1433,7 @@ func TestPostgresGitOpsAndRollbackUsePostgresDDL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("postgres rollback error = %v\n%s", err, out)
 	}
-	if len(rollbackBackend.Executed) != 1 || rollbackBackend.Executed[0] != `CREATE TABLE "users" ("id" integer, "name" text);` {
+	if len(rollbackBackend.Executed) != 1 || rollbackBackend.Executed[0] != `CREATE TABLE "public"."users" ("id" integer, "name" text);` {
 		t.Fatalf("postgres rollback executed = %+v", rollbackBackend.Executed)
 	}
 	if !strings.Contains(out, rollbackDataLossWarning) {
@@ -1379,14 +1645,25 @@ func TestSchemaApplyCapturesSnapshotBeforeDDLAndAuditsID(t *testing.T) {
 		t.Fatalf("schema apply error = %v", err)
 	}
 	evt := lastAuditEvent(t, home)
-	if evt.EventType != dbgaudit.EventTypeSchemaApply || evt.SnapshotID == "" {
-		t.Fatalf("schema apply audit event = %+v, want snapshot id", evt)
+	if evt.EventType != dbgaudit.EventTypeSchemaApply ||
+		evt.SnapshotID != "" ||
+		evt.SnapshotFingerprint == "" {
+		t.Fatalf("schema apply audit event = %+v, want snapshot fingerprint only", evt)
 	}
-	snap, err := dbgsnapshot.Load(snapshotDirForTest(home), evt.SnapshotID)
+	metas, err := dbgsnapshot.List(snapshotDirForTest(home))
+	if err != nil || len(metas) != 1 {
+		t.Fatalf("list snapshots: metas=%+v err=%v", metas, err)
+	}
+	snap, err := dbgsnapshot.Load(snapshotDirForTest(home), metas[0].ID)
 	if err != nil {
 		t.Fatalf("load snapshot: %v", err)
 	}
-	if snap.Meta.Command != "apply" || snap.Meta.Context != "fake" || snap.Meta.TableCount != 1 || !strings.Contains(snap.Tables["users"], "CREATE TABLE") {
+	if snap.Meta.Command != "apply" ||
+		snap.Meta.Context != "fake" ||
+		snap.Meta.Target == nil ||
+		*snap.Meta.Target != *fakeSnapshotTarget() ||
+		snap.Meta.TableCount != 1 ||
+		!strings.Contains(snap.Tables["users"], "CREATE TABLE") {
 		t.Fatalf("snapshot = %+v", snap)
 	}
 }
@@ -1452,8 +1729,10 @@ func TestImportAndReconcileCaptureSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import error = %v", err)
 	}
-	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeImport || evt.SnapshotID == "" {
-		t.Fatalf("import audit event = %+v, want snapshot id", evt)
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeImport ||
+		evt.SnapshotID != "" ||
+		evt.SnapshotFingerprint == "" {
+		t.Fatalf("import audit event = %+v, want snapshot fingerprint", evt)
 	}
 
 	backend = fake.New()
@@ -1463,8 +1742,10 @@ func TestImportAndReconcileCaptureSnapshots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile error = %v", err)
 	}
-	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeReconcile || evt.SnapshotID == "" {
-		t.Fatalf("reconcile audit event = %+v, want snapshot id", evt)
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeReconcile ||
+		evt.SnapshotID != "" ||
+		evt.SnapshotFingerprint == "" {
+		t.Fatalf("reconcile audit event = %+v, want snapshot fingerprint", evt)
 	}
 	metas, err := dbgsnapshot.List(snapshotDirForTest(home))
 	if err != nil {
@@ -1479,14 +1760,18 @@ func TestRollbackListOutputsSnapshotsAndAudits(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	_, err := dbgsnapshot.Capture(snapshotDirForTest(home), dbgsnapshot.Meta{Operator: "alice", Command: "apply", Ticket: "CHG-1", Context: "dev", TableCount: 1}, map[string]string{"users": "CREATE TABLE `users` (`id` BIGINT);"})
-	if err != nil {
-		t.Fatalf("capture first snapshot: %v", err)
-	}
-	_, err = dbgsnapshot.Capture(snapshotDirForTest(home), dbgsnapshot.Meta{Operator: "bob", Command: "reconcile", Ticket: "CHG-2", Context: "prod", TableCount: 2}, map[string]string{"users": "CREATE TABLE `users` (`id` BIGINT);"})
-	if err != nil {
-		t.Fatalf("capture second snapshot: %v", err)
-	}
+	captureSnapshotWithMetaForTest(
+		t,
+		home,
+		dbgsnapshot.Meta{Operator: "alice", Command: "apply", Ticket: "CHG-1", Context: "dev", TableCount: 1},
+		map[string]string{"users": "CREATE TABLE `users` (`id` BIGINT);"},
+	)
+	captureSnapshotWithMetaForTest(
+		t,
+		home,
+		dbgsnapshot.Meta{Operator: "bob", Command: "reconcile", Ticket: "CHG-2", Context: "prod", TableCount: 2},
+		map[string]string{"users": "CREATE TABLE `users` (`id` BIGINT);"},
+	)
 
 	out, err := executeCommandForTest("-o", "json", "rollback", "list")
 	if err != nil {
@@ -1495,7 +1780,9 @@ func TestRollbackListOutputsSnapshotsAndAudits(t *testing.T) {
 	if !strings.Contains(out, `"kind": "RollbackSnapshotList"`) || !strings.Contains(out, `"command": "reconcile"`) || !strings.Contains(out, `"command": "apply"`) {
 		t.Fatalf("rollback list output = %s", out)
 	}
-	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeRollback || evt.Target.Object != "list" {
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeRollback ||
+		evt.Target.Object != "" ||
+		evt.Target.Fingerprint == "" {
 		t.Fatalf("rollback list audit event = %+v", evt)
 	}
 }
@@ -1541,14 +1828,18 @@ func TestRollbackToIncrementalRestoreHasR2FloorAndAuditsSnapshot(t *testing.T) {
 	if len(backend.Executed) != 0 {
 		t.Fatalf("executed denied rollback: %+v", backend.Executed)
 	}
-	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeRollback || evt.Status != dbgaudit.StatusDenied || evt.Target.Object != sourceID || evt.Risk != "R2" {
+	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeRollback ||
+		evt.Status != dbgaudit.StatusDenied ||
+		evt.Target.Object != "" ||
+		evt.Target.Fingerprint == "" ||
+		evt.Risk != "R2" {
 		t.Fatalf("denied rollback audit event = %+v", evt)
 	}
 
 	backend = fake.New()
 	restore = stubFakeBackend(t, backend)
 	defer restore()
-	_, err = executeCommandForTest("--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
+	out, err := executeCommandForTest("-o", "json", "--yes", "--ticket", "CHG-1", "rollback", "--to", sourceID, "--fake")
 	if err != nil {
 		t.Fatalf("authorized rollback error = %v", err)
 	}
@@ -1556,8 +1847,26 @@ func TestRollbackToIncrementalRestoreHasR2FloorAndAuditsSnapshot(t *testing.T) {
 		t.Fatalf("executed = %+v, want CREATE TABLE orders", backend.Executed)
 	}
 	evt := lastAuditEvent(t, home)
-	if evt.EventType != dbgaudit.EventTypeRollback || evt.Target.Object != sourceID || evt.SnapshotID == "" || evt.Risk != "R2" {
+	if evt.EventType != dbgaudit.EventTypeRollback ||
+		evt.Target.Object != "" ||
+		evt.Target.Fingerprint == "" ||
+		evt.SnapshotID != "" ||
+		evt.SnapshotFingerprint == "" ||
+		evt.Risk != "R2" {
 		t.Fatalf("rollback audit event = %+v", evt)
+	}
+	for _, want := range []string{
+		`"kind": "RollbackResult"`,
+		`"scope": "schema-structure"`,
+		`"plannedStatements": 1`,
+		`"appliedStatements": 1`,
+		`"dataRestored": false`,
+		`"planFingerprint": "sha256:`,
+		`"targetFingerprint": "sha256:`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rollback result missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -1680,7 +1989,11 @@ func TestRollbackToDryRunWarnsAndDoesNotCaptureOrExecute(t *testing.T) {
 	if len(backend.Executed) != 0 {
 		t.Fatalf("dry-run executed rollback: %+v", backend.Executed)
 	}
-	if !strings.Contains(out, "data in dropped tables/columns is NOT recovered") {
+	if !strings.Contains(out, `"kind": "SchemaPlan"`) ||
+		!strings.Contains(out, `"plannedStatements": 1`) ||
+		!strings.Contains(out, `"planFingerprint": "sha256:`) ||
+		!strings.Contains(out, `"targetFingerprint": "sha256:`) ||
+		!strings.Contains(out, "data in dropped tables/columns is NOT recovered") {
 		t.Fatalf("dry-run rollback output missing data-loss warning:\n%s", out)
 	}
 	metas, err := dbgsnapshot.List(snapshotDirForTest(home))
@@ -1692,6 +2005,86 @@ func TestRollbackToDryRunWarnsAndDoesNotCaptureOrExecute(t *testing.T) {
 	}
 	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeRollback || !evt.DryRun {
 		t.Fatalf("dry-run rollback audit event = %+v", evt)
+	}
+}
+
+func TestRollbackRejectsLegacyUnboundSnapshot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	sourceID := captureSnapshotWithMetaForTest(
+		t,
+		home,
+		dbgsnapshot.Meta{Operator: "legacy", Command: "apply", Context: "fake"},
+		map[string]string{"users": "CREATE TABLE users (id BIGINT);"},
+	)
+	backend := fake.New()
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, err := executeCommandForTest("rollback", "--to", sourceID, "--fake", "--dry-run")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeValidationFailed {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeValidationFailed, err)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed legacy unbound rollback: %+v", backend.Executed)
+	}
+}
+
+func TestRollbackRejectsCrossTargetSnapshots(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*dbgsnapshot.Target)
+	}{
+		{
+			name: "context",
+			mutate: func(target *dbgsnapshot.Target) {
+				target.Context = "other"
+			},
+		},
+		{
+			name: "host",
+			mutate: func(target *dbgsnapshot.Target) {
+				target.Host = "other-host"
+			},
+		},
+		{
+			name: "database",
+			mutate: func(target *dbgsnapshot.Target) {
+				target.Database = "other_database"
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			target := fakeSnapshotTarget()
+			tc.mutate(target)
+			sourceID := captureSnapshotWithMetaForTest(
+				t,
+				home,
+				dbgsnapshot.Meta{
+					Operator: "tester",
+					Command:  "apply",
+					Context:  target.Context,
+					Target:   target,
+				},
+				map[string]string{"users": "CREATE TABLE users (id BIGINT);"},
+			)
+			backend := fake.New()
+			restore := stubFakeBackend(t, backend)
+			defer restore()
+
+			_, err := executeCommandForTest("rollback", "--to", sourceID, "--fake", "--dry-run")
+			if got := apperrors.AsAppError(err).Code; got != apperrors.CodeConflict {
+				t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeConflict, err)
+			}
+			if len(backend.Executed) != 0 {
+				t.Fatalf("executed cross-target rollback: %+v", backend.Executed)
+			}
+		})
 	}
 }
 
@@ -1708,7 +2101,8 @@ func TestAuditQueryFiltersDbgovEventsAndPreservesFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	path := filepath.Join(home, "audit.jsonl")
+	secureMutationAuditTestParent(t, home)
+	path := filepath.Join(home, ".audit", "audit.jsonl")
 	now := time.Now().UTC()
 	appendAuditRecordForTest(t, path, dbgaudit.Event{
 		Timestamp:  now.Add(-2 * time.Hour),
@@ -1730,7 +2124,6 @@ func TestAuditQueryFiltersDbgovEventsAndPreservesFields(t *testing.T) {
 		Risk:      "R0",
 		Status:    dbgaudit.StatusSucceeded,
 	})
-	appendBadAuditLineForTest(t, path)
 
 	out, err := executeCommandForTest("-o", "json", "audit", "query",
 		"--path", path,
@@ -1745,7 +2138,7 @@ func TestAuditQueryFiltersDbgovEventsAndPreservesFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("audit query error = %v", err)
 	}
-	for _, want := range []string{`"kind": "AuditQueryResult"`, `"eventType": "data.exec"`, `"snapshotId": "snap-before"`, `"impactRows": 5000`, `"malformed": 1`} {
+	for _, want := range []string{`"kind": "AuditQueryResult"`, `"eventType": "data.exec"`, `"snapshotFingerprint": "sha256:`, `"impactRows": 5000`, `"malformed": 0`} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("audit query output missing %q:\n%s", want, out)
 		}
@@ -1762,7 +2155,8 @@ func TestAuditQueryReverseAndLimitAfterFiltering(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	path := filepath.Join(home, "audit.jsonl")
+	secureMutationAuditTestParent(t, home)
+	path := filepath.Join(home, ".audit", "audit.jsonl")
 	base := time.Now().UTC().Add(-3 * time.Hour)
 	for i, name := range []string{"first", "second", "third"} {
 		appendAuditRecordForTest(t, path, dbgaudit.Event{
@@ -1816,7 +2210,8 @@ func TestAuditVerifyReportsMalformedAndStrictFails(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	path := filepath.Join(home, "audit.jsonl")
+	secureMutationAuditTestParent(t, home)
+	path := filepath.Join(home, ".audit", "audit.jsonl")
 	appendAuditRecordForTest(t, path, dbgaudit.Event{
 		Timestamp: time.Now().UTC().Add(-time.Minute),
 		EventType: dbgaudit.EventTypeQuery,
@@ -1853,9 +2248,10 @@ func TestAuditPruneBeforeDryRunAndConfirm(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	path := filepath.Join(home, "audit.log")
-	active := writeTestFile(t, home, "audit.log", "active\n")
-	old := writeTestFile(t, home, "audit.log.20260101-000000.log", "old\n")
-	newer := writeTestFile(t, home, "audit.log.20260201-000000.log", "newer\n")
+	rotated := writeAuthenticatedAuditRotationsForTest(t, path, []string{"20260101-000000", "20260201-000000"})
+	active := path
+	old := rotated[0]
+	newer := rotated[1]
 
 	out, err := executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--before", "2026-01-15T00:00:00Z")
 	if err != nil {
@@ -1873,11 +2269,13 @@ func TestAuditPruneBeforeDryRunAndConfirm(t *testing.T) {
 		t.Fatalf("dry-run should not write prune audit event, stat err = %v", err)
 	}
 
-	out, err = executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--before", "2026-01-15", "--confirm")
+	out, err = executeCommandForTest("-o", "json", "--yes", "--ticket", "TEST-1", "--allow-audit-prune", "audit", "prune", "--path", path, "--before", "2026-01-15", "--confirm")
 	if err != nil {
 		t.Fatalf("audit prune confirm error = %v", err)
 	}
-	if !strings.Contains(out, `"dryRun": false`) || !strings.Contains(out, `"count": 1`) {
+	if !strings.Contains(out, `"dryRun": false`) ||
+		!strings.Contains(out, `"count": 1`) ||
+		!strings.Contains(out, `"checkpointState": "advanced"`) {
 		t.Fatalf("audit prune confirm output = %s", out)
 	}
 	if _, err := os.Stat(old); !os.IsNotExist(err) {
@@ -1888,7 +2286,13 @@ func TestAuditPruneBeforeDryRunAndConfirm(t *testing.T) {
 			t.Fatalf("confirm should keep %s: %v", filePath, err)
 		}
 	}
-	if evt := lastAuditEvent(t, home); evt.EventType != dbgaudit.EventTypeAuditPrune || evt.Target.ObjectType != "audit" || evt.Target.Object != "prune" || evt.Status != dbgaudit.StatusSucceeded || !strings.Contains(evt.Statement, "pruned 1 rotated audit logs") {
+	if evt := lastAuditEventAtPath(t, auditControlPath(path)); evt.EventType != dbgaudit.EventTypeAuditPrune ||
+		evt.Target.ObjectType != "audit" ||
+		evt.Target.Object != "" ||
+		evt.Target.Fingerprint == "" ||
+		evt.Status != dbgaudit.StatusSucceeded ||
+		evt.Statement != "" ||
+		evt.StatementFingerprint == "" {
 		t.Fatalf("audit prune event = %+v", evt)
 	}
 }
@@ -1898,12 +2302,17 @@ func TestAuditPruneKeepLastNeverDeletesActiveLog(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	path := filepath.Join(home, "audit.log")
-	active := writeTestFile(t, home, "audit.log", "active\n")
-	first := writeTestFile(t, home, "audit.log.20260101-000000.log", "first\n")
-	second := writeTestFile(t, home, "audit.log.20260201-000000.log", "second\n")
-	third := writeTestFile(t, home, "audit.log.20260301-000000.log", "third\n")
+	rotated := writeAuthenticatedAuditRotationsForTest(t, path, []string{
+		"20260101-000000",
+		"20260201-000000",
+		"20260301-000000",
+	})
+	active := path
+	first := rotated[0]
+	second := rotated[1]
+	third := rotated[2]
 
-	out, err := executeCommandForTest("-o", "json", "audit", "prune", "--path", path, "--keep-last", "1", "--confirm")
+	out, err := executeCommandForTest("-o", "json", "--yes", "--ticket", "TEST-1", "--allow-audit-prune", "audit", "prune", "--path", path, "--keep-last", "1", "--confirm")
 	if err != nil {
 		t.Fatalf("audit prune keep-last error = %v", err)
 	}
@@ -1951,7 +2360,7 @@ func TestInstallSkillsRequiresFlagAndCopiesSkill(t *testing.T) {
 		t.Fatal("expected install without --skills to fail")
 	}
 
-	out, err := executeCommandForTest("-o", "json", "install", "claude", "--skills")
+	out, err := executeCommandForTest("-o", "json", "--yes", "install", "claude", "--skills")
 	if err != nil {
 		t.Fatalf("install skills error = %v", err)
 	}
@@ -2031,10 +2440,11 @@ func TestBuildBackendUsesDBGOVPasswordForCurrentContext(t *testing.T) {
 	}
 	defer func() { newPostgresBackend = old }()
 
-	_, meta, err := buildBackend(&cliFlags{Config: configPath}, backendOptions{})
+	built, meta, err := buildBackend(&cliFlags{Config: configPath}, backendOptions{})
 	if err != nil {
 		t.Fatalf("buildBackend() error = %v", err)
 	}
+	defer func() { _ = built.Close() }()
 	if meta.Name != "prod" {
 		t.Fatalf("context name = %q, want prod", meta.Name)
 	}
@@ -2081,10 +2491,11 @@ func TestBuildBackendUsesDBGOVPasswordForContextOverride(t *testing.T) {
 	}
 	defer func() { newPostgresBackend = old }()
 
-	_, meta, err := buildBackend(&cliFlags{Config: configPath, Context: "prod"}, backendOptions{})
+	built, meta, err := buildBackend(&cliFlags{Config: configPath, Context: "prod"}, backendOptions{})
 	if err != nil {
 		t.Fatalf("buildBackend(--context prod) error = %v", err)
 	}
+	defer func() { _ = built.Close() }()
 	if meta.Name != "prod" {
 		t.Fatalf("context name = %q, want prod", meta.Name)
 	}
@@ -2127,7 +2538,7 @@ func TestCtxSetStoresPasswordInKeychainBackend(t *testing.T) {
 		return memoryCredentialBackend{values: store}
 	})
 
-	_, err := executeCommandForTest("--config", configPath, "ctx", "set", "prod", "--engine", "mysql", "--host", "127.0.0.1", "--username", "app", "--password", "secret", "--credential-backend", "keychain")
+	_, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "prod", "--engine", "mysql", "--host", "127.0.0.1", "--username", "app", "--password", "secret", "--credential-backend", "keychain")
 	if err != nil {
 		t.Fatalf("ctx set keychain error = %v", err)
 	}
@@ -2155,7 +2566,7 @@ func TestCtxSetFailsWhenCredentialBackendCannotStore(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	configPath := filepath.Join(home, "config.yaml")
-	_, err := executeCommandForTest("--config", configPath, "ctx", "set", "prod", "--engine", "mysql", "--host", "127.0.0.1", "--username", "app", "--password", "secret", "--credential-backend", "missing-backend")
+	_, err := executeCommandForTest("--config", configPath, "--yes", "--ticket", "TEST-1", "--allow-context-change", "ctx", "set", "prod", "--engine", "mysql", "--host", "127.0.0.1", "--username", "app", "--password", "secret", "--credential-backend", "missing-backend")
 	if err == nil {
 		t.Fatal("expected missing credential backend to fail during ctx set")
 	}
@@ -2252,14 +2663,22 @@ func (b *postgresFakeBackend) RenderDDL(changes []schema.Change) ([]string, erro
 
 func lastAuditEvent(t *testing.T, home string) dbgaudit.Event {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(home, ".dbgov", "audit.log"))
+	return lastAuditEventAtPath(t, filepath.Join(home, ".dbgov", "audit.log"))
+}
+
+func lastAuditEventAtPath(t *testing.T, path string) dbgaudit.Event {
+	t.Helper()
+	result, err := coreaudit.QueryRaw(path, coreaudit.Filter{})
 	if err != nil {
-		t.Fatalf("read audit log: %v", err)
+		t.Fatalf("query audit log: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(result.Records) == 0 {
+		t.Fatal("query audit log: no records")
+	}
 	var evt dbgaudit.Event
-	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &evt); err != nil {
-		t.Fatalf("unmarshal audit event: %v\n%s", err, lines[len(lines)-1])
+	line := result.Records[len(result.Records)-1].Line
+	if err := json.Unmarshal([]byte(line), &evt); err != nil {
+		t.Fatalf("unmarshal audit event: %v\n%s", err, line)
 	}
 	return evt
 }
@@ -2270,8 +2689,40 @@ func snapshotDirForTest(home string) string {
 
 func captureSnapshotForTest(t *testing.T, home string, tables map[string]string) string {
 	t.Helper()
-	id, err := dbgsnapshot.Capture(snapshotDirForTest(home), dbgsnapshot.Meta{Operator: "tester", Command: "apply", Context: "fake"}, tables)
+	return captureSnapshotWithMetaForTest(
+		t,
+		home,
+		dbgsnapshot.Meta{
+			Operator: "tester",
+			Command:  "apply",
+			Context:  "fake",
+			Target:   fakeSnapshotTarget(),
+		},
+		tables,
+	)
+}
+
+func fakeSnapshotTarget() *dbgsnapshot.Target {
+	return &dbgsnapshot.Target{
+		Context:  "fake",
+		Engine:   "mysql",
+		Host:     "fake",
+		Database: "fake",
+	}
+}
+
+func captureSnapshotWithMetaForTest(t *testing.T, home string, meta dbgsnapshot.Meta, tables map[string]string) string {
+	t.Helper()
+	secureMutationAuditTestParent(t, home)
+	baseDir := snapshotDirForTest(home)
+	id, data, err := dbgsnapshot.Prepare(meta, tables)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePrivateMutationDirectory(baseDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writePrivateEvidenceFile(baseDir, id+".json", data); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -2291,6 +2742,35 @@ func appendAuditRecordForTest(t *testing.T, path string, event dbgaudit.Event) {
 	if err := coreaudit.AppendRecord(path, event, coreaudit.Options{}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeAuthenticatedAuditRotationsForTest(t *testing.T, path string, stamps []string) []string {
+	t.Helper()
+	secureMutationAuditTestParent(t, filepath.Dir(path))
+	for index := 0; index <= len(stamps); index++ {
+		event := dbgaudit.New(
+			dbgaudit.EventTypeQuery,
+			"tester@host",
+			dbgaudit.Context{},
+			dbgaudit.Target{ObjectType: "audit"},
+		)
+		event.Timestamp = time.Unix(int64(index+1), 0).UTC()
+		if err := dbgaudit.Append(path, event, coreaudit.Options{MaxSizeBytes: 1}); err != nil {
+			t.Fatalf("Append(rotation %d) error = %v", index, err)
+		}
+	}
+	rotations, err := coreaudit.RotatedFiles(path)
+	if err != nil || len(rotations) != len(stamps) {
+		t.Fatalf("RotatedFiles() = %v, %v; want %d", rotations, err, len(stamps))
+	}
+	result := make([]string, len(stamps))
+	for index, stamp := range stamps {
+		result[index] = path + "." + stamp + ".log"
+		if err := os.Rename(rotations[index], result[index]); err != nil {
+			t.Fatalf("Rename(rotation %d) error = %v", index, err)
+		}
+	}
+	return result
 }
 
 func appendBadAuditLineForTest(t *testing.T, path string) {

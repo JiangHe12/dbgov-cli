@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/opskit-core/printer"
+	"github.com/JiangHe12/opskit-core/v2/printer"
 )
 
 var (
@@ -50,11 +50,9 @@ func newVersionCmd(f *cliFlags) *cobra.Command {
 				return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "VersionInfo", Data: info})
 			}
 			if f.Output == "plain" {
-				_, _ = fmt.Fprintln(p.Out, info.Version)
-				return nil
+				return p.Info(info.Version)
 			}
-			_, _ = fmt.Fprintf(p.Out, "dbgov-cli %s (commit: %s, built: %s)\n", info.Version, info.Commit, info.Built)
-			return nil
+			return p.Info(fmt.Sprintf("dbgov-cli %s (commit: %s, built: %s)", info.Version, info.Commit, info.Built))
 		},
 	}
 }
@@ -70,13 +68,15 @@ type CapTool struct {
 }
 
 type CapSupported struct {
-	ContextAPIVersions []string      `json:"contextApiVersions"`
-	AuditAPIVersions   []string      `json:"auditApiVersions"`
-	Engines            []CapEngine   `json:"engines"`
-	Schema             string        `json:"schema"`
-	RiskModel          []CapRisk     `json:"riskModel"`
-	AllowFlags         []string      `json:"allowFlags"`
-	Governance         CapGovernance `json:"governance"`
+	ContextAPIVersions       []string      `json:"contextApiVersions"`
+	AuditAPIVersions         []string      `json:"auditApiVersions"`
+	MutationAuditAPIVersions []string      `json:"mutationAuditApiVersions"`
+	ErrorCodes               []string      `json:"errorCodes"`
+	Engines                  []CapEngine   `json:"engines"`
+	Schema                   string        `json:"schema"`
+	RiskModel                []CapRisk     `json:"riskModel"`
+	AllowFlags               []string      `json:"allowFlags"`
+	Governance               CapGovernance `json:"governance"`
 }
 
 type CapEngine struct {
@@ -109,6 +109,12 @@ func capabilitiesData() CapabilitiesData {
 		Supported: CapSupported{
 			ContextAPIVersions: []string{"dbgov-cli.io/context/v1"},
 			AuditAPIVersions:   []string{"dbgov-cli.io/audit/v1"},
+			MutationAuditAPIVersions: []string{
+				mutationAuditAPIVersion,
+			},
+			ErrorCodes: []string{
+				string(codeAuditIncomplete),
+			},
 			Engines: []CapEngine{
 				{
 					Name:   "mysql",
@@ -143,9 +149,17 @@ func capabilitiesData() CapabilitiesData {
 				{Level: "R2", Authorization: "--yes plus --ticket"},
 				{Level: "R3", Authorization: "--yes plus --ticket plus operation-specific --allow-* flag"},
 			},
-			AllowFlags: []string{"--allow-destructive", "--allow-no-where", "--allow-production-prune"},
+			AllowFlags: []string{
+				"--allow-destructive",
+				"--allow-no-where",
+				"--allow-production-prune",
+				"--allow-context-change",
+				"--allow-context-delete",
+				"--allow-role-change",
+				"--allow-audit-prune",
+			},
 			Governance: CapGovernance{
-				Audit:  "append-only JSONL with optional age encryption",
+				Audit:  "sanitized append-only JSONL; mutations use durable intent/outcome records and outcome replay",
 				RBAC:   "opt-in roles reader/writer/admin",
 				DryRun: true,
 				OTel:   true,
@@ -186,20 +200,23 @@ func newCapabilitiesCmd(f *cliFlags) *cobra.Command {
 			}
 			if f.Output == "plain" {
 				for _, command := range capabilityPlainCommands() {
-					_, _ = fmt.Fprintln(p.Out, command)
+					if err := p.Info(command); err != nil {
+						return err
+					}
 				}
 				return nil
 			}
 			rows := [][]string{
 				{"contextApiVersions", strings.Join(data.Supported.ContextAPIVersions, ", ")},
 				{"auditApiVersions", strings.Join(data.Supported.AuditAPIVersions, ", ")},
+				{"mutationAuditApiVersions", strings.Join(data.Supported.MutationAuditAPIVersions, ", ")},
+				{"errorCodes", strings.Join(data.Supported.ErrorCodes, ", ")},
 				{"engines", "mysql available; postgres available"},
 				{"schema", data.Supported.Schema},
 				{"authorization", "R1/R2/R3 require --yes; R2/R3 require --ticket; R3 requires --allow-*"},
 				{"governance", "audit, RBAC, dry-run, OTel"},
 			}
-			p.Table([]string{"KEY", "VALUE"}, rows)
-			return nil
+			return p.Table([]string{"KEY", "VALUE"}, rows)
 		},
 	}
 }

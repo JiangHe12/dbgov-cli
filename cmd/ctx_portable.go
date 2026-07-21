@@ -1,17 +1,23 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/credstore"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/credstore"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
+	"github.com/JiangHe12/dbgov-cli/internal/safety"
 )
 
 const (
@@ -34,11 +40,18 @@ type ctxImportOptions struct {
 	file   string
 	force  bool
 	rename string
+	dryRun bool
 }
 
 type contextImportResult struct {
 	Name               string `json:"name"`
 	CredentialRedacted bool   `json:"credentialRedacted"`
+}
+
+type preparedContextImport struct {
+	document           contextExportDocument
+	name               string
+	credentialRedacted bool
 }
 
 func ctxExportCmd(f *cliFlags) *cobra.Command {
@@ -70,11 +83,12 @@ func ctxImportCmd(f *cliFlags) *cobra.Command {
 	cmd.Flags().StringVarP(&opts.file, "file", "f", "", "Portable context document to import")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "Overwrite an existing context")
 	cmd.Flags().StringVar(&opts.rename, "rename", "", "Import under a different context name")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "Preview the context import without authorization or writes")
 	return cmd
 }
 
 func runCtxExport(f *cliFlags, name string, opts ctxExportOptions) error {
-	cfg, err := dbgovctx.Load()
+	cfg, err := dbgovctx.LoadReadOnly()
 	if err != nil {
 		return err
 	}
@@ -110,19 +124,80 @@ func runCtxExport(f *cliFlags, name string, opts ctxExportOptions) error {
 }
 
 func runCtxImport(f *cliFlags, opts ctxImportOptions) error {
-	if f.NonInteractive && !f.Yes {
-		return apperrors.New(apperrors.CodeAuthorizationRequired, "ctx import requires --yes in non-interactive mode", nil)
+	prepared, err := prepareContextImport(opts)
+	if err != nil {
+		return err
 	}
+	cfg, err := dbgovctx.LoadReadOnly()
+	if err != nil {
+		return err
+	}
+	if _, exists := cfg.Contexts[prepared.name]; exists && !opts.force {
+		return apperrors.New(apperrors.CodeUsageError, fmt.Sprintf("context %q already exists; use --force to overwrite", prepared.name), nil)
+	}
+	policyName, policy, err := contextPreChangePolicy(cfg, prepared.name)
+	if err != nil {
+		return err
+	}
+	if opts.dryRun {
+		return printControlChangePreview(f, controlChangePreview{Action: "context.import", Context: prepared.name})
+	}
+	if err := authorizeContextControl(f, policyName, policy, safety.AllowContextChange, f.AllowContextChange); err != nil {
+		return err
+	}
+	event := dbgaudit.New(dbgaudit.EventTypeContextImport, currentOperator(f), dbgaudit.Context{
+		Name:      prepared.name,
+		Env:       prepared.document.Context.Env,
+		Protected: prepared.document.Context.Protected,
+	}, dbgaudit.Target{ObjectType: "context", Object: prepared.name})
+	event.Risk = "R3"
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeContextImport), prepared.document)
+	metadata.Items = 1
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeContextImport),
+		Event:    event,
+		Metadata: metadata,
+	})
+	if err != nil {
+		return err
+	}
+	attempted, err := applyContextImport(prepared, opts.force, policyName, policy)
+	if err != nil {
+		return finishMutationAuditProgress(handle, 1, 0, attempted, err)
+	}
+	if err := finishBatchMutationAudit(handle, 1, 1, nil); err != nil {
+		return err
+	}
+
+	result := contextImportResult{Name: prepared.name, CredentialRedacted: prepared.credentialRedacted}
+	p := newPrinter(f)
+	if f.Output == "json" {
+		return p.JSONData("ContextImportResult", result)
+	}
+	if err := p.Success(fmt.Sprintf("context %q imported", prepared.name)); err != nil {
+		return err
+	}
+	if prepared.credentialRedacted {
+		return p.Warn(fmt.Sprintf("credential is redacted; run: dbgov ctx set %s --password=...", prepared.name))
+	}
+	return nil
+}
+
+func prepareContextImport(opts ctxImportOptions) (preparedContextImport, error) {
 	if opts.file == "" {
-		return apperrors.New(apperrors.CodeUsageError, "-f/--file is required", nil)
+		return preparedContextImport{}, apperrors.New(apperrors.CodeUsageError, "-f/--file is required", nil)
 	}
 	doc, err := readContextExportDocument(opts.file)
 	if err != nil {
-		return err
+		return preparedContextImport{}, err
 	}
 	name, err := contextImportName(doc.Name, opts.rename)
 	if err != nil {
-		return err
+		return preparedContextImport{}, err
+	}
+	doc.Context.Engine = strings.ToLower(strings.TrimSpace(doc.Context.Engine))
+	if err := validateImportedContext(doc.Context); err != nil {
+		return preparedContextImport{}, err
 	}
 	credentialRedacted := doc.Context.Password == redactedCredential
 	if credentialRedacted {
@@ -130,32 +205,51 @@ func runCtxImport(f *cliFlags, opts ctxImportOptions) error {
 	} else if ref := credstore.ParseRef(doc.Context.Password); ref.IsRef {
 		doc.Context.CredentialBackend = ref.BackendName
 	}
-	cfg, err := dbgovctx.Load()
-	if err != nil {
-		return err
-	}
-	if _, exists := cfg.Contexts[name]; exists && !opts.force {
-		return apperrors.New(apperrors.CodeUsageError, fmt.Sprintf("context %q already exists; use --force to overwrite", name), nil)
-	}
-	if err := dbgovctx.SetContext(name, doc.Context); err != nil {
-		return err
-	}
-	emitAudit(f, dbgaudit.New(dbgaudit.EventTypeContextImport, currentOperator(f), dbgaudit.Context{
-		Name:      name,
-		Env:       doc.Context.Env,
-		Protected: doc.Context.Protected,
-	}, dbgaudit.Target{ObjectType: "context", Object: name}), nil)
+	return preparedContextImport{document: doc, name: name, credentialRedacted: credentialRedacted}, nil
+}
 
-	result := contextImportResult{Name: name, CredentialRedacted: credentialRedacted}
-	p := newPrinter(f)
-	if f.Output == "json" {
-		return p.JSONData("ContextImportResult", result)
+func validateImportedContext(ctx dbgovctx.Context) error {
+	if ctx.Engine != "mysql" && ctx.Engine != "postgres" {
+		return apperrors.New(apperrors.CodeUsageError, "imported context engine must be mysql or postgres", nil)
 	}
-	p.Success(fmt.Sprintf("context %q imported", name))
-	if credentialRedacted {
-		p.Warn(fmt.Sprintf("credential is redacted; run: dbgov ctx set %s --password=...", name))
+	if strings.TrimSpace(ctx.Host) == "" {
+		return apperrors.New(apperrors.CodeUsageError, "imported context host is required", nil)
+	}
+	if ctx.Port < 1 || ctx.Port > 65535 {
+		return apperrors.New(apperrors.CodeUsageError, "imported context port must be between 1 and 65535", nil)
+	}
+	if ctx.TicketPattern != "" {
+		if _, err := regexp.Compile(ctx.TicketPattern); err != nil {
+			return apperrors.New(apperrors.CodeUsageError, "imported context has invalid ticket pattern", err)
+		}
+	}
+	for operator, role := range ctx.Roles {
+		if strings.TrimSpace(operator) == "" || !validRole(role) {
+			return apperrors.New(apperrors.CodeUsageError, "imported context has invalid role assignment", nil)
+		}
 	}
 	return nil
+}
+
+func applyContextImport(
+	prepared preparedContextImport,
+	force bool,
+	policyName string,
+	policy dbgovctx.Context,
+) (int, error) {
+	attempted := 0
+	err := dbgovctx.Update(func(current *dbgovctx.Config) error {
+		if err := verifyContextPreChangePolicy(current, prepared.name, policyName, policy); err != nil {
+			return err
+		}
+		if _, exists := current.Contexts[prepared.name]; exists && !force {
+			return apperrors.New(apperrors.CodeUsageError, fmt.Sprintf("context %q already exists; use --force to overwrite", prepared.name), nil)
+		}
+		attempted = 1
+		current.Contexts[prepared.name] = prepared.document.Context
+		return nil
+	})
+	return attempted, err
 }
 
 func readContextExportDocument(path string) (contextExportDocument, error) {
@@ -164,7 +258,15 @@ func readContextExportDocument(path string) (contextExportDocument, error) {
 		return contextExportDocument{}, apperrors.New(apperrors.CodeLocalIOError, "failed to read context import file", err)
 	}
 	var doc contextExportDocument
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&doc); err != nil {
+		return contextExportDocument{}, apperrors.New(apperrors.CodeUsageError, "failed to parse context import file", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err == nil {
+		return contextExportDocument{}, apperrors.New(apperrors.CodeUsageError, "multiple YAML documents are not allowed", nil)
+	} else if !errors.Is(err, io.EOF) {
 		return contextExportDocument{}, apperrors.New(apperrors.CodeUsageError, "failed to parse context import file", err)
 	}
 	if doc.APIVersion != ctxExportAPIVersion && doc.APIVersion != legacyCtxExportAPIVersion {

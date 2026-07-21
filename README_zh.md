@@ -63,7 +63,7 @@ npm install -g dbgov-cli
 <summary>其它安装方式</summary>
 
 - **直接下载**——从 [Releases 页面](https://github.com/JiangHe12/dbgov-cli/releases)取二进制,用 cosign 签名的 `checksums.txt` 校验,放进 `PATH` 并重命名为 `dbgov`。
-- **从源码**——`go install github.com/JiangHe12/dbgov-cli@latest`(Go 1.22+)。
+- **从源码**——`go install github.com/JiangHe12/dbgov-cli@latest`(Go 1.25+)。
 
 ```bash
 dbgov version
@@ -79,8 +79,11 @@ dbgov doctor config -o json     # 静态 + 只读诊断
 ```bash
 # 1. 把 dbgov 指向你的数据库(保存为可复用的「上下文」;密码不写入 YAML)
 dbgov ctx set prod --engine mysql \
-  --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected
-dbgov ctx use prod
+  --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected --dry-run
+dbgov ctx set prod --engine mysql \
+  --host 127.0.0.1 --port 3306 --database app --username appuser --env prod --protected \
+  --ticket <human-ticket> --allow-context-change --yes
+dbgov ctx use prod --ticket <human-ticket> --allow-context-change --yes
 export DBGOV_PASSWORD='***'   # context 未保存凭据时,连接命令会读取它
 
 # 2. 读——只读 SQL 免费(R0)且拒绝写入
@@ -112,7 +115,7 @@ dbgov audit query --since 1h -o json
 | **R0** | 读取与查看(`query`、`explain`、`schema list/describe/dump/diff/plan`、`audit`、`doctor`) | 无——但仍会被审计 |
 | **R1** | 小范围安全写入(加列、带 `WHERE` 且预估影响小的 `data exec`) | `--yes`(或交互确认) |
 | **R2** | 升级写入(`EXPLAIN` 行数超阈值的 `data exec`;受保护上下文里的任何 R1) | `--yes` **加** 非空 `--ticket` |
-| **R3** | 破坏性操作(删/改列、无 `WHERE` 的 `UPDATE`/`DELETE`、prune、破坏性回滚) | 以上**再加**精确的 `--allow-*` 标志 |
+| **R3** | 破坏性操作和治理控制面变更(替换/删除上下文、迁移凭据、修改角色) | 以上**再加**精确的 `--allow-*` 标志 |
 
 **R3 allow 标志**——破坏从不隐式发生:
 
@@ -122,13 +125,19 @@ dbgov audit query --since 1h -o json
 | `data exec` 无 `WHERE` 的 `UPDATE`/`DELETE` | `--allow-no-where` |
 | `reconcile --prune` 删表 | `--allow-production-prune` |
 | `rollback --to` 涉及删列 / 删表 | `--allow-destructive` / `--allow-production-prune` |
+| `ctx set` / `ctx use` / `ctx import` / `ctx migrate-credentials` | `--allow-context-change` |
+| `ctx delete` | `--allow-context-delete` |
+| `ctx role set` / `ctx role unset` | `--allow-role-change` |
+| 确认执行的 `audit prune` | `--allow-audit-prune` |
 
-**RBAC**(上下文配置了角色时):`reader` → 最高 R0,`writer` → 最高 R2,`admin` → 最高 R3。
+**RBAC**(上下文配置了角色时):`reader` → 最高 R0,`writer` → 最高 R2,`admin` → 最高 R3。治理控制面写入始终按目标的**变更前策略**授权;新上下文使用持久化的 current context 策略,没有 current context 的首次引导也仍需 R3 授权。
+
+授权与审计身份始终来自可信本机 OS 身份 `username@hostname`;已弃用的全局 `--operator` 覆盖和 `DBGOV_OPERATOR` 都会被忽略。这能阻止命令参数或环境变量冒充其他角色,但无法区分同一 OS 账号下运行的人类进程与 AI 进程。在接入外部签名审批源或让自动化使用独立受保护 OS 账号之前,本地 RBAC 不能作为同账号人类与 AI 之间的安全边界。
 
 三条原则保证安全——尤其对自动化:
 
-1. **影响来自数据库,而非猜测。** 用 `explain` / `schema plan` / `--dry-run`;dbgov 宁可 fail-closed 也不估算。
-2. **变更先快照。** 回滚只恢复*结构*——被删的行数据永不恢复(dbgov 会大声警告)。
+1. **影响来自数据库,而非猜测。** 用 `explain` / `schema plan` / `--dry-run`;dbgov 宁可 fail-closed 也不估算。受治理的 `UPDATE` / `DELETE` 在真正改数据前，会在同一事务内重新校验精确的 EXPLAIN 指纹与预估行数。
+2. **变更先快照。** 新快照会绑定上下文与物理数据库目标；旧的未绑定快照仍可列出，但不能执行回滚。回滚只恢复*结构*——被删的行数据永不恢复(dbgov 会大声警告，并返回 `dataRestored: false`)。
 3. **🤖 AI 智能体绝不能伪造 `--ticket`、`--allow-*` 或高风险 `--yes`。** 它们是*人类*授权输入;智能体应上报「这步需要审批 X」然后停下。
 
 ---
@@ -144,6 +153,8 @@ dbgov audit query --since 1h -o json
 dbgov query   --sql "SELECT ..." -o json          # 只读;拒绝写入(R0)
 dbgov explain --sql "SELECT ..." -o json          # 执行计划 + 预估行数(R0)
 ```
+
+`query` 会拒绝可写 CTE、行锁子句、具有文件 / 会话 / 管理副作用的函数，以及 MySQL 用户变量赋值。通过检查的查询会在数据库只读事务中运行，读取完结果后显式回滚。JSON 会把 SQL `NULL` 保留为 `null`（与 `""` 空字符串不同），表格输出则显示为 `NULL`。自定义函数和视图无法仅靠词法分析证明无副作用，因此生产上下文仍必须使用数据库只读账号。
 </details>
 
 <details>
@@ -152,7 +163,8 @@ dbgov explain --sql "SELECT ..." -o json          # 执行计划 + 预估行数(
 ```bash
 dbgov schema list                       -o json   # R0
 dbgov schema describe <table>           -o json   # R0
-dbgov schema dump  --dir ./schema       -o json   # R0
+dbgov schema dump                         -o json   # R0（标准输出）
+dbgov schema dump  --dir ./schema --yes -o json   # R1（写本地文件）
 dbgov schema diff  -f desired.sql       -o json   # R0
 dbgov schema plan  -f desired.sql       -o json   # R0 —— plan 的风险/告警视为权威
 dbgov schema apply -f desired.sql --dry-run -o json
@@ -160,7 +172,7 @@ dbgov schema apply -f desired.sql --yes                                  -o json
 dbgov schema apply -f desired.sql --ticket DB-123 --allow-destructive --yes -o json # R3(破坏性)
 ```
 
-> 自增列在两种引擎上以归一化的布尔模型表示;create / diff / apply / snapshot / rollback 行为保留,但 PostgreSQL 的 `serial` 与 identity、`ALWAYS` 与 `BY DEFAULT`、序列 start/increment 选项**有意不保留**。
+> 自增列在两种引擎上以归一化的布尔模型表示;create / diff / apply / snapshot / rollback 行为保留,但 PostgreSQL 的 `serial` 与 identity、`ALWAYS` 与 `BY DEFAULT`、序列 start/increment 选项**有意不保留**。生成的 PostgreSQL 表 DDL 会显式限定到固定的 `public` schema，适用的 DDL 批次在单个事务中执行。
 </details>
 
 <details>
@@ -179,7 +191,7 @@ dbgov data exec -f change.sql --dry-run -o json                     # 从文件�
 <summary><b>表结构 GitOps</b> — export · import · reconcile · rollback</summary>
 
 ```bash
-dbgov export --dir ./schema -o json                               # 导出当前表结构到文件
+dbgov export --dir ./schema --yes -o json                         # R1；导出当前表结构到文件
 dbgov import ./schema --dry-run -o json
 dbgov import ./schema --yes -o json                               # R1 / 含破坏性则 R3
 dbgov reconcile ./schema --dry-run -o json                        # 检测漂移
@@ -189,6 +201,8 @@ dbgov rollback list -o json                                       # 列出变更
 dbgov rollback --to <snapshot-id> --dry-run -o json
 dbgov rollback --to <snapshot-id> --ticket DB-123 --yes -o json   # 仅结构;数据不恢复
 ```
+
+回滚 dry-run 返回带计划/目标指纹的 `SchemaPlan`；成功执行返回 `RollbackResult`，其中包含计划/已应用语句数、`scope: "schema-structure"` 与 `dataRestored: false`。
 </details>
 
 <details>
@@ -196,31 +210,42 @@ dbgov rollback --to <snapshot-id> --ticket DB-123 --yes -o json   # 仅结构;�
 
 ```bash
 # 上下文(MySQL 或 PostgreSQL)
-dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> [--protected]
-dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> --credential-backend keychain|encrypted-file --password <secret>
-dbgov ctx use|list|current|delete
+dbgov ctx set <name> --engine mysql|postgres --host <h> --port <p> --database <db> --username <u> [--protected] --dry-run
+dbgov ctx set <name> ... --ticket <human-ticket> --allow-context-change --yes
+dbgov ctx set <name> --credential-backend keychain|encrypted-file --password <secret> --ticket <human-ticket> --allow-context-change --yes
+dbgov ctx list|current
+dbgov ctx use <name> --dry-run
+dbgov ctx use <name> --ticket <human-ticket> --allow-context-change --yes
+dbgov ctx delete <name> --dry-run
+dbgov ctx delete <name> --ticket <human-ticket> --allow-context-delete --yes
 dbgov ctx export <name> [--include-credentials] -o json
-dbgov ctx import -f ctx.yaml [--rename <new>] [--force] -o json
-dbgov ctx migrate-credentials --to encrypted-file|keychain [--context <name>] -o json
+dbgov ctx import -f ctx.yaml [--rename <new>] [--force] --dry-run -o json
+dbgov ctx migrate-credentials --to encrypted-file|keychain [--context <name>] --dry-run -o json
 
 # RBAC(仅写路径):reader → R0,writer → R2,admin → R3
-dbgov ctx role set <context> --target-operator alice --role writer -o json
+dbgov ctx role set <context> --target-operator <os-user@hostname> --role writer --dry-run -o json
+dbgov ctx role set <context> --target-operator <os-user@hostname> --role writer --ticket <human-ticket> --allow-role-change --yes -o json
 dbgov ctx role list <context> -o json
 
 # 审计(防篡改;prune 只删轮转日志)
 dbgov audit query  [--since 24h] [--risk R2] [--limit 50] -o json
 dbgov audit verify -o json
-dbgov audit prune  (--before <30d|YYYY-MM-DD> | --keep-last <n>) [--confirm] -o json
+dbgov audit prune  (--before <30d|YYYY-MM-DD> | --keep-last <n>) -o json
+dbgov audit prune  (--before <30d|YYYY-MM-DD> | --keep-last <n>) --confirm --yes --ticket <人工工单> --allow-audit-prune -o json
 
 # 诊断与生态
 dbgov doctor config|network|auth -o json
 dbgov capabilities -o json
 dbgov completion bash|zsh|fish|powershell
-dbgov install <agent> --skills      # 安装 dbgov AI 技能(claude、codex …)
+dbgov install <agent> --skills --yes # R1；安装 dbgov AI 技能(claude、codex …)
 dbgov version
 ```
 
-> `audit prune` 只删**轮转**日志(绝不删活动 `audit.log`),默认 dry-run,必须加 `--confirm` 才真正删。CI 里设 `DBGOV_OPERATOR` 可让审计/RBAC 身份稳定。
+> `audit prune` 只删同目录下严格命名为 `<active>.YYYYMMDD-HHMMSS[.<正整数序号>].log` 的**轮转**日志(绝不删活动 `audit.log`),并默认 dry-run。确认执行的 prune 是固定 R3 的证据销毁操作,必须同时提供 `--confirm`、`--yes`、非空 `--ticket` 和精确的 `--allow-audit-prune`。授权使用持久化 current context 策略(没有 current 时为空策略),`--context` 不能替换该策略。dry-run 在授权前返回且不删除文件。确认 prune 会在上下文配置锁内重新加载策略，并将该锁一直持有到 intent、删除和 outcome 完成；控制 intent/outcome 写入 sibling `.<audit-base>-control`，绝不进入目标证据命名空间。随后 audit core v2 在审计路径锁内绑定完整的预览轮转集合，验证认证链和稳定文件身份，推进 checkpoint，并耐久删除选中的最老前缀。策略、候选、身份或证据发生变化时都会 fail-closed；成功的 JSON 输出会报告最终 `checkpointState`。CI 身份来自其 OS 用户与主机名;`DBGOV_OPERATOR` 不能覆盖身份。
+
+每个真实变更都会在校验与授权完成后、首个目标副作用前写入 `dbgov-cli.io/mutation-audit/v1` intent，执行后再写入具有相同 `mutationId` 的 outcome。intent 写入失败会阻断变更。dbgov 以 audit core v2 返回的耐久提交状态为准：只有已确认未提交的 outcome 才会进入审计日志相邻、仅所有者可访问的 `<audit.log>.outcome-spool`；已确认提交或提交状态不确定的 outcome 都不会入队，因为记录可能已经存在。若重放本身变为状态不确定，该条目会被原子重命名并追加 `.indeterminate`，后续重放在人工核对审计记录前一律失败关闭。可重试队列会在下一条 intent 前按序重放，消费方应按 `(mutationId, phase)` 去重；批量结果只记录有界的成功/失败/跳过计数。
+
+持久化审计与遥测不会保存原始 ticket、reason、SQL、审计目标中的数据库名/对象值、后端错误文本、body 或命令输出。审计仅保存域隔离的 SHA-256 指纹与字节长度或有界计数；`audit query` 返回历史记录前也会执行相同清洗。
 
 非交互运行优先使用 `DBGOV_PASSWORD`;当命令建立数据库连接且所选 context 没有保存凭据时会读取它。若要通过 `ctx set` 持久保存密码,`--password` 必须配 `--credential-backend keychain` 或 `--credential-backend encrypted-file`;plain-yaml 的 `ctx set --password` 会被拒绝。legacy/import 进来的 inline 凭据仍可读取,用于迁移与导出兼容。
 </details>
@@ -235,7 +260,7 @@ dbgov version
 - **绝不自我填入 `--ticket`、`--allow-*` 或高风险 `--yes`。** 把所需的人类审批上报,然后停下。
 
 ```bash
-dbgov install claude --skills     # 也支持:codex、opencode、copilot、cursor、windsurf、aider、cc-switch
+dbgov install claude --skills --yes # 也支持:codex、opencode、copilot、cursor、windsurf、aider、cc-switch
 ```
 
 ---
@@ -257,6 +282,8 @@ go build ./...
 go test -count=1 ./...
 gofmt -l main.go cmd internal      # 必须无输出
 golangci-lint run --timeout=5m
+go vet -tags=integration ./...
+npm pack --dry-run
 ```
 
 MySQL / PostgreSQL 集成测试通过 `DBGOV_TEST_MYSQL_DSN` 与 `DBGOV_TEST_POSTGRES_DSN` 选择性开启。详见 [CONTRIBUTING.md](CONTRIBUTING.md) 与安全策略 [SECURITY.md](SECURITY.md)。

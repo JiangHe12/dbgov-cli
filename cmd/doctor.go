@@ -3,7 +3,7 @@ package cmd
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/opskit-core/printer"
+	"github.com/JiangHe12/opskit-core/v2/printer"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 )
@@ -40,12 +40,13 @@ func newDoctorCmd(f *cliFlags) *cobra.Command {
 	return cmd
 }
 
-func runDoctor(f *cliFlags, opts doctorOptions, target string) error {
+func runDoctor(f *cliFlags, opts doctorOptions, target string) (resultErr error) {
 	if err := authorizeRead(f); err != nil {
 		return err
 	}
 	report := DoctorReport{}
 	backend, meta, err := buildBackend(f, backendOptions(opts))
+	defer finishBackendClose(backend, &resultErr, backendCloseRead)
 	if target == "config" {
 		report.Checks = append(report.Checks, checkFromError("config", err))
 		emitDoctorAudit(f, meta, err)
@@ -91,12 +92,13 @@ func printDoctorReport(f *cliFlags, meta contextMeta, includeTarget bool, report
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "DoctorReport", Data: report})
 	}
 	if includeTarget && meta.Name != "" {
-		printTargetHeader(p, meta, targetRead)
+		if err := printTargetHeader(p, meta, targetRead); err != nil {
+			return err
+		}
 	}
 	rows := make([][]string, 0, len(report.Checks))
 	for _, check := range report.Checks {
 		rows = append(rows, []string{check.Name, check.Status, check.Message})
 	}
-	p.Table([]string{"CHECK", "STATUS", "MESSAGE"}, rows)
-	return nil
+	return p.Table([]string{"CHECK", "STATUS", "MESSAGE"}, rows)
 }

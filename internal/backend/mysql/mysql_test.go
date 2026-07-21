@@ -8,8 +8,9 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 
+	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 )
 
@@ -409,8 +410,10 @@ func TestQueryReturnsColumnsAndStringRows(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "appdb")
+	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, name FROM users")).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "alice"))
+	mock.ExpectRollback()
 
 	result, err := backend.Query(context.Background(), "SELECT id, name FROM users")
 	if err != nil {
@@ -424,6 +427,55 @@ func TestQueryReturnsColumnsAndStringRows(t *testing.T) {
 	}
 }
 
+func TestQueryDistinguishesSQLNullFromEmptyString(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT nullable_value, empty_value FROM sample")).
+		WillReturnRows(sqlmock.NewRows([]string{"nullable_value", "empty_value"}).AddRow(nil, ""))
+	mock.ExpectRollback()
+
+	result, err := backend.Query(context.Background(), "SELECT nullable_value, empty_value FROM sample")
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if len(result.Nulls) != 1 || len(result.Nulls[0]) != 2 || !result.Nulls[0][0] || result.Nulls[0][1] {
+		t.Fatalf("Query() null map = %#v", result.Nulls)
+	}
+	if result.Rows[0][0] != "" || result.Rows[0][1] != "" {
+		t.Fatalf("Query() rows = %#v", result.Rows)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestQueryReturnsRollbackError(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM users")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	mock.ExpectRollback().WillReturnError(errors.New("rollback failed"))
+
+	if _, err := backend.Query(context.Background(), "SELECT id FROM users"); err == nil {
+		t.Fatal("Query() error = nil, want rollback failure")
+	} else {
+		assertBackendErrorExit(t, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestQueryErrorIsBackendError(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -431,7 +483,9 @@ func TestQueryErrorIsBackendError(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "appdb")
+	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM missing")).WillReturnError(errors.New("table missing"))
+	mock.ExpectRollback()
 
 	_, err = backend.Query(context.Background(), "SELECT * FROM missing")
 	assertBackendErrorExit(t, err)
@@ -447,15 +501,20 @@ func TestExplainEstimatesRows(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "appdb")
+	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN SELECT * FROM users")).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "select_type", "table", "rows"}).
 			AddRow(1, "SIMPLE", "users", 42))
+	mock.ExpectRollback()
 
 	result, err := backend.Explain(context.Background(), "SELECT * FROM users")
 	if err != nil {
 		t.Fatalf("Explain() error = %v", err)
 	}
-	if result.EstimatedRows != 42 || result.Columns[3] != "rows" || result.Rows[0][2] != "users" {
+	if result.EstimatedRows != 42 ||
+		result.PlanFingerprint == "" ||
+		result.Columns[3] != "rows" ||
+		result.Rows[0][2] != "users" {
 		t.Fatalf("Explain() = %+v", result)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -463,17 +522,203 @@ func TestExplainEstimatesRows(t *testing.T) {
 	}
 }
 
-func TestExplainErrorIsBackendError(t *testing.T) {
+func TestExplainRejectsMultiNodeRowsEstimate(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "appdb")
-	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN SELECT * FROM missing")).WillReturnError(errors.New("table missing"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN SELECT * FROM users JOIN orgs ON orgs.id=users.org_id")).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "select_type", "table", "rows"}).
+			AddRow(1, "SIMPLE", "users", 400).
+			AddRow(1, "SIMPLE", "orgs", 400))
+	mock.ExpectRollback()
 
-	_, err = backend.Explain(context.Background(), "SELECT * FROM missing")
+	_, err = backend.Explain(context.Background(), "SELECT * FROM users JOIN orgs ON orgs.id=users.org_id")
 	assertBackendErrorExit(t, err)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestExplainErrorsAreBackendErrors(t *testing.T) {
+	const explainSQL = "EXPLAIN SELECT * FROM missing"
+	tests := []struct {
+		name  string
+		setup func(sqlmock.Sqlmock)
+	}{
+		{
+			name: "begin",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin().WillReturnError(errors.New("begin failed"))
+			},
+		},
+		{
+			name: "query",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).WillReturnError(errors.New("table missing"))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "scan",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).
+					WillReturnRows(sqlmock.NewRows([]string{"rows"}).
+						AddRow(1).
+						RowError(0, errors.New("scan failed")))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "close",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).
+					WillReturnRows(sqlmock.NewRows([]string{"rows"}).
+						CloseError(errors.New("close failed")))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "invalid estimate",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).
+					WillReturnRows(sqlmock.NewRows([]string{"rows"}).AddRow("unknown"))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "rollback",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).
+					WillReturnRows(sqlmock.NewRows([]string{"rows"}).AddRow(1))
+				mock.ExpectRollback().WillReturnError(errors.New("rollback failed"))
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			backend := NewWithDB(db, "appdb")
+			tc.setup(mock)
+
+			_, err = backend.Explain(context.Background(), "SELECT * FROM missing")
+			assertBackendErrorExit(t, err)
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("sql expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestExecDMLBoundRevalidatesAndExecutesInOneTransaction(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	sqlText := "UPDATE users SET name='x' WHERE id=1"
+	explain := dbbackend.QueryResult{
+		Columns: []string{"id", "select_type", "table", "rows"},
+		Rows:    [][]string{{"1", "SIMPLE", "users", "42"}},
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN " + sqlText)).
+		WillReturnRows(sqlmock.NewRows(explain.Columns).AddRow(1, "SIMPLE", "users", 42))
+	mock.ExpectExec(regexp.QuoteMeta(sqlText)).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectCommit()
+
+	affected, err := backend.ExecDMLBound(context.Background(), sqlText, dbbackend.DMLPlanBinding{
+		PlanFingerprint: dbbackend.PlanFingerprint(explain),
+		EstimatedRows:   42,
+	})
+	if err != nil {
+		t.Fatalf("ExecDMLBound() error = %v", err)
+	}
+	if affected != 3 {
+		t.Fatalf("affected = %d, want 3", affected)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestExecDMLBoundReportsIndeterminateCommit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	sqlText := "UPDATE users SET name='x' WHERE id=1"
+	explain := dbbackend.QueryResult{
+		Columns: []string{"id", "select_type", "table", "rows"},
+		Rows:    [][]string{{"1", "SIMPLE", "users", "42"}},
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN " + sqlText)).
+		WillReturnRows(sqlmock.NewRows(explain.Columns).AddRow(1, "SIMPLE", "users", 42))
+	mock.ExpectExec(regexp.QuoteMeta(sqlText)).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectCommit().WillReturnError(errors.New("commit result lost"))
+
+	affected, err := backend.ExecDMLBound(context.Background(), sqlText, dbbackend.DMLPlanBinding{
+		PlanFingerprint: dbbackend.PlanFingerprint(explain),
+		EstimatedRows:   42,
+	})
+	if affected != 3 {
+		t.Fatalf("affected = %d, want observed value 3", affected)
+	}
+	if !dbbackend.IsCommitIndeterminate(err) {
+		t.Fatalf("error = %v, want indeterminate commit", err)
+	}
+	appErr := apperrors.AsAppError(err)
+	if appErr.Code != apperrors.CodePartialFailure || appErr.Retryable || apperrors.ExitCode(err) != 11 {
+		t.Fatalf("commit error = %+v, want non-retryable PARTIAL_FAILURE exit 11", appErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestExecDMLBoundRejectsChangedPlanBeforeExecution(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	sqlText := "UPDATE users SET name='x' WHERE id=1"
+	preview := dbbackend.QueryResult{
+		Columns: []string{"id", "select_type", "table", "rows"},
+		Rows:    [][]string{{"1", "SIMPLE", "users", "42"}},
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN " + sqlText)).
+		WillReturnRows(sqlmock.NewRows(preview.Columns).AddRow(1, "SIMPLE", "users", 5000))
+	mock.ExpectRollback()
+
+	affected, err := backend.ExecDMLBound(context.Background(), sqlText, dbbackend.DMLPlanBinding{
+		PlanFingerprint: dbbackend.PlanFingerprint(preview),
+		EstimatedRows:   42,
+	})
+	if affected != 0 {
+		t.Fatalf("affected = %d, want 0", affected)
+	}
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeConflict {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeConflict, err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
 	}

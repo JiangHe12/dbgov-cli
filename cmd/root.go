@@ -12,31 +12,57 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/printer"
-	"github.com/JiangHe12/opskit-core/telemetry"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/printer"
+	"github.com/JiangHe12/opskit-core/v2/telemetry"
 
+	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 )
 
 var auditWarningMu sync.Mutex
 
 type cliFlags struct {
-	Output         string
-	Debug          bool
-	Trace          bool
-	NoColor        bool
-	Config         string
-	Context        string
-	Operator       string
-	Ticket         string
-	Yes            bool
-	NonInteractive bool
-	Out            io.Writer
-	Err            io.Writer
-	commandContext context.Context
+	Output             string
+	Debug              bool
+	Trace              bool
+	NoColor            bool
+	Config             string
+	Context            string
+	Operator           string
+	Ticket             string
+	Yes                bool
+	NonInteractive     bool
+	AllowContextChange bool
+	AllowContextDelete bool
+	AllowRoleChange    bool
+	AllowAuditPrune    bool
+	Out                io.Writer
+	Err                io.Writer
+	commandContext     context.Context
+	trustedOperator    string
+	mutationAudit      *mutationAuditRuntime
+	mutationAuditPath  string
+	manageTelemetry    bool
+	commandName        string
+	commandStarted     time.Time
+	activeSpan         trace.Span
+	telemetryStop      telemetry.ShutdownFunc
+	metricsStop        telemetry.ShutdownFunc
+	metricAttrs        []attribute.KeyValue
 }
+
+var (
+	currentOSUser = user.Current
+	currentHost   = os.Hostname
+	initTelemetry = telemetry.Init
+	initMetrics   = telemetry.InitMetrics
+	recordCommand = telemetry.RecordCommand
+)
 
 func NewRootCmd() *cobra.Command {
 	return newRootCmdWith(&cliFlags{Output: "table"})
@@ -51,27 +77,38 @@ func newRootCmdWith(f *cliFlags) *cobra.Command {
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			applyGlobalFlags(f)
-			f.commandContext = cmd.Context()
+			operator, err := resolveTrustedOperator()
+			if err != nil {
+				return err
+			}
+			f.trustedOperator = operator
 			f.Out = cmd.OutOrStdout()
 			f.Err = cmd.ErrOrStderr()
 			if f.Config != "" {
 				dbgovctx.SetConfigPath(f.Config)
 			}
-			_, span := telemetry.Tracer().Start(cmd.Context(), strings.ReplaceAll(cmd.CommandPath(), " ", "."))
-			ctxMeta, _ := selectedContext(f)
-			contextName := ""
+			ctxMeta, contextName := selectedContext(f)
 			env := ""
 			protected := false
 			if ctxMeta != nil {
 				env = ctxMeta.Env
 				protected = ctxMeta.Protected
 			}
-			if f.Context != "" {
-				contextName = f.Context
-			}
-			span.SetAttributes(telemetry.SpanAttributes(currentOperator(f), contextName, env, "", f.Ticket, protected, true, "")...)
-			defer span.End()
+			ticketFingerprint, _ := dbgaudit.Fingerprint("ticket", f.Ticket)
 			f.commandContext = cmd.Context()
+			if !f.manageTelemetry {
+				return nil
+			}
+			traceEndpoint, metricsEndpoint, insecure := resolveTelemetryConfig(ctxMeta)
+			f.telemetryStop = initTelemetry(cmd.Context(), traceEndpoint, insecure, version)
+			f.metricsStop = initMetrics(cmd.Context(), metricsEndpoint, insecure, version)
+			f.commandName = strings.ReplaceAll(cmd.CommandPath(), " ", ".")
+			f.commandStarted = time.Now()
+			spanContext, span := telemetry.Tracer().Start(cmd.Context(), f.commandName)
+			f.metricAttrs = telemetry.SpanAttributes(currentOperator(f), contextName, env, "", ticketFingerprint, protected, true, "")
+			span.SetAttributes(f.metricAttrs...)
+			f.activeSpan = span
+			f.commandContext = spanContext
 			return nil
 		},
 		PersistentPostRun: func(cmd *cobra.Command, _ []string) {
@@ -84,12 +121,84 @@ func newRootCmdWith(f *cliFlags) *cobra.Command {
 	root.PersistentFlags().BoolVar(&f.NoColor, "no-color", false, "Disable colored output")
 	root.PersistentFlags().StringVar(&f.Config, "config", "", "Temporarily override config file path")
 	root.PersistentFlags().StringVar(&f.Context, "context", "", "Temporarily override current context")
-	root.PersistentFlags().StringVar(&f.Operator, "operator", "", "Operator identity")
+	root.PersistentFlags().StringVar(&f.Operator, "operator", "", "Deprecated operator override (ignored)")
 	root.PersistentFlags().StringVar(&f.Ticket, "ticket", "", "Change ticket number")
 	root.PersistentFlags().BoolVar(&f.Yes, "yes", false, "Confirm authorized operation")
 	root.PersistentFlags().BoolVar(&f.NonInteractive, "non-interactive", false, "Disable interactive confirmation")
+	root.PersistentFlags().BoolVar(&f.AllowContextChange, "allow-context-change", false, "Allow an R3 context replacement or credential migration")
+	root.PersistentFlags().BoolVar(&f.AllowContextDelete, "allow-context-delete", false, "Allow an R3 context deletion")
+	root.PersistentFlags().BoolVar(&f.AllowRoleChange, "allow-role-change", false, "Allow an R3 context role change")
+	root.PersistentFlags().BoolVar(&f.AllowAuditPrune, "allow-audit-prune", false, "Allow an R3 audit evidence pruning operation")
+	_ = root.PersistentFlags().MarkDeprecated("operator", "operator identity is derived from the local OS user and hostname")
 	root.AddCommand(newContextCmd(f), newSchemaCmd(f), newDataCmd(f), newExportCmd(f), newImportCmd(f), newReconcileCmd(f), newRollbackCmd(f), newAuditCmd(f), newInstallCmd(f), newVersionCmd(f), newCapabilitiesCmd(f), newDoctorCmd(f), newQueryCmd(f), newExplainCmd(f))
 	return root
+}
+
+// ExecuteContext runs the production command lifecycle, including bounded
+// telemetry flush. Tests and embedding callers can continue to use NewRootCmd.
+func ExecuteContext(ctx context.Context) error {
+	f := &cliFlags{Output: "table", manageTelemetry: true}
+	err := newRootCmdWith(f).ExecuteContext(ctx)
+	finishTelemetry(ctx, f, err)
+	return err
+}
+
+func finishTelemetry(ctx context.Context, f *cliFlags, commandErr error) {
+	if f == nil || !f.manageTelemetry {
+		return
+	}
+	if f.activeSpan != nil {
+		if commandErr != nil {
+			code := string(apperrors.AsAppError(commandErr).Code)
+			f.activeSpan.SetAttributes(attribute.String("dbgov.error_code", code))
+			f.activeSpan.SetStatus(codes.Error, code)
+		} else {
+			f.activeSpan.SetStatus(codes.Ok, "")
+		}
+		f.activeSpan.End()
+	}
+	if !f.commandStarted.IsZero() {
+		status := "success"
+		if commandErr != nil {
+			status = "error"
+		}
+		recordCommand(ctx, f.commandName, status, time.Since(f.commandStarted), f.metricAttrs)
+	}
+	if f.telemetryStop == nil && f.metricsStop == nil {
+		return
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if f.telemetryStop != nil {
+		f.telemetryStop(shutdownCtx)
+	}
+	if f.metricsStop != nil {
+		f.metricsStop(shutdownCtx)
+	}
+}
+
+func resolveTelemetryConfig(ctxMeta *dbgovctx.Context) (traceEndpoint, metricsEndpoint string, insecure bool) {
+	if ctxMeta != nil {
+		traceEndpoint = ctxMeta.OTLPEndpoint
+		metricsEndpoint = ctxMeta.OTLPMetricsEndpoint
+		insecure = ctxMeta.OTLPInsecure
+	}
+	if traceEndpoint == "" {
+		traceEndpoint = firstNonEmpty(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"), os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	}
+	if metricsEndpoint == "" {
+		metricsEndpoint = firstNonEmpty(os.Getenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"), os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	}
+	return traceEndpoint, metricsEndpoint, insecure
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func applyGlobalFlags(f *cliFlags) {
@@ -125,7 +234,7 @@ func warnAuditFailure(f *cliFlags, err error) {
 }
 
 func selectedContext(f *cliFlags) (*dbgovctx.Context, string) {
-	cfg, err := dbgovctx.Load()
+	cfg, err := dbgovctx.LoadReadOnly()
 	if err != nil {
 		return nil, ""
 	}
@@ -144,17 +253,33 @@ func selectedContext(f *cliFlags) (*dbgovctx.Context, string) {
 }
 
 func currentOperator(f *cliFlags) string {
-	if f.Operator != "" {
-		return f.Operator
+	if f == nil {
+		return ""
 	}
-	if env := os.Getenv("DBGOV_OPERATOR"); env != "" {
-		return env
+	return f.trustedOperator
+}
+
+func resolveTrustedOperator() (string, error) {
+	u, err := currentOSUser()
+	if err != nil {
+		return "", apperrors.New(apperrors.CodeAuthFailed, "failed to resolve trusted local OS user", err)
 	}
-	u, err := user.Current()
-	if err == nil && u.Username != "" {
-		return u.Username
+	if u == nil {
+		return "", apperrors.New(apperrors.CodeAuthFailed, "trusted local OS user is unavailable", nil)
 	}
-	return "unknown"
+	username := strings.TrimSpace(u.Username)
+	if username == "" {
+		return "", apperrors.New(apperrors.CodeAuthFailed, "trusted local OS user is empty", nil)
+	}
+	hostname, err := currentHost()
+	if err != nil {
+		return "", apperrors.New(apperrors.CodeAuthFailed, "failed to resolve trusted local hostname", err)
+	}
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	if hostname == "" {
+		return "", apperrors.New(apperrors.CodeAuthFailed, "trusted local hostname is empty", nil)
+	}
+	return username + "@" + hostname, nil
 }
 
 func commandContext(f *cliFlags) context.Context {

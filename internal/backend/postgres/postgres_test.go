@@ -8,8 +8,9 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 
+	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
 )
 
@@ -22,6 +23,28 @@ func TestPlanRowsFromExplainJSON(t *testing.T) {
 	}
 	if got != 42 {
 		t.Fatalf("planRowsFromExplainJSON() = %d, want 42", got)
+	}
+}
+
+func TestPlanRowsFromExplainJSONUsesModifyTableInputRows(t *testing.T) {
+	t.Parallel()
+
+	const plan = `[{"Plan":{"Node Type":"ModifyTable","Operation":"Update","Plan Rows":0,"Plans":[{"Node Type":"Seq Scan","Parent Relationship":"Outer","Plan Rows":5000}]}}]`
+	got, err := planRowsFromExplainJSON(plan)
+	if err != nil {
+		t.Fatalf("planRowsFromExplainJSON() error = %v", err)
+	}
+	if got != 5000 {
+		t.Fatalf("planRowsFromExplainJSON() = %d, want 5000", got)
+	}
+}
+
+func TestPlanRowsFromExplainJSONRejectsModifyTableWithoutInput(t *testing.T) {
+	t.Parallel()
+
+	_, err := planRowsFromExplainJSON(`[{"Plan":{"Node Type":"ModifyTable","Operation":"Delete","Plan Rows":0}}]`)
+	if err == nil {
+		t.Fatal("planRowsFromExplainJSON() error = nil, want fail-closed error")
 	}
 }
 
@@ -142,7 +165,9 @@ func TestPostgresQueryErrorIsBackendError(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "app")
+	mock.ExpectBegin()
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT * FROM missing")).WillReturnError(errors.New("table missing"))
+	mock.ExpectRollback()
 
 	_, err = backend.Query(context.Background(), "SELECT * FROM missing")
 	assertBackendErrorExit(t, err)
@@ -151,7 +176,7 @@ func TestPostgresQueryErrorIsBackendError(t *testing.T) {
 	}
 }
 
-func TestPostgresExplainErrorIsBackendError(t *testing.T) {
+func TestPostgresQueryRollsBackSuccessfulRead(t *testing.T) {
 	t.Parallel()
 
 	db, mock, err := sqlmock.New()
@@ -160,10 +185,295 @@ func TestPostgresExplainErrorIsBackendError(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "app")
-	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN (FORMAT JSON) SELECT * FROM missing")).WillReturnError(errors.New("table missing"))
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id, name FROM users")).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "name"}).AddRow(1, "alice"))
+	mock.ExpectRollback()
 
-	_, err = backend.Explain(context.Background(), "SELECT * FROM missing")
-	assertBackendErrorExit(t, err)
+	result, err := backend.Query(context.Background(), "SELECT id, name FROM users")
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if result.Columns[0] != "id" || result.Rows[0][0] != "1" || result.Rows[0][1] != "alice" {
+		t.Fatalf("Query() = %+v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresQueryDistinguishesSQLNullFromEmptyString(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT nullable_value, empty_value FROM sample")).
+		WillReturnRows(sqlmock.NewRows([]string{"nullable_value", "empty_value"}).AddRow(nil, ""))
+	mock.ExpectRollback()
+
+	result, err := backend.Query(context.Background(), "SELECT nullable_value, empty_value FROM sample")
+	if err != nil {
+		t.Fatalf("Query() error = %v", err)
+	}
+	if len(result.Nulls) != 1 || len(result.Nulls[0]) != 2 || !result.Nulls[0][0] || result.Nulls[0][1] {
+		t.Fatalf("Query() null map = %#v", result.Nulls)
+	}
+	if result.Rows[0][0] != "" || result.Rows[0][1] != "" {
+		t.Fatalf("Query() rows = %#v", result.Rows)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresQueryReturnsRollbackError(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT id FROM users")).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(1))
+	mock.ExpectRollback().WillReturnError(errors.New("rollback failed"))
+
+	if _, err := backend.Query(context.Background(), "SELECT id FROM users"); err == nil {
+		t.Fatal("Query() error = nil, want rollback failure")
+	} else {
+		assertBackendErrorExit(t, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresExplainRollsBackSuccessfulRead(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN (FORMAT JSON) SELECT * FROM users")).
+		WillReturnRows(sqlmock.NewRows([]string{"QUERY PLAN"}).
+			AddRow(`[{"Plan":{"Plan Rows":42}}]`))
+	mock.ExpectRollback()
+
+	result, err := backend.Explain(context.Background(), "SELECT * FROM users")
+	if err != nil {
+		t.Fatalf("Explain() error = %v", err)
+	}
+	if result.EstimatedRows != 42 || result.PlanFingerprint == "" || result.Columns[0] != "QUERY PLAN" {
+		t.Fatalf("Explain() = %+v", result)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresExplainErrorsAreBackendErrors(t *testing.T) {
+	t.Parallel()
+
+	const explainSQL = "EXPLAIN (FORMAT JSON) SELECT * FROM missing"
+	tests := []struct {
+		name  string
+		setup func(sqlmock.Sqlmock)
+	}{
+		{
+			name: "begin",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin().WillReturnError(errors.New("begin failed"))
+			},
+		},
+		{
+			name: "query",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).WillReturnError(errors.New("table missing"))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "scan",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).
+					WillReturnRows(sqlmock.NewRows([]string{"QUERY PLAN"}).
+						AddRow(`[{"Plan":{"Plan Rows":1}}]`).
+						RowError(0, errors.New("scan failed")))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "close",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).
+					WillReturnRows(sqlmock.NewRows([]string{"QUERY PLAN"}).
+						CloseError(errors.New("close failed")))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "invalid estimate",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).
+					WillReturnRows(sqlmock.NewRows([]string{"QUERY PLAN"}).
+						AddRow(`[{"Plan":{"Node Type":"Seq Scan"}}]`))
+				mock.ExpectRollback()
+			},
+		},
+		{
+			name: "rollback",
+			setup: func(mock sqlmock.Sqlmock) {
+				mock.ExpectBegin()
+				mock.ExpectQuery(regexp.QuoteMeta(explainSQL)).
+					WillReturnRows(sqlmock.NewRows([]string{"QUERY PLAN"}).
+						AddRow(`[{"Plan":{"Plan Rows":1}}]`))
+				mock.ExpectRollback().WillReturnError(errors.New("rollback failed"))
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			backend := NewWithDB(db, "app")
+			tc.setup(mock)
+
+			_, err = backend.Explain(context.Background(), "SELECT * FROM missing")
+			assertBackendErrorExit(t, err)
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPostgresExecDMLBoundRevalidatesAndExecutesInOneTransaction(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	sqlText := "UPDATE users SET name='x' WHERE id=1"
+	planJSON := `[{"Plan":{"Plan Rows":42}}]`
+	explain := dbbackend.QueryResult{
+		Columns: []string{"QUERY PLAN"},
+		Rows:    [][]string{{planJSON}},
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN (FORMAT JSON) " + sqlText)).
+		WillReturnRows(sqlmock.NewRows(explain.Columns).AddRow(planJSON))
+	mock.ExpectExec(regexp.QuoteMeta(sqlText)).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectCommit()
+
+	affected, err := backend.ExecDMLBound(context.Background(), sqlText, dbbackend.DMLPlanBinding{
+		PlanFingerprint: dbbackend.PlanFingerprint(explain),
+		EstimatedRows:   42,
+	})
+	if err != nil {
+		t.Fatalf("ExecDMLBound() error = %v", err)
+	}
+	if affected != 3 {
+		t.Fatalf("affected = %d, want 3", affected)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresExecDMLBoundReportsIndeterminateCommit(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	sqlText := "UPDATE users SET name='x' WHERE id=1"
+	planJSON := `[{"Plan":{"Plan Rows":42}}]`
+	explain := dbbackend.QueryResult{
+		Columns: []string{"QUERY PLAN"},
+		Rows:    [][]string{{planJSON}},
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN (FORMAT JSON) " + sqlText)).
+		WillReturnRows(sqlmock.NewRows(explain.Columns).AddRow(planJSON))
+	mock.ExpectExec(regexp.QuoteMeta(sqlText)).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectCommit().WillReturnError(errors.New("commit result lost"))
+
+	affected, err := backend.ExecDMLBound(context.Background(), sqlText, dbbackend.DMLPlanBinding{
+		PlanFingerprint: dbbackend.PlanFingerprint(explain),
+		EstimatedRows:   42,
+	})
+	if affected != 3 {
+		t.Fatalf("affected = %d, want observed value 3", affected)
+	}
+	if !dbbackend.IsCommitIndeterminate(err) {
+		t.Fatalf("error = %v, want indeterminate commit", err)
+	}
+	appErr := apperrors.AsAppError(err)
+	if appErr.Code != apperrors.CodePartialFailure || appErr.Retryable || apperrors.ExitCode(err) != 11 {
+		t.Fatalf("commit error = %+v, want non-retryable PARTIAL_FAILURE exit 11", appErr)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgresExecDMLBoundRejectsChangedPlanBeforeExecution(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	sqlText := "UPDATE users SET name='x' WHERE id=1"
+	previewJSON := `[{"Plan":{"Plan Rows":42}}]`
+	preview := dbbackend.QueryResult{
+		Columns: []string{"QUERY PLAN"},
+		Rows:    [][]string{{previewJSON}},
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(regexp.QuoteMeta("EXPLAIN (FORMAT JSON) " + sqlText)).
+		WillReturnRows(sqlmock.NewRows(preview.Columns).
+			AddRow(`[{"Plan":{"Plan Rows":5000}}]`))
+	mock.ExpectRollback()
+
+	affected, err := backend.ExecDMLBound(context.Background(), sqlText, dbbackend.DMLPlanBinding{
+		PlanFingerprint: dbbackend.PlanFingerprint(preview),
+		EstimatedRows:   42,
+	})
+	if affected != 0 {
+		t.Fatalf("affected = %d, want 0", affected)
+	}
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeConflict {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeConflict, err)
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -243,11 +553,11 @@ func TestRenderDDLEscapesPostgresIdentifiers(t *testing.T) {
 	}
 	joined := strings.Join(statements, "\n")
 	for _, want := range []string{
-		`CREATE TABLE "evil"";--" ("id"";DROP" integer);`,
-		`ALTER TABLE "evil"";--" ADD COLUMN "name"";--" text;`,
-		`ALTER TABLE "evil"";--" ALTER COLUMN "name"";--" TYPE character varying(20);`,
-		`ALTER TABLE "evil"";--" DROP COLUMN "old"";--";`,
-		`DROP TABLE "old"";--";`,
+		`CREATE TABLE "public"."evil"";--" ("id"";DROP" integer);`,
+		`ALTER TABLE "public"."evil"";--" ADD COLUMN "name"";--" text;`,
+		`ALTER TABLE "public"."evil"";--" ALTER COLUMN "name"";--" TYPE character varying(20);`,
+		`ALTER TABLE "public"."evil"";--" DROP COLUMN "old"";--";`,
+		`DROP TABLE "public"."old"";--";`,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("RenderDDL missing %q:\n%s", want, joined)
@@ -270,11 +580,11 @@ func TestRenderDDLUsesPostgresIdentity(t *testing.T) {
 		t.Fatalf("RenderDDL() error = %v", err)
 	}
 	want := []string{
-		`CREATE TABLE "ids" ("id" integer NOT NULL GENERATED BY DEFAULT AS IDENTITY);`,
-		`ALTER TABLE "ids" ADD COLUMN "next_id" bigint NOT NULL GENERATED BY DEFAULT AS IDENTITY;`,
-		`ALTER TABLE "ids" ALTER COLUMN "legacy" SET NOT NULL, ALTER COLUMN "legacy" ADD GENERATED BY DEFAULT AS IDENTITY;`,
-		`ALTER TABLE "ids" ALTER COLUMN "plain" DROP IDENTITY IF EXISTS;`,
-		`ALTER TABLE "ids" ALTER COLUMN "typed" TYPE bigint;`,
+		`CREATE TABLE "public"."ids" ("id" integer NOT NULL GENERATED BY DEFAULT AS IDENTITY);`,
+		`ALTER TABLE "public"."ids" ADD COLUMN "next_id" bigint NOT NULL GENERATED BY DEFAULT AS IDENTITY;`,
+		`ALTER TABLE "public"."ids" ALTER COLUMN "legacy" SET NOT NULL, ALTER COLUMN "legacy" ADD GENERATED BY DEFAULT AS IDENTITY;`,
+		`ALTER TABLE "public"."ids" ALTER COLUMN "plain" DROP IDENTITY IF EXISTS;`,
+		`ALTER TABLE "public"."ids" ALTER COLUMN "typed" TYPE bigint;`,
 	}
 	for index := range want {
 		if statements[index] != want[index] {
@@ -298,20 +608,20 @@ func TestTableDDLRebuildsPostgresCreateTable(t *testing.T) {
 	expectIntrospectForTableDDL(mock)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT con.conname,")).
 		WithArgs(defaultSchema, `evil";--`).
-		WillReturnRows(sqlmock.NewRows([]string{"conname", "contype", "columns", "referenced_table", "referenced_columns"}).
-			AddRow(`evil";--_pkey`, "p", `id";--`, nil, nil).
-			AddRow(`evil";--_user_fkey`, "f", "user_id", "users", "id"))
+		WillReturnRows(sqlmock.NewRows([]string{"conname", "contype", "columns", "referenced_schema", "referenced_table", "referenced_columns"}).
+			AddRow(`evil";--_pkey`, "p", `id";--`, nil, nil, nil).
+			AddRow(`evil";--_user_fkey`, "f", "user_id", "public", "users", "id"))
 
 	ddl, err := backend.TableDDL(context.Background(), `evil";--`)
 	if err != nil {
 		t.Fatalf("TableDDL() error = %v", err)
 	}
 	for _, want := range []string{
-		`CREATE TABLE "evil"";--"`,
+		`CREATE TABLE "public"."evil"";--"`,
 		`"id"";--" integer NOT NULL GENERATED BY DEFAULT AS IDENTITY`,
 		`"name" text DEFAULT 'new'::text`,
 		`CONSTRAINT "evil"";--_pkey" PRIMARY KEY ("id"";--")`,
-		`CONSTRAINT "evil"";--_user_fkey" FOREIGN KEY ("user_id") REFERENCES "users" ("id")`,
+		`CONSTRAINT "evil"";--_user_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id")`,
 	} {
 		if !strings.Contains(ddl, want) {
 			t.Fatalf("TableDDL missing %q:\n%s", want, ddl)
@@ -339,7 +649,7 @@ func TestTableDDLRebuildsPostgresCreateTable(t *testing.T) {
 	}
 }
 
-func TestExecDDLStopsOnPostgresFailure(t *testing.T) {
+func TestExecDDLRollsBackAllPostgresStatementsOnFailure(t *testing.T) {
 	t.Parallel()
 
 	db, mock, err := sqlmock.New()
@@ -348,15 +658,49 @@ func TestExecDDLStopsOnPostgresFailure(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "app")
+	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(`CREATE TABLE "ok" (id integer);`)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta(`CREATE TABLE "bad" (id nope);`)).WillReturnError(assertErr("boom"))
+	mock.ExpectRollback()
 
 	executed, err := backend.ExecDDL(context.Background(), []string{`CREATE TABLE "ok" (id integer);`, `CREATE TABLE "bad" (id nope);`})
-	if executed != 1 {
-		t.Fatalf("executed = %d, want 1", executed)
+	if executed != 0 {
+		t.Fatalf("executed = %d, want 0 committed statements", executed)
 	}
 	if appErr := apperrors.AsAppError(err); appErr.Code != apperrors.CodeBackendError {
 		t.Fatalf("error = %v, want backend error", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecDDLCommitsAllPostgresStatementsTogether(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(`CREATE TABLE "one" (id integer);`)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(`CREATE TABLE "two" (id integer);`)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit()
+
+	executed, err := backend.ExecDDL(context.Background(), []string{
+		`CREATE TABLE "one" (id integer);`,
+		`CREATE TABLE "two" (id integer);`,
+	})
+	if err != nil {
+		t.Fatalf("ExecDDL() error = %v", err)
+	}
+	if executed != 2 {
+		t.Fatalf("executed = %d, want 2", executed)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

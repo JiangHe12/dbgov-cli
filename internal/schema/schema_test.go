@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 )
 
 func TestParseCreateTablesMinimal(t *testing.T) {
@@ -39,6 +39,30 @@ func TestParseCreateTableAcceptsPostgresQuotedIdentifiers(t *testing.T) {
 	}
 	if len(table.Columns) != 2 || table.Columns[0].Name != `id";--` || table.Columns[0].Type != "integer" || table.Columns[1].Name != "name" || table.Columns[1].Type != "text" {
 		t.Fatalf("columns = %+v", table.Columns)
+	}
+}
+
+func TestParseCreateTableAcceptsOnlyFixedPublicSchemaQualifier(t *testing.T) {
+	for _, sqlText := range []string{
+		`CREATE TABLE "public"."users" ("id" integer);`,
+		`CREATE TABLE PUBLIC.users (id integer);`,
+	} {
+		got, err := ParseDesiredSQL(sqlText)
+		if err != nil {
+			t.Fatalf("ParseDesiredSQL(%q) error = %v", sqlText, err)
+		}
+		if _, ok := got.Tables["users"]; !ok {
+			t.Fatalf("qualified users table missing: %+v", got.Tables)
+		}
+	}
+	for _, sqlText := range []string{
+		`CREATE TABLE "other"."users" ("id" integer);`,
+		`CREATE TABLE "PUBLIC"."users" ("id" integer);`,
+		`CREATE TABLE public.other.users (id integer);`,
+	} {
+		if _, err := ParseDesiredSQL(sqlText); err == nil {
+			t.Fatalf("ParseDesiredSQL(%q) error = nil, want non-public qualifier rejection", sqlText)
+		}
 	}
 }
 
@@ -217,6 +241,75 @@ func TestParseCreateTablesRejectsUnsupportedDDL(t *testing.T) {
 	}
 	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
 		t.Fatalf("error code = %s, want %s; err = %v", got, apperrors.CodeNotImplemented, err)
+	}
+}
+
+func TestParseCreateTableRejectsTrailingAndTypeStatementInjection(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+	}{
+		{
+			name: "second ddl statement",
+			sql:  "CREATE TABLE harmless (id INT); DROP TABLE critical; -- )",
+		},
+		{
+			name: "second ddl after carriage return comment",
+			sql:  "CREATE TABLE harmless (id INT) -- hidden\r; DROP TABLE critical",
+		},
+		{
+			name: "column type statement separator",
+			sql:  "CREATE TABLE harmless (id integer; DROP TABLE critical)",
+		},
+		{
+			name: "ddl disguised as table option",
+			sql:  "CREATE TABLE harmless (id integer) DROP TABLE critical",
+		},
+		{
+			name: "ambiguous backslash escaped type quote",
+			sql:  `CREATE TABLE harmless (payload "safe\"; DROP TABLE critical; --")`,
+		},
+		{
+			name: "postgres alter type using clause",
+			sql:  "CREATE TABLE harmless (payload integer USING pg_sleep(1))",
+		},
+		{
+			name: "mysql first position clause",
+			sql:  "CREATE TABLE harmless (payload integer FIRST)",
+		},
+		{
+			name: "mysql after position clause",
+			sql:  "CREATE TABLE harmless (payload integer AFTER other)",
+		},
+		{
+			name: "mysql hash comment in type",
+			sql:  "CREATE TABLE harmless (payload integer # hidden modifier)",
+		},
+		{
+			name: "mysql hash comment after constraint",
+			sql:  "CREATE TABLE harmless (payload integer DEFAULT 1 # hidden modifier)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseDesiredSQL(tt.sql); err == nil {
+				t.Fatalf("ParseDesiredSQL(%q) error = nil, want fail-closed rejection", tt.sql)
+			}
+		})
+	}
+}
+
+func TestParseCreateTableAcceptsSafeMySQLTailAndQuotedTypeValues(t *testing.T) {
+	got, err := ParseDesiredSQL(`CREATE TABLE events (
+	  kind enum('created;ok','C:\\path'),
+	  path varchar(255) DEFAULT 'C:\\tmp'
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`)
+	if err != nil {
+		t.Fatalf("ParseDesiredSQL() error = %v", err)
+	}
+	columns := got.Tables["events"].Columns
+	if len(columns) != 2 || columns[0].Type != `enum('created;ok','C:\\path')` || columns[1].Type != "varchar(255)" {
+		t.Fatalf("columns = %+v", columns)
 	}
 }
 

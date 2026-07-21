@@ -5,8 +5,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/printer"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/printer"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
@@ -35,7 +35,7 @@ func newQueryCmd(f *cliFlags) *cobra.Command {
 	return cmd
 }
 
-func runQuery(f *cliFlags, opts sqlCommandOptions) error {
+func runQuery(f *cliFlags, opts sqlCommandOptions) (resultErr error) {
 	dialect := dialectForSQLCommand(f)
 	if sqlclass.HasMultipleStatements(opts.SQL, dialect) {
 		return apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
@@ -50,6 +50,7 @@ func runQuery(f *cliFlags, opts sqlCommandOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(backend, &resultErr, backendCloseRead)
 	result, err := backend.Query(commandContext(f), opts.SQL)
 	event := dbgaudit.New(dbgaudit.EventTypeQuery, currentOperator(f), auditContext(meta), auditTarget(meta, "database", meta.Database))
 	event.Statement = opts.SQL
@@ -66,9 +67,10 @@ func printQueryResult(f *cliFlags, meta contextMeta, result dbbackend.QueryResul
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "QueryResult", Data: dataWithTarget(result, meta, targetRead)})
 	}
-	printTargetHeader(p, meta, targetRead)
-	p.Table(result.Columns, result.Rows)
-	return nil
+	if err := printTargetHeader(p, meta, targetRead); err != nil {
+		return err
+	}
+	return p.Table(result.Columns, result.DisplayRows())
 }
 
 //nolint:dupl // Query and explain commands intentionally keep separate Cobra wiring for clearer help text and audit paths.
@@ -88,7 +90,7 @@ func newExplainCmd(f *cliFlags) *cobra.Command {
 	return cmd
 }
 
-func runExplain(f *cliFlags, opts sqlCommandOptions) error {
+func runExplain(f *cliFlags, opts sqlCommandOptions) (resultErr error) {
 	dialect := dialectForSQLCommand(f)
 	if sqlclass.HasMultipleStatements(opts.SQL, dialect) {
 		return apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
@@ -103,6 +105,7 @@ func runExplain(f *cliFlags, opts sqlCommandOptions) error {
 	if err != nil {
 		return err
 	}
+	defer finishBackendClose(backend, &resultErr, backendCloseRead)
 	result, err := backend.Explain(commandContext(f), opts.SQL)
 	event := dbgaudit.New(dbgaudit.EventTypeExplain, currentOperator(f), auditContext(meta), auditTarget(meta, "database", meta.Database))
 	event.Statement = opts.SQL
@@ -129,8 +132,11 @@ func printExplainResult(f *cliFlags, meta contextMeta, result dbbackend.ExplainR
 	if f.Output == "json" {
 		return p.JSONDataEnvelope(printer.JSONDataEnvelope{Kind: "ExplainResult", Data: dataWithTarget(result, meta, targetRead)})
 	}
-	printTargetHeader(p, meta, targetRead)
-	p.Table(result.Columns, result.Rows)
-	_, _ = fmt.Fprintf(p.Out, "\nEstimated rows: %d\n", result.EstimatedRows)
-	return nil
+	if err := printTargetHeader(p, meta, targetRead); err != nil {
+		return err
+	}
+	if err := p.Table(result.Columns, result.DisplayRows()); err != nil {
+		return err
+	}
+	return p.Info(fmt.Sprintf("\nEstimated rows: %d", result.EstimatedRows))
 }

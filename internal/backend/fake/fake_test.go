@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 )
 
 func TestExecDDLFailureIsBackendError(t *testing.T) {

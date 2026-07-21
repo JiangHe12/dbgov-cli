@@ -1,13 +1,16 @@
 package dbgovctx
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/credstore"
-	corectx "github.com/JiangHe12/opskit-core/ctx"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/credstore"
+	corectx "github.com/JiangHe12/opskit-core/v2/ctx"
+	"github.com/JiangHe12/opskit-core/v2/lockfile"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,6 +40,11 @@ func SetConfigPath(path string) {
 	corectx.SetConfigPath(path)
 }
 
+// ConfigPath returns the effective context configuration path.
+func ConfigPath() (string, error) {
+	return configPath()
+}
+
 func Load() (*Config, error) {
 	if err := migrateLegacyContextAPIVersion(); err != nil {
 		return nil, err
@@ -44,11 +52,97 @@ func Load() (*Config, error) {
 	return store.Load()
 }
 
+// LoadReadOnly loads context policy without rewriting a legacy apiVersion.
+// Control-plane previews and pre-change authorization use this path so merely
+// inspecting the governing policy cannot mutate the config file.
+func LoadReadOnly() (*Config, error) {
+	cfg, err := store.Load()
+	if err == nil {
+		return cfg, nil
+	}
+	if apperrors.AsAppError(err).Code != apperrors.CodeUnsupportedProtocol {
+		return nil, err
+	}
+	path, pathErr := configPath()
+	if pathErr != nil {
+		return nil, pathErr
+	}
+	data, readErr := os.ReadFile(path) //nolint:gosec // Path is the configured dbgov context file path.
+	if readErr != nil {
+		return nil, apperrors.New(apperrors.CodeLocalIOError, "failed to read context file", readErr)
+	}
+	var legacy Config
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if decodeErr := decoder.Decode(&legacy); decodeErr != nil {
+		return nil, apperrors.New(apperrors.CodeLocalIOError, "failed to parse context file", decodeErr)
+	}
+	if legacy.APIVersion != legacyContextAPIVersion {
+		return nil, err
+	}
+	if legacy.Contexts == nil {
+		legacy.Contexts = make(map[string]Context)
+	}
+	for name, item := range legacy.Contexts {
+		ref := credstore.ParseRef(item.Password)
+		if ref.IsRef && ref.BackendName == "" {
+			return nil, apperrors.New(apperrors.CodeUsageError, fmt.Sprintf("context %q has empty credential store reference", name), nil)
+		}
+		if item.OTLPEndpointSource == "" {
+			item.OTLPEndpointSource = "auto"
+		}
+		if item.OTLPMetricsSource == "" {
+			item.OTLPMetricsSource = "auto"
+		}
+		legacy.Contexts[name] = item
+	}
+	legacy.APIVersion = SupportedContextAPIVersion
+	return &legacy, nil
+}
+
+// WithLockedRead reloads the context config while holding the same lock used
+// by context updates, and keeps that policy immutable for the callback.
+func WithLockedRead(fn func(*Config) error) error {
+	if fn == nil {
+		return apperrors.New(apperrors.CodeValidationFailed, "locked context callback is required", nil)
+	}
+	dir, err := corectx.ConfigDir()
+	if err != nil {
+		return err
+	}
+	lock := lockfile.New(filepath.Join(dir, "config"))
+	if err := lock.Acquire(); err != nil {
+		return err
+	}
+	cfg, err := LoadReadOnly()
+	if err != nil {
+		_ = lock.Release()
+		return err
+	}
+	callbackErr := fn(cfg)
+	releaseErr := lock.Release()
+	if callbackErr != nil {
+		return callbackErr
+	}
+	if releaseErr != nil {
+		return apperrors.New(apperrors.CodeLocalIOError, "failed to release context policy lock", releaseErr)
+	}
+	return nil
+}
+
 func Save(cfg *Config) error {
 	if err := migrateLegacyContextAPIVersion(); err != nil {
 		return err
 	}
 	return store.Save(cfg)
+}
+
+// Update applies a locked read-modify-write operation to the context config.
+func Update(fn func(cfg *Config) error) error {
+	if err := migrateLegacyContextAPIVersion(); err != nil {
+		return err
+	}
+	return store.Update(fn)
 }
 
 func SetContext(name string, ctx Context) error {

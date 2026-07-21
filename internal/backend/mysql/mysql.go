@@ -6,12 +6,13 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql" // Register MySQL database/sql driver.
 
-	"github.com/JiangHe12/opskit-core/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 
 	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
@@ -34,6 +35,10 @@ func New(dsn, database string) (*Backend, error) {
 
 func NewWithDB(db *sql.DB, database string) *Backend {
 	return &Backend{db: db, database: database}
+}
+
+func (b *Backend) Close() error {
+	return b.db.Close()
 }
 
 func (b *Backend) Ping(ctx context.Context) error {
@@ -71,6 +76,9 @@ ORDER BY table_name, ordinal_position`, b.database)
 		result.Tables[tableName] = table
 	}
 	if err := rows.Err(); err != nil {
+		return schema.Schema{}, err
+	}
+	if err := rows.Close(); err != nil {
 		return schema.Schema{}, err
 	}
 	if err := b.loadIndexes(ctx, &result); err != nil {
@@ -112,6 +120,9 @@ ORDER BY table_name, index_name, seq_in_index`, b.database)
 		idx.Columns = append(idx.Columns, columnName)
 	}
 	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
 		return err
 	}
 	for _, k := range order {
@@ -161,6 +172,9 @@ ORDER BY kcu.table_name, kcu.constraint_name, kcu.ordinal_position`, b.database)
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
 	for _, k := range order {
 		table := result.Tables[k.table]
 		if table.Name == "" {
@@ -173,7 +187,13 @@ ORDER BY kcu.table_name, kcu.constraint_name, kcu.ordinal_position`, b.database)
 }
 
 func (b *Backend) Query(ctx context.Context, sqlText string) (dbbackend.QueryResult, error) {
-	rows, err := b.db.QueryContext(ctx, sqlText)
+	tx, err := b.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return dbbackend.QueryResult{}, backendErr("begin read-only query", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, sqlText)
 	if err != nil {
 		return dbbackend.QueryResult{}, backendErr("execute read query", err)
 	}
@@ -181,26 +201,31 @@ func (b *Backend) Query(ctx context.Context, sqlText string) (dbbackend.QueryRes
 	result, err := scanRows(rows)
 	if err != nil {
 		return dbbackend.QueryResult{}, backendErr("execute read query", err)
+	}
+	if err := rows.Close(); err != nil {
+		return dbbackend.QueryResult{}, backendErr("close read query", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		return dbbackend.QueryResult{}, backendErr("rollback read-only query", err)
 	}
 	return result, nil
 }
 
 func (b *Backend) Explain(ctx context.Context, sqlText string) (dbbackend.ExplainResult, error) {
-	explainSQL := "EXPLAIN " + strings.TrimSpace(sqlText) //nolint:gosec // Adds EXPLAIN to an already classified statement; no additional SQL surface is introduced.
-	rows, err := b.db.QueryContext(ctx, explainSQL)
+	tx, err := b.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return dbbackend.ExplainResult{}, backendErr("begin read-only explain", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	result, err := explainDML(ctx, tx, sqlText)
 	if err != nil {
 		return dbbackend.ExplainResult{}, backendErr("explain query", err)
 	}
-	defer func() { _ = rows.Close() }()
-	result, err := scanRows(rows)
-	if err != nil {
-		return dbbackend.ExplainResult{}, backendErr("explain query", err)
+	if err := tx.Rollback(); err != nil {
+		return dbbackend.ExplainResult{}, backendErr("rollback read-only explain", err)
 	}
-	return dbbackend.ExplainResult{
-		Columns:       result.Columns,
-		Rows:          result.Rows,
-		EstimatedRows: estimateRows(result),
-	}, nil
+	return result, nil
 }
 
 func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
@@ -217,6 +242,9 @@ func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
 		return "", err
 	}
 	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if err := rows.Close(); err != nil {
 		return "", err
 	}
 	return ddl, nil
@@ -297,6 +325,78 @@ func (b *Backend) ExecDML(ctx context.Context, sqlText string) (int64, error) {
 	return affected, nil
 }
 
+func (b *Backend) ExecDMLBound(ctx context.Context, sqlText string, binding dbbackend.DMLPlanBinding) (int64, error) {
+	if binding.PlanFingerprint == "" || binding.EstimatedRows < 0 {
+		return 0, apperrors.New(apperrors.CodeValidationFailed, "valid DML plan binding is required", nil)
+	}
+	tx, err := b.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return 0, backendErr("execute bound DML", err)
+	}
+	current, err := explainDML(ctx, tx, sqlText)
+	if err != nil {
+		return rollbackDML(tx, backendErr("validate bound DML plan", err))
+	}
+	if current.PlanFingerprint != binding.PlanFingerprint ||
+		current.EstimatedRows != binding.EstimatedRows {
+		return rollbackDML(tx, apperrors.New(
+			apperrors.CodeConflict,
+			"DML plan changed after authorization; review and retry",
+			nil,
+		))
+	}
+	result, err := tx.ExecContext(ctx, sqlText)
+	if err != nil {
+		return rollbackDML(tx, backendErr("execute bound DML", err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return rollbackDML(tx, backendErr("execute bound DML", err))
+	}
+	if err := tx.Commit(); err != nil {
+		return affected, dbbackend.NewCommitIndeterminateError(backendErr("execute bound DML", err))
+	}
+	return affected, nil
+}
+
+type queryContext interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func explainDML(ctx context.Context, queryer queryContext, sqlText string) (dbbackend.ExplainResult, error) {
+	explainSQL := "EXPLAIN " + strings.TrimSpace(sqlText) //nolint:gosec // Adds EXPLAIN to an already classified statement; no additional SQL surface is introduced.
+	rows, err := queryer.QueryContext(ctx, explainSQL)
+	if err != nil {
+		return dbbackend.ExplainResult{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	result, err := scanRows(rows)
+	if err != nil {
+		return dbbackend.ExplainResult{}, err
+	}
+	if err := rows.Close(); err != nil {
+		return dbbackend.ExplainResult{}, err
+	}
+	estimatedRows, err := estimateRows(result)
+	if err != nil {
+		return dbbackend.ExplainResult{}, err
+	}
+	return dbbackend.ExplainResult{
+		Columns:         result.Columns,
+		Rows:            result.Rows,
+		Nulls:           result.Nulls,
+		EstimatedRows:   estimatedRows,
+		PlanFingerprint: dbbackend.PlanFingerprint(result),
+	}, nil
+}
+
+func rollbackDML(tx *sql.Tx, operationErr error) (int64, error) {
+	if err := tx.Rollback(); err != nil {
+		return 0, backendErr("rollback DML", err)
+	}
+	return 0, operationErr
+}
+
 func backendErr(message string, err error) error {
 	if err == nil {
 		return nil
@@ -320,10 +420,13 @@ func scanRows(rows *sql.Rows) (dbbackend.QueryResult, error) {
 			return dbbackend.QueryResult{}, err
 		}
 		row := make([]string, len(columns))
+		nullRow := make([]bool, len(columns))
 		for i, value := range values {
+			nullRow[i] = value == nil
 			row[i] = valueString(value)
 		}
 		result.Rows = append(result.Rows, row)
+		result.Nulls = append(result.Nulls, nullRow)
 	}
 	if err := rows.Err(); err != nil {
 		return dbbackend.QueryResult{}, err
@@ -342,7 +445,7 @@ func valueString(value any) string {
 	}
 }
 
-func estimateRows(result dbbackend.QueryResult) int64 {
+func estimateRows(result dbbackend.QueryResult) (int64, error) {
 	rowsIndex := -1
 	for i, column := range result.Columns {
 		if strings.EqualFold(column, "rows") {
@@ -351,19 +454,30 @@ func estimateRows(result dbbackend.QueryResult) int64 {
 		}
 	}
 	if rowsIndex < 0 {
-		return 0
+		return 0, fmt.Errorf("EXPLAIN result has no rows estimate column")
+	}
+	if len(result.Rows) == 0 {
+		return 0, fmt.Errorf("EXPLAIN result has no plan rows")
+	}
+	if len(result.Rows) != 1 {
+		return 0, fmt.Errorf("multi-node EXPLAIN result cannot be conservatively estimated")
 	}
 	var total int64
 	for _, row := range result.Rows {
 		if rowsIndex >= len(row) {
-			continue
+			return 0, fmt.Errorf("EXPLAIN result row is missing its rows estimate")
 		}
-		value, err := strconv.ParseInt(row[rowsIndex], 10, 64)
-		if err == nil {
-			total += value
+		raw := strings.TrimSpace(row[rowsIndex])
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value < 0 {
+			return 0, fmt.Errorf("EXPLAIN result has an invalid rows estimate")
 		}
+		if value > math.MaxInt64-total {
+			return 0, fmt.Errorf("EXPLAIN rows estimate overflow")
+		}
+		total += value
 	}
-	return total
+	return total, nil
 }
 
 func escapeIdent(value string) string {

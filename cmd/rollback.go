@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/JiangHe12/opskit-core/apperrors"
-	"github.com/JiangHe12/opskit-core/printer"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
+	"github.com/JiangHe12/opskit-core/v2/printer"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
@@ -14,10 +17,30 @@ import (
 	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
 )
 
-const rollbackDataLossWarning = "structure-level restore only; data in dropped tables/columns is NOT recovered"
+const (
+	rollbackDataLossWarning = "structure-level restore only; data in dropped tables/columns is NOT recovered"
+	rollbackScope           = "schema-structure"
+)
 
 type rollbackListResult struct {
 	Snapshots []dbgsnapshot.Meta `json:"snapshots"`
+}
+
+type rollbackResult struct {
+	SnapshotID        string   `json:"snapshotId"`
+	Scope             string   `json:"scope"`
+	PlannedStatements int      `json:"plannedStatements"`
+	AppliedStatements int      `json:"appliedStatements"`
+	DataRestored      bool     `json:"dataRestored"`
+	PlanFingerprint   string   `json:"planFingerprint"`
+	TargetFingerprint string   `json:"targetFingerprint"`
+	Warnings          []string `json:"warnings,omitempty"`
+}
+
+type rollbackExecutionBinding struct {
+	PlanFingerprint   string   `json:"planFingerprint"`
+	TargetFingerprint string   `json:"targetFingerprint"`
+	Statements        []string `json:"statements"`
 }
 
 type rollbackOptions struct {
@@ -70,6 +93,11 @@ func runRollbackList(f *cliFlags) error {
 		emitAudit(f, event, err)
 		return err
 	}
+	if err := validateSnapshotEvidenceDirectory(baseDir, true); err != nil {
+		event := rollbackListAuditEvent(f)
+		emitAudit(f, event, err)
+		return err
+	}
 	metas, err := dbgsnapshot.List(baseDir)
 	event := rollbackListAuditEvent(f)
 	emitAudit(f, event, err)
@@ -79,9 +107,14 @@ func runRollbackList(f *cliFlags) error {
 	return printRollbackList(f, rollbackListResult{Snapshots: metas})
 }
 
-func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
+func runRollbackTo(f *cliFlags, opts rollbackOptions) (resultErr error) { //nolint:gocyclo // Target binding, authorization, intent, snapshot, execution, and outcome form one governed flow.
 	baseDir, err := snapshotBaseDir()
 	if err != nil {
+		event := rollbackAuditEvent(f, contextMeta{}, opts.to, schemaPlan{})
+		emitAudit(f, event, err)
+		return err
+	}
+	if err := validateSnapshotEvidenceDirectory(baseDir, false); err != nil {
 		event := rollbackAuditEvent(f, contextMeta{}, opts.to, schemaPlan{})
 		emitAudit(f, event, err)
 		return err
@@ -92,14 +125,20 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 		emitAudit(f, event, err)
 		return err
 	}
-	desired, err := schema.SchemaFromDDLMap(snap.Tables)
+	b, meta, err := buildBackend(f, backendOptions{Fake: opts.fake})
 	if err != nil {
-		event := rollbackAuditEvent(f, contextMeta{}, opts.to, schemaPlan{})
+		return err
+	}
+	defer finishBackendClose(b, &resultErr, backendCloseMutation)
+	if err := validateRollbackSnapshotTarget(snap.Meta.Target, meta); err != nil {
+		event := rollbackAuditEvent(f, meta, opts.to, schemaPlan{})
 		emitAudit(f, event, err)
 		return err
 	}
-	b, meta, err := buildBackend(f, backendOptions{Fake: opts.fake})
+	desired, err := schema.SchemaFromDDLMap(snap.Tables)
 	if err != nil {
+		event := rollbackAuditEvent(f, meta, opts.to, schemaPlan{})
+		emitAudit(f, event, err)
 		return err
 	}
 	current, err := b.IntrospectSchema(commandContext(f))
@@ -112,6 +151,7 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 	diff.Changes = append(diff.Changes, schema.PruneChanges(current, desired)...)
 	plan, err := buildSchemaPlanFromDiff(b, diff)
 	applyRollbackPlanMetadata(&plan)
+	bindRollbackPlan(&plan, *snap.Meta.Target)
 	if err != nil {
 		event := rollbackAuditEvent(f, meta, opts.to, plan)
 		emitAudit(f, event, err)
@@ -133,26 +173,50 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) error {
 		emitAudit(f, event, nil)
 		return err
 	}
-	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "rollback")
-	if err != nil {
+	statements := schemaPlanStatements(plan)
+	if err := validateRollbackExecutionBinding(plan, *snap.Meta.Target, statements); err != nil {
 		event := rollbackAuditEvent(f, meta, opts.to, plan)
 		emitAudit(f, event, err)
 		return err
 	}
-
-	statements := schemaPlanStatements(plan)
-	executed, err := b.ExecDDL(commandContext(f), statements)
-	event := rollbackAuditEvent(f, meta, opts.to, plan)
-	event.SnapshotID = snapshotID
-	event.Executed = executed
-	if err != nil && executed < len(statements) {
-		event.FailedStatement = statements[executed]
+	binding := rollbackExecutionBinding{
+		PlanFingerprint:   plan.PlanFingerprint,
+		TargetFingerprint: plan.TargetFingerprint,
+		Statements:        statements,
 	}
-	emitAudit(f, event, err)
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeRollback), binding)
+	metadata.Items = len(statements)
+	handle, err := beginMutationAudit(f, mutationAuditSpec{
+		Action:   string(dbgaudit.EventTypeRollback),
+		Event:    rollbackAuditEvent(f, meta, opts.to, plan),
+		Metadata: metadata,
+	})
 	if err != nil {
 		return err
 	}
-	return printSchemaPlan(f, meta, targetWrite, plan)
+	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "rollback")
+	if err != nil {
+		return finishSkippedMutationAudit(handle, len(statements), err)
+	}
+
+	executed, err := b.ExecDDL(commandContext(f), statements)
+	handle.spec.Event.SnapshotID = snapshotID
+	if err != nil && executed < len(statements) {
+		handle.spec.Event.FailedStatement = statements[executed]
+	}
+	if auditErr := finishBatchMutationAudit(handle, len(statements), executed, err); auditErr != nil {
+		return auditErr
+	}
+	return printRollbackResult(f, meta, rollbackResult{
+		SnapshotID:        opts.to,
+		Scope:             rollbackScope,
+		PlannedStatements: len(statements),
+		AppliedStatements: executed,
+		DataRestored:      false,
+		PlanFingerprint:   plan.PlanFingerprint,
+		TargetFingerprint: plan.TargetFingerprint,
+		Warnings:          append([]string(nil), plan.Warnings...),
+	})
 }
 
 func rollbackListAuditEvent(f *cliFlags) dbgaudit.Event {
@@ -172,6 +236,65 @@ func applyRollbackPlanMetadata(plan *schemaPlan) {
 	risk := maxRisk(safetyRisk(plan.OverallRisk), safety.R2)
 	plan.OverallRisk = safetyRiskLabel(risk)
 	plan.RequiredAuthorization = requiredAuthorization(schemaRiskLabel(risk))
+}
+
+func validateRollbackSnapshotTarget(bound *dbgsnapshot.Target, meta contextMeta) error {
+	if bound == nil {
+		return apperrors.New(
+			apperrors.CodeValidationFailed,
+			"snapshot has no target binding and cannot be used for rollback",
+			nil,
+		)
+	}
+	actual := normalizedSnapshotTarget(*snapshotTarget(meta))
+	if normalizedSnapshotTarget(*bound) != actual {
+		return apperrors.New(
+			apperrors.CodeConflict,
+			"snapshot target does not match the selected database target",
+			nil,
+		)
+	}
+	return nil
+}
+
+func normalizedSnapshotTarget(target dbgsnapshot.Target) dbgsnapshot.Target {
+	target.Context = strings.TrimSpace(target.Context)
+	target.Engine = strings.ToLower(strings.TrimSpace(target.Engine))
+	target.Host = strings.ToLower(strings.TrimSpace(target.Host))
+	target.Database = strings.TrimSpace(target.Database)
+	target.Schema = strings.TrimSpace(target.Schema)
+	return target
+}
+
+func bindRollbackPlan(plan *schemaPlan, target dbgsnapshot.Target) {
+	targetData, _ := json.Marshal(normalizedSnapshotTarget(target))
+	plan.TargetFingerprint, _ = dbgaudit.Fingerprint("snapshot-target", string(targetData))
+	plan.PlannedStatements = len(plan.Statements)
+	binding := rollbackExecutionBinding{
+		TargetFingerprint: plan.TargetFingerprint,
+		Statements:        schemaPlanStatements(*plan),
+	}
+	bindingData, _ := json.Marshal(binding)
+	plan.PlanFingerprint, _ = dbgaudit.Fingerprint("rollback-plan", string(bindingData))
+}
+
+func validateRollbackExecutionBinding(plan schemaPlan, target dbgsnapshot.Target, statements []string) error {
+	recomputed := plan
+	recomputed.Statements = append([]schemaPlanStatement(nil), plan.Statements...)
+	bindRollbackPlan(&recomputed, target)
+	if plan.PlanFingerprint == "" ||
+		plan.TargetFingerprint == "" ||
+		plan.PlannedStatements != len(statements) ||
+		!slices.Equal(schemaPlanStatements(plan), statements) ||
+		recomputed.PlanFingerprint != plan.PlanFingerprint ||
+		recomputed.TargetFingerprint != plan.TargetFingerprint {
+		return apperrors.New(
+			apperrors.CodeConflict,
+			"rollback plan binding changed after preview; review and retry",
+			nil,
+		)
+	}
+	return nil
 }
 
 func maxRisk(left, right safety.Risk) safety.Risk {
@@ -217,6 +340,36 @@ func printRollbackList(f *cliFlags, result rollbackListResult) error {
 			fmt.Sprint(meta.TableCount),
 		})
 	}
-	p.Table([]string{"ID", "TIMESTAMP", "OPERATOR", "COMMAND", "TICKET", "TABLES"}, rows)
+	return p.Table([]string{"ID", "TIMESTAMP", "OPERATOR", "COMMAND", "TICKET", "TABLES"}, rows)
+}
+
+func printRollbackResult(f *cliFlags, meta contextMeta, result rollbackResult) error {
+	p := newPrinter(f)
+	if f.Output == "json" {
+		return p.JSONDataEnvelope(printer.JSONDataEnvelope{
+			Kind: "RollbackResult",
+			Data: dataWithTarget(result, meta, targetWrite),
+		})
+	}
+	if err := printTargetHeader(p, meta, targetWrite); err != nil {
+		return err
+	}
+	if err := p.Table(
+		[]string{"SNAPSHOT", "SCOPE", "PLANNED", "APPLIED", "DATA RESTORED"},
+		[][]string{{
+			result.SnapshotID,
+			result.Scope,
+			fmt.Sprint(result.PlannedStatements),
+			fmt.Sprint(result.AppliedStatements),
+			fmt.Sprint(result.DataRestored),
+		}},
+	); err != nil {
+		return err
+	}
+	for _, warning := range result.Warnings {
+		if err := p.Warn(warning); err != nil {
+			return err
+		}
+	}
 	return nil
 }

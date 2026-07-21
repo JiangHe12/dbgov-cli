@@ -3,7 +3,7 @@ package cmd
 import (
 	"net"
 
-	"github.com/JiangHe12/opskit-core/printer"
+	"github.com/JiangHe12/opskit-core/v2/printer"
 )
 
 type targetMode string
@@ -23,12 +23,12 @@ type commandTarget struct {
 	Operation string `json:"operation"`
 }
 
-func printTargetHeader(p *printer.Printer, meta contextMeta, mode targetMode) {
+func printTargetHeader(p *printer.Printer, meta contextMeta, mode targetMode) error {
 	label := "TARGET"
 	if mode == targetWrite {
 		label = "WRITE TARGET"
 	}
-	p.TargetHeader(label, targetFields(meta))
+	return p.TargetHeader(label, targetFields(meta))
 }
 
 func dataWithTarget(data any, meta contextMeta, mode targetMode) any {

@@ -80,6 +80,13 @@ func TestSkillGovernanceRules(t *testing.T) {
 		"`--allow-destructive`",
 		"`--allow-no-where`",
 		"`--allow-production-prune`",
+		"`--allow-context-change`",
+		"`--allow-context-delete`",
+		"`--allow-role-change`",
+		"local OS `username@hostname`",
+		"`DBGOV_OPERATOR` are ignored",
+		"same OS account",
+		"pre-change policy",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("SKILL.md missing governance rule %q", want)
