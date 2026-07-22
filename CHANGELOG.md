@@ -2,8 +2,13 @@
 
 ## [Unreleased]
 
+## v0.4.1
+
 ### Security
 
+- Upgraded `golang.org/x/text` to v0.39.0 to remediate reachable
+  GO-2026-5970. Because v0.4.0 was already published, the remediation ships in
+  v0.4.1.
 - Release automation now requires a GitHub-verified signed annotated tag whose
   version matches `package.json`, an exact literal changelog heading, and the
   freshly fetched `origin/main` commit; complete CI/vulnerability and real-DB
