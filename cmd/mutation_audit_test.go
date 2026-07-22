@@ -20,6 +20,8 @@ import (
 	"github.com/JiangHe12/dbgov-cli/internal/backend/fake"
 )
 
+const mutationAuditConcurrencyTestTimeout = 5 * time.Second
+
 func TestMutationAuditWritesSanitizedIntentThenOutcome(t *testing.T) {
 	const (
 		ticketSentinel = "TICKET-SENSITIVE-SENTINEL"
@@ -621,7 +623,18 @@ func TestMutationOutcomeFallbackPrecedesConcurrentIntent(t *testing.T) {
 	go func() {
 		finishDone <- finishMutationAudit(prior, dbgaudit.MutationOutcome{Succeeded: 1}, nil)
 	}()
-	<-outcomeAppendStarted
+	var releaseOutcomeAppendOnce sync.Once
+	releaseBlockedOutcomeAppend := func() {
+		releaseOutcomeAppendOnce.Do(func() { close(releaseOutcomeAppend) })
+	}
+	t.Cleanup(releaseBlockedOutcomeAppend)
+	select {
+	case <-outcomeAppendStarted:
+	case err := <-finishDone:
+		t.Fatalf("finishMutationAudit() completed before reaching the blocked append: %v", err)
+	case <-time.After(mutationAuditConcurrencyTestTimeout):
+		t.Fatal("timed out waiting for the blocked mutation outcome append")
+	}
 
 	beginDone := make(chan error, 1)
 	go func() {
@@ -643,13 +656,23 @@ func TestMutationOutcomeFallbackPrecedesConcurrentIntent(t *testing.T) {
 		intentRanEarly = true
 	case <-time.After(150 * time.Millisecond):
 	}
-	close(releaseOutcomeAppend)
+	releaseBlockedOutcomeAppend()
 
-	if err := <-finishDone; apperrors.AsAppError(err).Code != codeAuditIncomplete {
-		t.Fatalf("finishMutationAudit() error = %v, want %s", err, codeAuditIncomplete)
+	select {
+	case err := <-finishDone:
+		if apperrors.AsAppError(err).Code != codeAuditIncomplete {
+			t.Fatalf("finishMutationAudit() error = %v, want %s", err, codeAuditIncomplete)
+		}
+	case <-time.After(mutationAuditConcurrencyTestTimeout):
+		t.Fatal("timed out waiting for the blocked mutation outcome to finish")
 	}
-	if err := <-beginDone; err != nil {
-		t.Fatalf("beginMutationAudit() error = %v", err)
+	select {
+	case err := <-beginDone:
+		if err != nil {
+			t.Fatalf("beginMutationAudit() error = %v", err)
+		}
+	case <-time.After(mutationAuditConcurrencyTestTimeout):
+		t.Fatal("timed out waiting for the concurrent mutation intent")
 	}
 	if intentRanEarly {
 		t.Fatal("concurrent intent appended before the prior failed outcome was durably spooled")
@@ -819,7 +842,18 @@ func TestAuditTimestampIsAssignedInsideAppendOrderLock(t *testing.T) {
 	}
 	firstDone := make(chan error, 1)
 	go func() { firstDone <- appendEvent(dbgaudit.EventTypeQuery) }()
-	<-firstNowStarted
+	var releaseFirstNowOnce sync.Once
+	releaseBlockedTimestamp := func() {
+		releaseFirstNowOnce.Do(func() { close(releaseFirstNow) })
+	}
+	t.Cleanup(releaseBlockedTimestamp)
+	select {
+	case <-firstNowStarted:
+	case err := <-firstDone:
+		t.Fatalf("first append completed before reaching the blocked timestamp: %v", err)
+	case <-time.After(mutationAuditConcurrencyTestTimeout):
+		t.Fatal("timed out waiting for the blocked audit timestamp assignment")
+	}
 	secondDone := make(chan error, 1)
 	go func() { secondDone <- appendEvent(dbgaudit.EventTypeExplain) }()
 
@@ -829,12 +863,22 @@ func TestAuditTimestampIsAssignedInsideAppendOrderLock(t *testing.T) {
 		appendedBeforeRelease = true
 	case <-time.After(150 * time.Millisecond):
 	}
-	close(releaseFirstNow)
-	if err := <-firstDone; err != nil {
-		t.Fatalf("first append error = %v", err)
+	releaseBlockedTimestamp()
+	select {
+	case err := <-firstDone:
+		if err != nil {
+			t.Fatalf("first append error = %v", err)
+		}
+	case <-time.After(mutationAuditConcurrencyTestTimeout):
+		t.Fatal("timed out waiting for the first audit append")
 	}
-	if err := <-secondDone; err != nil {
-		t.Fatalf("second append error = %v", err)
+	select {
+	case err := <-secondDone:
+		if err != nil {
+			t.Fatalf("second append error = %v", err)
+		}
+	case <-time.After(mutationAuditConcurrencyTestTimeout):
+		t.Fatal("timed out waiting for the second audit append")
 	}
 	if appendedBeforeRelease {
 		t.Fatal("second audit appended while the first append-order lock was assigning its timestamp")

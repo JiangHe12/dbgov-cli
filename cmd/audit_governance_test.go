@@ -523,7 +523,7 @@ func TestAuditPruneLockAndCandidateConsistency(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = held.Release() })
-		t.Setenv("OPSKIT_LOCK_TIMEOUT", "100ms")
+		t.Setenv("DBGOV_LOCK_TIMEOUT", "100ms")
 		out, err := executeCommandForTest(
 			"-o", "json", "audit", "prune", "--path", path, "--keep-last", "0",
 		)
@@ -542,7 +542,7 @@ func TestAuditPruneLockAndCandidateConsistency(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = held.Release() })
-		t.Setenv("OPSKIT_LOCK_TIMEOUT", "100ms")
+		t.Setenv("DBGOV_LOCK_TIMEOUT", "100ms")
 		_, err := executeCommandForTest(
 			"-o", "json", "--yes", "--ticket", "TEST-1", "--allow-audit-prune",
 			"audit", "prune", "--path", path, "--keep-last", "0", "--confirm",
@@ -585,7 +585,7 @@ func TestAuditPruneLockAndCandidateConsistency(t *testing.T) {
 		t.Setenv("HOME", home)
 		t.Setenv("USERPROFILE", home)
 		path, rotated := writeAuditPruneFixture(t, home)
-		t.Setenv("OPSKIT_LOCK_TIMEOUT", "100ms")
+		t.Setenv("DBGOV_LOCK_TIMEOUT", "100ms")
 		_, err := executeCommandForTest(
 			"-o", "json", "--yes", "--ticket", "TEST-1", "--allow-audit-prune",
 			"audit", "prune", "--path", path, "--keep-last", "0", "--confirm",
