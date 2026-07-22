@@ -17,6 +17,12 @@
   by the successful v0.4.0 release run, and CI now fails rather than silently
   skipping the real-database suite when a required endpoint is missing.
 
+### Fixed
+
+- Release checksum aggregation now merges matrix artifacts without Unix
+  binary/directory name collisions, verifies all six per-platform checksum
+  files, and fails unless the global manifest contains exactly six binaries.
+
 ## v0.4.0
 
 ### Added

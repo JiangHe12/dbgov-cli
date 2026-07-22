@@ -183,15 +183,41 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
+          pattern: dbgov-cli-*
+          merge-multiple: true
 
       - name: Generate checksums
+        shell: bash
         run: |
+          set -euo pipefail
           cd artifacts
-          for dir in */; do
-            mv "$dir"* . 2>/dev/null || true
-            rmdir "$dir" 2>/dev/null || true
+          binaries=(
+            dbgov-cli-darwin-amd64
+            dbgov-cli-darwin-arm64
+            dbgov-cli-linux-amd64
+            dbgov-cli-linux-arm64
+            dbgov-cli-windows-amd64.exe
+            dbgov-cli-windows-arm64.exe
+          )
+          expected_files=()
+          for binary in "${binaries[@]}"; do
+            expected_files+=("$binary" "$binary.sha256" "$binary.sig" "$binary.crt")
           done
-          sha256sum dbgov-cli-* | grep -v '\.sha256$' | grep -v '\.sig$' | grep -v '\.crt$' > checksums.txt
+          mapfile -t expected_files < <(printf '%s\n' "${expected_files[@]}" | LC_ALL=C sort)
+          mapfile -t actual_files < <(
+            find . -mindepth 1 -printf '%P\n' | LC_ALL=C sort
+          )
+          if ! diff -u \
+            <(printf '%s\n' "${expected_files[@]}") \
+            <(printf '%s\n' "${actual_files[@]}"); then
+            printf 'release artifact set must contain exactly six platform bundles\n' >&2
+            exit 1
+          fi
+          for binary in "${binaries[@]}"; do
+            sha256sum "$binary" | cmp - "$binary.sha256"
+          done
+          sha256sum "${binaries[@]}" > checksums.txt
+          test "$(wc -l < checksums.txt)" -eq 6
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -205,14 +231,14 @@ jobs:
           cd artifacts
           cosign sign-blob --yes --output-signature checksums.txt.sig --output-certificate checksums.txt.crt checksums.txt
 
-      - name: Upload checksums
+      - name: Verify release asset count
+        run: test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 27
+
+      - name: Upload release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: checksums
-          path: |
-            artifacts/checksums.txt
-            artifacts/checksums.txt.sig
-            artifacts/checksums.txt.crt
+          name: release-assets
+          path: artifacts/*
 
   publish:
     needs: [release, checksums]
@@ -236,13 +262,14 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
+          name: release-assets
           path: artifacts
 
       - name: Create Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           body_path: release_notes.md
-          files: artifacts/**/*
+          files: artifacts/*
 
   npm-publish:
     needs: publish
