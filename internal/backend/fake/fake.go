@@ -11,21 +11,24 @@ import (
 )
 
 type Backend struct {
-	Schema           schema.Schema
-	Executed         []string
-	FailAt           int
-	ExplainRows      int64
-	ExplainErr       error
-	BoundExplainRows *int64
-	BoundExplainErr  error
-	BoundCommitErr   error
-	DMLAffected      int64
-	DMLErr           error
-	ExecutedDML      []string
-	DDLs             map[string]string
-	TableDDLErr      error
-	CloseErr         error
-	CloseCalls       int
+	Schema            schema.Schema
+	IntrospectSchemas []schema.Schema
+	IntrospectCalls   int
+	Executed          []string
+	FailAt            int
+	DDLCommitErr      error
+	ExplainRows       int64
+	ExplainErr        error
+	BoundExplainRows  *int64
+	BoundExplainErr   error
+	BoundCommitErr    error
+	DMLAffected       int64
+	DMLErr            error
+	ExecutedDML       []string
+	DDLs              map[string]string
+	TableDDLErr       error
+	CloseErr          error
+	CloseCalls        int
 }
 
 func New() *Backend {
@@ -50,6 +53,14 @@ func (b *Backend) Close() error {
 }
 
 func (b *Backend) IntrospectSchema(context.Context) (schema.Schema, error) {
+	call := b.IntrospectCalls
+	b.IntrospectCalls++
+	if len(b.IntrospectSchemas) > 0 {
+		if call >= len(b.IntrospectSchemas) {
+			call = len(b.IntrospectSchemas) - 1
+		}
+		return b.IntrospectSchemas[call], nil
+	}
 	return b.Schema, nil
 }
 
@@ -108,6 +119,9 @@ func (b *Backend) ExecDDL(ctx context.Context, statements []string) (int, error)
 			return i, apperrors.New(apperrors.CodeBackendError, fmt.Sprintf("fake DDL failure at statement %d: %s", i+1, statement), nil)
 		}
 		b.Executed = append(b.Executed, statement)
+	}
+	if b.DDLCommitErr != nil {
+		return len(statements), dbbackend.NewCommitIndeterminateError(b.DDLCommitErr)
 	}
 	return len(statements), nil
 }

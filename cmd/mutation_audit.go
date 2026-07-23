@@ -21,6 +21,7 @@ import (
 	"github.com/JiangHe12/opskit-core/v2/lockfile"
 
 	dbgaudit "github.com/JiangHe12/dbgov-cli/internal/audit"
+	dbbackend "github.com/JiangHe12/dbgov-cli/internal/backend"
 )
 
 const (
@@ -235,6 +236,22 @@ func finishBatchMutationAudit(
 		attempted++
 	}
 	return finishMutationAuditProgress(handle, total, succeeded, attempted, operationErr)
+}
+
+func finishDDLMutationAudit(
+	handle *mutationAuditHandle,
+	total int,
+	executed int,
+	operationErr error,
+) error {
+	if dbbackend.IsCommitIndeterminate(operationErr) {
+		return finishMutationAudit(handle, dbgaudit.MutationOutcome{
+			Status:    dbgaudit.StatusFailed,
+			Uncertain: total,
+			Executed:  executed,
+		}, operationErr)
+	}
+	return finishBatchMutationAudit(handle, total, executed, operationErr)
 }
 
 func finishSkippedMutationAudit(

@@ -124,15 +124,15 @@ type DMLPlanBinding struct {
 }
 
 // CommitIndeterminateError reports that the database returned an error while
-// committing a DML transaction, so the caller cannot safely claim either
-// success or rollback.
+// committing a transaction, so the caller cannot safely claim either success
+// or rollback.
 type CommitIndeterminateError struct {
 	cause error
 }
 
 func (e *CommitIndeterminateError) Error() string {
 	if e == nil || e.cause == nil {
-		return "DML commit outcome is indeterminate"
+		return "transaction commit outcome is indeterminate"
 	}
 	return e.cause.Error()
 }
@@ -152,7 +152,7 @@ func NewCommitIndeterminateError(cause error) error {
 	}
 	appErr := apperrors.New(
 		apperrors.CodePartialFailure,
-		"DML commit outcome is indeterminate; do not retry automatically",
+		"transaction commit outcome is indeterminate; do not retry automatically",
 		cause,
 	).WithSuggestion("inspect the target database and audit record before deciding whether to retry")
 	return &CommitIndeterminateError{cause: appErr}

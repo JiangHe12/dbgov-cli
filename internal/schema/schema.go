@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -417,16 +418,19 @@ func parseColumns(body string) ([]Column, error) {
 		}
 		first := strings.ToUpper(trimSQLIdent(fields[0]))
 		switch first {
-		case "PRIMARY", "KEY", "UNIQUE", "INDEX", "CONSTRAINT", "FOREIGN":
-			continue
+		case "PRIMARY", "KEY", "UNIQUE", "INDEX", "CONSTRAINT", "FOREIGN", "CHECK", "FULLTEXT", "SPATIAL", "EXCLUDE", "LIKE":
+			return nil, unsupportedSchemaDefinition()
 		}
 		if len(fields) < 2 {
 			return nil, apperrors.New(apperrors.CodeNotImplemented, fmt.Sprintf("unsupported column definition: %s", strings.TrimSpace(part)), nil)
 		}
 		name := trimSQLIdent(fields[0])
-		columnType := columnTypeFromFields(fields[1:])
+		columnType, modifiers := columnTypeAndModifiers(fields[1:])
 		if columnType == "" {
 			return nil, apperrors.New(apperrors.CodeNotImplemented, fmt.Sprintf("unsupported column definition: %s", strings.TrimSpace(part)), nil)
+		}
+		if !supportedColumnModifiers(modifiers) {
+			return nil, unsupportedSchemaDefinition()
 		}
 		if !validDDLFragment(columnType, false) || containsDangerousDDLWord(columnType, "after", "first", "using") {
 			return nil, apperrors.New(apperrors.CodeValidationFailed, fmt.Sprintf("unsafe column type in definition: %s", strings.TrimSpace(part)), nil)
@@ -472,20 +476,43 @@ func hasIdentityClause(fields []string) bool {
 	return false
 }
 
-func columnTypeFromFields(fields []string) string {
+func columnTypeAndModifiers(fields []string) (string, []string) {
 	typeFields := make([]string, 0, len(fields))
-	for _, field := range fields {
+	for index, field := range fields {
 		if isColumnConstraintKeyword(field) {
-			break
+			return strings.Join(typeFields, " "), fields[index:]
 		}
 		typeFields = append(typeFields, field)
 	}
-	return strings.Join(typeFields, " ")
+	return strings.Join(typeFields, " "), nil
+}
+
+func supportedColumnModifiers(fields []string) bool {
+	if len(fields) == 0 {
+		return true
+	}
+	normalized := make([]string, len(fields))
+	for index, field := range fields {
+		normalized[index] = strings.ToUpper(strings.Trim(field, "`\""))
+	}
+	if len(normalized) == 1 && normalized[0] == "AUTO_INCREMENT" {
+		return true
+	}
+	return slices.Equal(normalized, []string{"GENERATED", "ALWAYS", "AS", "IDENTITY"}) ||
+		slices.Equal(normalized, []string{"GENERATED", "BY", "DEFAULT", "AS", "IDENTITY"})
+}
+
+func unsupportedSchemaDefinition() error {
+	return apperrors.New(
+		apperrors.CodeNotImplemented,
+		"schema definition contains constraints or modifiers that cannot be represented losslessly",
+		nil,
+	)
 }
 
 func isColumnConstraintKeyword(field string) bool {
 	switch strings.ToUpper(strings.Trim(field, "`\"")) {
-	case "NOT", "NULL", "DEFAULT", "PRIMARY", "UNIQUE", "REFERENCES", "CHECK", "GENERATED", "COLLATE", "CONSTRAINT", "AUTO_INCREMENT", "COMMENT", "KEY", "IDENTITY":
+	case "NOT", "NULL", "DEFAULT", "PRIMARY", "UNIQUE", "REFERENCES", "CHECK", "GENERATED", "COLLATE", "CONSTRAINT", "AUTO_INCREMENT", "COMMENT", "KEY", "IDENTITY", "ON":
 		return true
 	default:
 		return false

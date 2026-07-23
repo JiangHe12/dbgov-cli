@@ -76,6 +76,9 @@ func newRootCmdWith(f *cliFlags) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			if err := validateOutputFormat(f.Output); err != nil {
+				return err
+			}
 			applyGlobalFlags(f)
 			operator, err := resolveTrustedOperator()
 			if err != nil {
@@ -132,6 +135,19 @@ func newRootCmdWith(f *cliFlags) *cobra.Command {
 	_ = root.PersistentFlags().MarkDeprecated("operator", "operator identity is derived from the local OS user and hostname")
 	root.AddCommand(newContextCmd(f), newSchemaCmd(f), newDataCmd(f), newExportCmd(f), newImportCmd(f), newReconcileCmd(f), newRollbackCmd(f), newAuditCmd(f), newInstallCmd(f), newVersionCmd(f), newCapabilitiesCmd(f), newDoctorCmd(f), newQueryCmd(f), newExplainCmd(f))
 	return root
+}
+
+func validateOutputFormat(format string) error {
+	switch format {
+	case "table", "json", "plain":
+		return nil
+	default:
+		return apperrors.New(
+			apperrors.CodeUsageError,
+			fmt.Sprintf("invalid output format %q; expected table, json, or plain", format),
+			nil,
+		)
+	}
 }
 
 // ExecuteContext runs the production command lifecycle, including bounded

@@ -68,6 +68,20 @@ func TestQueryRejectsWriteSQL(t *testing.T) {
 	}
 }
 
+func TestQueryRejectsUnknownFunctionBeforeBackendAccess(t *testing.T) {
+	_, err := executeCommandForTest(
+		"query",
+		"--sql", "SELECT dangerous_udf(id) FROM users",
+		"--fake",
+	)
+	if err == nil {
+		t.Fatal("expected query to reject unknown function")
+	}
+	if !strings.Contains(err.Error(), "unknown or user-defined functions are rejected") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestQueryRejectsExecutingExplainAndDataModifyingCTE(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -437,6 +451,171 @@ func TestSchemaApplyR3RequiresTicketAllowFlagAndYes(t *testing.T) {
 	}
 	if evt := lastAuditEvent(t, home); evt.Risk != "R3" || !evt.Destructive || evt.Executed != 2 {
 		t.Fatalf("R3 audit event = %+v", evt)
+	}
+}
+
+func TestSchemaPlanBindingIsStableAndBindsStateAndTarget(t *testing.T) {
+	current := schema.Schema{Tables: map[string]schema.Table{
+		"users": {Name: "users", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+	desired := schema.Schema{Tables: map[string]schema.Table{
+		"users": {Name: "users", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}, {Name: "name", Type: "TEXT"}}},
+	}}
+	meta := contextMeta{Name: "dev", Engine: "mysql", Host: "db.example", Port: 3306, Database: "app"}
+	backend := fake.New()
+
+	first, err := buildBoundSchemaPlan(backend, meta, current, desired)
+	if err != nil {
+		t.Fatalf("first plan error = %v", err)
+	}
+	second, err := buildBoundSchemaPlan(backend, meta, current, desired)
+	if err != nil {
+		t.Fatalf("second plan error = %v", err)
+	}
+	if first.PlanFingerprint == "" || first.TargetFingerprint == "" {
+		t.Fatalf("plan binding is empty: %+v", first)
+	}
+	if first.PlanFingerprint != second.PlanFingerprint || first.TargetFingerprint != second.TargetFingerprint {
+		t.Fatalf("stable inputs produced different bindings:\nfirst=%+v\nsecond=%+v", first, second)
+	}
+
+	drifted := schema.Schema{Tables: map[string]schema.Table{
+		"users":  current.Tables["users"],
+		"orders": {Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+	afterDrift, err := buildBoundSchemaPlan(backend, meta, drifted, desired)
+	if err != nil {
+		t.Fatalf("drifted plan error = %v", err)
+	}
+	if afterDrift.PlanFingerprint == first.PlanFingerprint {
+		t.Fatal("current schema drift did not change plan fingerprint")
+	}
+	if afterDrift.TargetFingerprint != first.TargetFingerprint {
+		t.Fatal("current schema drift unexpectedly changed target fingerprint")
+	}
+
+	otherTarget := meta
+	otherTarget.Host = "other.example"
+	retargeted, err := buildBoundSchemaPlan(backend, otherTarget, current, desired)
+	if err != nil {
+		t.Fatalf("retargeted plan error = %v", err)
+	}
+	if retargeted.TargetFingerprint == first.TargetFingerprint {
+		t.Fatal("database target change did not change target fingerprint")
+	}
+}
+
+func TestSchemaApplyCommitIndeterminateAuditsEveryStatementAsUncertain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, name VARCHAR(100));`)
+	backend := fake.New()
+	backend.DDLCommitErr = errors.New("connection lost during commit")
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, err := executeCommandForTest(
+		"--yes", "--ticket", "CHG-1",
+		"schema", "apply", "-f", desired, "--fake", "--allow-destructive",
+	)
+	appErr := apperrors.AsAppError(err)
+	if appErr.Code != apperrors.CodePartialFailure || appErr.Retryable || apperrors.ExitCode(err) != 11 {
+		t.Fatalf("schema apply error = %+v, want non-retryable PARTIAL_FAILURE exit 11", appErr)
+	}
+	if len(backend.Executed) != 2 {
+		t.Fatalf("executed = %+v, want both statements attempted before commit", backend.Executed)
+	}
+	event := lastAuditEvent(t, home)
+	if event.Status != dbgaudit.StatusFailed ||
+		event.Error == nil ||
+		event.Error.Code != string(apperrors.CodePartialFailure) ||
+		event.Executed != 2 ||
+		event.FailedStatementFingerprint != "" ||
+		event.Outcome == nil ||
+		event.Outcome.Succeeded != 0 ||
+		event.Outcome.Failed != 0 ||
+		event.Outcome.Uncertain != 2 ||
+		event.Outcome.Skipped != 0 {
+		t.Fatalf("commit-indeterminate audit event = %+v", event)
+	}
+}
+
+func TestSchemaMutationsRejectPostAuthorizationDriftBeforeDDL(t *testing.T) {
+	tests := []struct {
+		name string
+		args func(t *testing.T, home string) []string
+	}{
+		{
+			name: "apply",
+			args: func(t *testing.T, home string) []string {
+				desired := writeTestFile(t, home, "desired.sql", `CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));`)
+				return []string{"--yes", "schema", "apply", "-f", desired, "--fake"}
+			},
+		},
+		{
+			name: "import",
+			args: func(t *testing.T, _ string) []string {
+				dir := t.TempDir()
+				writeTestFile(t, dir, "users.sql", `CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));`)
+				return []string{"--yes", "import", dir, "--fake"}
+			},
+		},
+		{
+			name: "reconcile",
+			args: func(t *testing.T, _ string) []string {
+				dir := t.TempDir()
+				writeTestFile(t, dir, "users.sql", `CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));`)
+				return []string{"--yes", "reconcile", dir, "--fake"}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+			baseline := fake.New().Schema
+			drifted := schema.Schema{Tables: map[string]schema.Table{
+				"users":  baseline.Tables["users"],
+				"orders": {Name: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}},
+			}}
+			backend := fake.New()
+			backend.IntrospectSchemas = []schema.Schema{baseline, drifted}
+			restore := stubFakeBackend(t, backend)
+			defer restore()
+
+			_, err := executeCommandForTest(test.args(t, home)...)
+			if appErr := apperrors.AsAppError(err); appErr.Code != apperrors.CodeConflict {
+				t.Fatalf("error = %+v, want CONFLICT", appErr)
+			}
+			if backend.IntrospectCalls != 2 {
+				t.Fatalf("introspection calls = %d, want initial plan plus post-authorization revalidation", backend.IntrospectCalls)
+			}
+			if len(backend.Executed) != 0 {
+				t.Fatalf("DDL executed after drift: %+v", backend.Executed)
+			}
+			event := lastAuditEvent(t, home)
+			if event.Status != dbgaudit.StatusFailed ||
+				event.Error == nil ||
+				event.Error.Code != string(apperrors.CodeConflict) ||
+				event.Outcome == nil ||
+				event.Outcome.Succeeded != 0 ||
+				event.Outcome.Failed != 0 ||
+				event.Outcome.Uncertain != 0 ||
+				event.Outcome.Skipped != 1 ||
+				event.Executed != 0 {
+				t.Fatalf("drift audit event = %+v", event)
+			}
+			snapshots, listErr := dbgsnapshot.List(snapshotDirForTest(home))
+			if listErr != nil {
+				t.Fatalf("list snapshots: %v", listErr)
+			}
+			if len(snapshots) != 0 {
+				t.Fatalf("snapshots created after drift: %+v", snapshots)
+			}
+		})
 	}
 }
 

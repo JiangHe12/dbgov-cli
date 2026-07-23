@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -79,6 +80,37 @@ type schemaPlanStatement struct {
 	Column      string        `json:"column,omitempty"`
 	Risk        string        `json:"risk"`
 	Destructive bool          `json:"destructive"`
+}
+
+type schemaPlanRenderer interface {
+	RenderDDL([]schema.Change) ([]string, error)
+}
+
+type schemaPlanBackend interface {
+	schemaPlanRenderer
+	IntrospectSchema(context.Context) (schema.Schema, error)
+}
+
+type schemaExecutionBackend interface {
+	schemaPlanBackend
+	TableDDL(context.Context, string) (string, error)
+}
+
+type schemaExecutionBinding struct {
+	PlanFingerprint   string   `json:"planFingerprint"`
+	TargetFingerprint string   `json:"targetFingerprint"`
+	Statements        []string `json:"statements"`
+}
+
+type schemaPlanFingerprintPayload struct {
+	TargetFingerprint     string                `json:"targetFingerprint"`
+	Current               schema.Schema         `json:"current"`
+	Desired               schema.Schema         `json:"desired"`
+	Statements            []schemaPlanStatement `json:"statements"`
+	OverallRisk           string                `json:"overallRisk"`
+	Destructive           bool                  `json:"destructive"`
+	Warnings              []string              `json:"warnings,omitempty"`
+	RequiredAuthorization string                `json:"requiredAuthorization,omitempty"`
 }
 
 func newSchemaCmd(f *cliFlags) *cobra.Command {
@@ -229,7 +261,7 @@ func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) (resultErr error) {
 		emitAudit(f, event, err)
 		return err
 	}
-	plan, err := buildSchemaPlan(b, current, desired)
+	plan, err := buildBoundSchemaPlan(b, meta, current, desired)
 	event := dbgaudit.New(dbgaudit.EventTypeSchemaPlan, currentOperator(f), auditContext(meta), auditTarget(meta, "schema", "plan"))
 	event.Risk = plan.OverallRisk
 	event.Destructive = plan.Destructive
@@ -261,7 +293,7 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) (resultErr error) {
 		emitAudit(f, event, err)
 		return err
 	}
-	plan, err := buildSchemaPlan(b, current, desired)
+	plan, err := buildBoundSchemaPlan(b, meta, current, desired)
 	if err != nil {
 		event := newSchemaApplyAuditEvent(f, meta, plan)
 		emitAudit(f, event, err)
@@ -290,7 +322,7 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) (resultErr error) {
 		return err
 	}
 	statements := schemaPlanStatements(plan)
-	metadata := mutationValueMetadata(string(dbgaudit.EventTypeSchemaApply), statements)
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeSchemaApply), schemaPlanExecutionBinding(plan))
 	metadata.Items = len(statements)
 	handle, err := beginMutationAudit(f, mutationAuditSpec{
 		Action:   string(dbgaudit.EventTypeSchemaApply),
@@ -300,7 +332,9 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "apply")
+	snapshotID, err := prepareSchemaExecutionSnapshot(f, b, meta, "apply", plan, func(fresh schema.Schema) (schemaPlan, error) {
+		return buildBoundSchemaPlan(b, meta, fresh, desired)
+	})
 	if err != nil {
 		return finishSkippedMutationAudit(handle, len(statements), err)
 	}
@@ -310,7 +344,7 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) (resultErr error) {
 	if err != nil && executed < len(statements) {
 		handle.spec.Event.FailedStatement = statements[executed]
 	}
-	if auditErr := finishBatchMutationAudit(handle, len(statements), executed, err); auditErr != nil {
+	if auditErr := finishDDLMutationAudit(handle, len(statements), executed, err); auditErr != nil {
 		return auditErr
 	}
 	return printSchemaPlan(f, meta, targetWrite, plan)
@@ -510,18 +544,12 @@ func printSchemaDiff(f *cliFlags, meta contextMeta, diff schema.DiffResult) erro
 	return p.Table([]string{"ACTION", "TABLE", "COLUMN", "TYPE", "RISK", "NOTE"}, rows)
 }
 
-func buildSchemaPlan(b interface {
-	RenderDDL([]schema.Change) ([]string, error)
-}, current, desired schema.Schema,
-) (schemaPlan, error) {
+func buildSchemaPlan(b schemaPlanRenderer, current, desired schema.Schema) (schemaPlan, error) {
 	diff := schema.Diff(current, desired)
 	return buildSchemaPlanFromDiff(b, diff)
 }
 
-func buildSchemaPlanFromDiff(b interface {
-	RenderDDL([]schema.Change) ([]string, error)
-}, diff schema.DiffResult,
-) (schemaPlan, error) {
+func buildSchemaPlanFromDiff(b schemaPlanRenderer, diff schema.DiffResult) (schemaPlan, error) {
 	risk := schema.ClassifyDiff(diff)
 	statements, err := b.RenderDDL(diff.Changes)
 	if err != nil {
@@ -547,6 +575,97 @@ func buildSchemaPlanFromDiff(b interface {
 		})
 	}
 	return plan, nil
+}
+
+func buildBoundSchemaPlan(
+	b schemaPlanRenderer,
+	meta contextMeta,
+	current schema.Schema,
+	desired schema.Schema,
+) (schemaPlan, error) {
+	plan, err := buildSchemaPlan(b, current, desired)
+	bindSchemaPlan(&plan, meta, current, desired)
+	return plan, err
+}
+
+func bindSchemaPlan(plan *schemaPlan, meta contextMeta, current, desired schema.Schema) {
+	targetData, _ := json.Marshal(normalizedSnapshotTarget(*snapshotTarget(meta)))
+	plan.TargetFingerprint, _ = dbgaudit.Fingerprint("schema-target", string(targetData))
+	plan.PlannedStatements = len(plan.Statements)
+	payload := schemaPlanFingerprintPayload{
+		TargetFingerprint:     plan.TargetFingerprint,
+		Current:               current,
+		Desired:               desired,
+		Statements:            plan.Statements,
+		OverallRisk:           plan.OverallRisk,
+		Destructive:           plan.Destructive,
+		Warnings:              plan.Warnings,
+		RequiredAuthorization: plan.RequiredAuthorization,
+	}
+	payloadData, _ := json.Marshal(payload)
+	plan.PlanFingerprint, _ = dbgaudit.Fingerprint("schema-plan", string(payloadData))
+}
+
+func schemaPlanExecutionBinding(plan schemaPlan) schemaExecutionBinding {
+	return schemaExecutionBinding{
+		PlanFingerprint:   plan.PlanFingerprint,
+		TargetFingerprint: plan.TargetFingerprint,
+		Statements:        schemaPlanStatements(plan),
+	}
+}
+
+func revalidateSchemaExecutionPlan(
+	f *cliFlags,
+	b schemaPlanBackend,
+	expected schemaPlan,
+	rebuild func(schema.Schema) (schemaPlan, error),
+) (schema.Schema, error) {
+	if expected.PlanFingerprint == "" ||
+		expected.TargetFingerprint == "" ||
+		expected.PlannedStatements != len(expected.Statements) {
+		return schema.Schema{}, apperrors.New(
+			apperrors.CodeConflict,
+			"schema plan binding is invalid; review and retry",
+			nil,
+		)
+	}
+	fresh, err := b.IntrospectSchema(commandContext(f))
+	if err != nil {
+		return schema.Schema{}, err
+	}
+	actual, err := rebuild(fresh)
+	if err != nil {
+		return fresh, apperrors.New(
+			apperrors.CodeConflict,
+			"database schema changed after authorization; review and retry",
+			err,
+		)
+	}
+	if actual.PlanFingerprint != expected.PlanFingerprint ||
+		actual.TargetFingerprint != expected.TargetFingerprint ||
+		actual.PlannedStatements != expected.PlannedStatements {
+		return fresh, apperrors.New(
+			apperrors.CodeConflict,
+			"database schema changed after authorization; review and retry",
+			nil,
+		)
+	}
+	return fresh, nil
+}
+
+func prepareSchemaExecutionSnapshot(
+	f *cliFlags,
+	b schemaExecutionBackend,
+	meta contextMeta,
+	command string,
+	expected schemaPlan,
+	rebuild func(schema.Schema) (schemaPlan, error),
+) (string, error) {
+	fresh, err := revalidateSchemaExecutionPlan(f, b, expected, rebuild)
+	if err != nil {
+		return "", err
+	}
+	return captureSchemaSnapshot(f, b, fresh, meta, command)
 }
 
 func printSchemaPlan(f *cliFlags, meta contextMeta, mode targetMode, plan schemaPlan) error {

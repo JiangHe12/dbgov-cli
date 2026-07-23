@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+## v0.4.2
+
+### Security
+
+- Read-only SQL classification now permits only recognized unquoted MySQL
+  native functions and canonically `pg_catalog`-qualified PostgreSQL functions;
+  unknown, shadowable, quoted-ambiguous, extension, and user-defined function
+  calls fail closed.
+- Desired-schema parsing now rejects constraints and column modifiers that
+  cannot be represented losslessly instead of silently dropping them.
+- Schema mutations bind the authorized plan to the target, current and desired
+  schemas, rendered statements, and risk decision, then revalidate that binding
+  before snapshot creation or DDL execution.
+- npm installation now trusts only the exact six platform digests embedded in
+  the provenance-bound package manifest. Release automation verifies the signed
+  checksum and binary bundle before GitHub Release and npm publication, while
+  verified downloads use exclusive temporary files, bounded transfers, fsync,
+  and atomic replacement without a verification bypass.
+
+### Fixed
+
+- PostgreSQL DDL commit errors are reported as indeterminate partial failures,
+  and every statement in the transaction is recorded as uncertain rather than
+  incorrectly implying rollback.
+- Invalid output formats are rejected at command preflight.
+- Updated Cosign to v2.6.4 and hardened CI checks for installer tests and the
+  exact five-file npm package.
+
+### Changed
+
+- Updated `opskit-core/v2` to v2.0.2 for shared owner-only, no-follow,
+  durable-atomic context and encrypted credential storage.
+- Updated `golang.org/x/crypto`, `x/net`, `x/sys`, and `x/term` to their current
+  patched releases.
+
 ## v0.4.1
 
 ### Security

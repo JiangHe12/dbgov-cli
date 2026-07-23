@@ -161,7 +161,7 @@ Read-only SQL:
 dbgov-cli query --sql "SELECT id, name FROM users" -o json
 ```
 
-`query` rejects writable CTEs, row-locking clauses, file/session/administrative side-effect functions, and MySQL user-variable assignment. It runs accepted SQL in a database read-only transaction and rolls that transaction back after reading the result. JSON preserves SQL `NULL` as `null` and keeps it distinct from `""`; table output displays it as `NULL`. Custom functions and views cannot be proven side-effect-free lexically, so production contexts must still use a database account whose privileges are read-only. Use `data exec` for DML and `schema apply` for DDL.
+`query` rejects writable CTEs, row-locking clauses, file/session/administrative side-effect functions, MySQL user-variable assignment, and unknown or user-defined function calls. MySQL permits only recognized unquoted native functions; quoted function identifiers are rejected as ambiguous. Ordinary PostgreSQL functions require canonical `pg_catalog` qualification (for example, `pg_catalog.count(*)`); unqualified calls are limited to non-redefinable SQL grammar constructs such as `COALESCE`, and quoted identifiers are case-sensitive. It runs accepted SQL in a database read-only transaction and rolls that transaction back after reading the result. The lexical classifier cannot resolve view bodies, user-defined operators, or functions reached through casts, so production contexts must still use a database account whose privileges are read-only. JSON preserves SQL `NULL` as `null` and keeps it distinct from `""`; table output displays it as `NULL`. Use `data exec` for DML and `schema apply` for DDL.
 
 Execution plan and estimated impact:
 

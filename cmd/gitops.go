@@ -163,7 +163,7 @@ func runImport(f *cliFlags, opts importOptions) (resultErr error) {
 		emitAudit(f, event, err)
 		return err
 	}
-	plan, err := buildSchemaPlan(b, current, desired)
+	plan, err := buildBoundSchemaPlan(b, meta, current, desired)
 	if err != nil {
 		event := newImportAuditEvent(f, meta, plan)
 		emitAudit(f, event, err)
@@ -192,7 +192,7 @@ func runImport(f *cliFlags, opts importOptions) (resultErr error) {
 		return err
 	}
 	statements := schemaPlanStatements(plan)
-	metadata := mutationValueMetadata(string(dbgaudit.EventTypeImport), statements)
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeImport), schemaPlanExecutionBinding(plan))
 	metadata.Items = len(statements)
 	handle, err := beginMutationAudit(f, mutationAuditSpec{
 		Action:   string(dbgaudit.EventTypeImport),
@@ -202,7 +202,9 @@ func runImport(f *cliFlags, opts importOptions) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "import")
+	snapshotID, err := prepareSchemaExecutionSnapshot(f, b, meta, "import", plan, func(fresh schema.Schema) (schemaPlan, error) {
+		return buildBoundSchemaPlan(b, meta, fresh, desired)
+	})
 	if err != nil {
 		return finishSkippedMutationAudit(handle, len(statements), err)
 	}
@@ -212,7 +214,7 @@ func runImport(f *cliFlags, opts importOptions) (resultErr error) {
 	if err != nil && executed < len(statements) {
 		handle.spec.Event.FailedStatement = statements[executed]
 	}
-	if auditErr := finishBatchMutationAudit(handle, len(statements), executed, err); auditErr != nil {
+	if auditErr := finishDDLMutationAudit(handle, len(statements), executed, err); auditErr != nil {
 		return auditErr
 	}
 	return printSchemaPlan(f, meta, targetWrite, plan)
@@ -234,16 +236,7 @@ func runReconcile(f *cliFlags, opts reconcileOptions) (resultErr error) {
 		emitAudit(f, event, err)
 		return err
 	}
-	diff := schema.Diff(current, desired)
-	extra := schema.ExtraTables(current, desired)
-	if opts.prune {
-		diff.Changes = append(diff.Changes, schema.PruneChanges(current, desired)...)
-	} else {
-		for _, table := range extra {
-			diff.Warnings = append(diff.Warnings, fmt.Sprintf("drift: table %s exists in database but not in desired schema; not pruned (use --prune)", table))
-		}
-	}
-	plan, err := buildSchemaPlanFromDiff(b, diff)
+	plan, err := buildBoundReconcilePlan(b, meta, current, desired, opts.prune)
 	if err != nil {
 		event := newReconcileAuditEvent(f, meta, plan)
 		emitAudit(f, event, err)
@@ -265,7 +258,7 @@ func runReconcile(f *cliFlags, opts reconcileOptions) (resultErr error) {
 		return err
 	}
 	statements := schemaPlanStatements(plan)
-	metadata := mutationValueMetadata(string(dbgaudit.EventTypeReconcile), statements)
+	metadata := mutationValueMetadata(string(dbgaudit.EventTypeReconcile), schemaPlanExecutionBinding(plan))
 	metadata.Items = len(statements)
 	handle, err := beginMutationAudit(f, mutationAuditSpec{
 		Action:   string(dbgaudit.EventTypeReconcile),
@@ -275,7 +268,9 @@ func runReconcile(f *cliFlags, opts reconcileOptions) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "reconcile")
+	snapshotID, err := prepareSchemaExecutionSnapshot(f, b, meta, "reconcile", plan, func(fresh schema.Schema) (schemaPlan, error) {
+		return buildBoundReconcilePlan(b, meta, fresh, desired, opts.prune)
+	})
 	if err != nil {
 		return finishSkippedMutationAudit(handle, len(statements), err)
 	}
@@ -285,10 +280,31 @@ func runReconcile(f *cliFlags, opts reconcileOptions) (resultErr error) {
 	if err != nil && executed < len(statements) {
 		handle.spec.Event.FailedStatement = statements[executed]
 	}
-	if auditErr := finishBatchMutationAudit(handle, len(statements), executed, err); auditErr != nil {
+	if auditErr := finishDDLMutationAudit(handle, len(statements), executed, err); auditErr != nil {
 		return auditErr
 	}
 	return printSchemaPlan(f, meta, targetWrite, plan)
+}
+
+func buildBoundReconcilePlan(
+	b schemaPlanRenderer,
+	meta contextMeta,
+	current schema.Schema,
+	desired schema.Schema,
+	prune bool,
+) (schemaPlan, error) {
+	diff := schema.Diff(current, desired)
+	extra := schema.ExtraTables(current, desired)
+	if prune {
+		diff.Changes = append(diff.Changes, schema.PruneChanges(current, desired)...)
+	} else {
+		for _, table := range extra {
+			diff.Warnings = append(diff.Warnings, fmt.Sprintf("drift: table %s exists in database but not in desired schema; not pruned (use --prune)", table))
+		}
+	}
+	plan, err := buildSchemaPlanFromDiff(b, diff)
+	bindSchemaPlan(&plan, meta, current, desired)
+	return plan, err
 }
 
 func newImportAuditEvent(f *cliFlags, meta contextMeta, plan schemaPlan) dbgaudit.Event {

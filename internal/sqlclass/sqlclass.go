@@ -137,7 +137,7 @@ func isReadOnlyStatement(sql string, dialect Dialect, nesting int) bool {
 	case "select":
 		return !hasReadSideEffect(sql, dialect)
 	case "show":
-		return true
+		return !hasReadSideEffect(sql, dialect)
 	case "describe", "desc":
 		if !scanner.skipIgnorable() || scanner.pos >= len(scanner.sql) {
 			return false
@@ -248,6 +248,18 @@ func (s *sqlScanner) readWord() (string, bool) {
 	return strings.ToLower(s.sql[start:s.pos]), true
 }
 
+func (s *sqlScanner) readPotentialIdentifier() (string, bool) {
+	if !s.skipIgnorable() || s.pos >= len(s.sql) || !isPotentialIdentifierStart(s.sql[s.pos]) {
+		return "", false
+	}
+	start := s.pos
+	s.pos++
+	for s.pos < len(s.sql) && isPotentialIdentifierPart(s.sql[s.pos]) {
+		s.pos++
+	}
+	return strings.ToLower(s.sql[start:s.pos]), true
+}
+
 func (s *sqlScanner) consumeWord(want string) bool {
 	start := s.pos
 	word, ok := s.readWord()
@@ -268,14 +280,11 @@ func (s *sqlScanner) skipIdentifier() bool {
 	if s.dialect == DialectPostgres && s.sql[s.pos] == '"' {
 		return s.skipQuoted('"')
 	}
-	if !isIdentifierStart(s.sql[s.pos]) {
+	if !isPotentialIdentifierStart(s.sql[s.pos]) {
 		return false
 	}
-	s.pos++
-	for s.pos < len(s.sql) && isIdentifierPart(s.sql[s.pos]) {
-		s.pos++
-	}
-	return true
+	_, ok := s.readPotentialIdentifier()
+	return ok
 }
 
 //nolint:gocyclo // Balanced SQL scanning keeps quote/comment/dollar-quote state in one fail-closed loop.
@@ -406,7 +415,7 @@ func (s *sqlScanner) readIdentifierToken() (string, bool) {
 			return s.readQuotedIdentifier('`')
 		}
 	}
-	return s.readWord()
+	return s.readPotentialIdentifier()
 }
 
 func (s *sqlScanner) hasDollarQuote() bool {
@@ -655,27 +664,52 @@ func hasReadSideEffect(sql string, dialect Dialect) bool {
 	return false
 }
 
+type precedingSQLToken struct {
+	word   string
+	symbol byte
+}
+
+func (token precedingSQLToken) isWord(words ...string) bool {
+	for _, word := range words {
+		if token.word == word {
+			return true
+		}
+	}
+	return false
+}
+
+func (token precedingSQLToken) isComparisonOperator() bool {
+	switch token.symbol {
+	case '=', '<', '>', '!':
+		return true
+	default:
+		return false
+	}
+}
+
 //nolint:gocyclo // Lock clauses and function calls must share one quote/comment-aware pass at every nesting depth.
 func hasUnsafeReadConstruct(sql string, dialect Dialect) bool {
 	scanner := sqlScanner{sql: sql, dialect: dialect}
+	var previous precedingSQLToken
 	for scanner.pos < len(scanner.sql) {
 		switch scanner.sql[scanner.pos] {
 		case '\'':
 			if !scanner.skipQuoted('\'') {
 				return true
 			}
+			previous = precedingSQLToken{symbol: '\''}
 		case '"':
 			if dialect == DialectPostgres {
 				name, ok := scanner.readQuotedIdentifier('"')
 				if !ok ||
-					isUnsafeFunctionCall(name, &scanner, dialect) ||
+					isUnsafeFunctionCall(name, &scanner, dialect, true, previous) ||
 					isUnsafeSequenceConstruct(name, &scanner, dialect) {
 					return true
 				}
 			} else {
 				quoted := scanner
 				if name, ok := quoted.readQuotedIdentifier('"'); ok &&
-					(isUnsafeFunctionCall(name, &quoted, dialect) ||
+					(isUnsafeFunctionCall(name, &quoted, dialect, true, previous) ||
 						isUnsafeSequenceConstruct(name, &quoted, dialect)) {
 					return true
 				}
@@ -683,24 +717,34 @@ func hasUnsafeReadConstruct(sql string, dialect Dialect) bool {
 					return true
 				}
 			}
+			previous = precedingSQLToken{symbol: '"'}
 		case '`':
 			if dialect != DialectMySQL {
 				return true
 			}
 			name, ok := scanner.readQuotedIdentifier('`')
 			if !ok ||
-				isUnsafeFunctionCall(name, &scanner, dialect) ||
+				isUnsafeFunctionCall(name, &scanner, dialect, true, previous) ||
 				isUnsafeSequenceConstruct(name, &scanner, dialect) {
 				return true
 			}
+			previous = precedingSQLToken{symbol: '`'}
 		case '$':
 			if dialect == DialectPostgres && scanner.hasDollarQuote() {
 				if !scanner.skipDollarQuote() {
 					return true
 				}
+				previous = precedingSQLToken{symbol: '\''}
 				continue
 			}
-			scanner.pos++
+			word, ok := scanner.readPotentialIdentifier()
+			if !ok ||
+				isUnsafeLockClause(word, &scanner, dialect) ||
+				isUnsafeSequenceConstruct(word, &scanner, dialect) ||
+				isUnsafeFunctionCall(word, &scanner, dialect, false, previous) {
+				return true
+			}
+			previous = precedingSQLToken{word: word}
 		case ':':
 			if dialect == DialectMySQL &&
 				scanner.pos+1 < len(scanner.sql) &&
@@ -708,6 +752,7 @@ func hasUnsafeReadConstruct(sql string, dialect Dialect) bool {
 				return true
 			}
 			scanner.pos++
+			previous = precedingSQLToken{symbol: ':'}
 		case '-', '/', '#':
 			start := scanner.pos
 			if !scanner.skipComment() {
@@ -717,18 +762,24 @@ func hasUnsafeReadConstruct(sql string, dialect Dialect) bool {
 				scanner.pos++
 			}
 		default:
-			if !isIdentifierStart(scanner.sql[scanner.pos]) {
+			if isSpace(scanner.sql[scanner.pos]) {
 				scanner.pos++
 				continue
 			}
-			word, ok := scanner.readWord()
+			if !isPotentialIdentifierStart(scanner.sql[scanner.pos]) {
+				previous = precedingSQLToken{symbol: scanner.sql[scanner.pos]}
+				scanner.pos++
+				continue
+			}
+			word, ok := scanner.readPotentialIdentifier()
 			if !ok ||
 				isPostgresUnicodeQuotedIdentifier(word, &scanner, dialect) ||
 				isUnsafeLockClause(word, &scanner, dialect) ||
 				isUnsafeSequenceConstruct(word, &scanner, dialect) ||
-				isUnsafeFunctionCall(word, &scanner, dialect) {
+				isUnsafeFunctionCall(word, &scanner, dialect, false, previous) {
 				return true
 			}
+			previous = precedingSQLToken{word: word}
 		}
 	}
 	return false
@@ -798,9 +849,17 @@ func isUnsafeSequenceConstruct(word string, scanner *sqlScanner, dialect Dialect
 	}
 }
 
-func isUnsafeFunctionCall(firstName string, scanner *sqlScanner, dialect Dialect) bool {
+//nolint:gocyclo // Function qualification, quoted-identifier semantics, and dialect syntax must fail closed together.
+func isUnsafeFunctionCall(
+	firstName string,
+	scanner *sqlScanner,
+	dialect Dialect,
+	firstQuoted bool,
+	previous precedingSQLToken,
+) bool {
 	lookahead := *scanner
-	name := firstName
+	names := []string{firstName}
+	quoted := []bool{firstQuoted}
 	for {
 		if !lookahead.skipIgnorable() {
 			return true
@@ -809,16 +868,45 @@ func isUnsafeFunctionCall(firstName string, scanner *sqlScanner, dialect Dialect
 			break
 		}
 		lookahead.pos++
+		if !lookahead.skipIgnorable() {
+			return true
+		}
+		nextQuoted := lookahead.peek() == '"' || lookahead.peek() == '`'
 		next, ok := lookahead.readIdentifierToken()
 		if !ok {
-			return false
+			return true
 		}
-		name = next
+		names = append(names, next)
+		quoted = append(quoted, nextQuoted)
 	}
 	if !lookahead.skipIgnorable() || lookahead.peek() != '(' {
 		return false
 	}
-	return isUnsafeReadFunction(name, dialect)
+	name := names[len(names)-1]
+	if isUnsafeReadFunction(name, dialect) {
+		return true
+	}
+	finalQuoted := quoted[len(quoted)-1]
+	if dialect == DialectPostgres && finalQuoted && name != strings.ToLower(name) {
+		return true
+	}
+	if len(names) == 1 {
+		if !finalQuoted && isReadOnlySQLSyntax(name, dialect, previous, lookahead) {
+			return false
+		}
+		if finalQuoted || dialect != DialectMySQL || !isKnownMySQLReadOnlyFunction(name) {
+			return true
+		}
+		return false
+	}
+	if dialect != DialectPostgres ||
+		len(names) != 2 ||
+		names[0] != "pg_catalog" ||
+		!isKnownPostgresReadOnlyFunction(name) {
+		return true
+	}
+	scanner.pos = lookahead.pos
+	return false
 }
 
 func isUnsafeReadFunction(name string, dialect Dialect) bool {
@@ -900,6 +988,7 @@ func isUnsafeReadFunction(name string, dialect Dialect) bool {
 			"pg_try_advisory_xact_lock",
 			"pg_try_advisory_xact_lock_shared",
 			"set_config",
+			"setseed",
 			"setval",
 			"txid_current":
 			return true
@@ -938,6 +1027,205 @@ func isUnsafeReadFunction(name string, dialect Dialect) bool {
 			return true
 		}
 	case DialectStrict:
+		return true
+	}
+	return false
+}
+
+func isReadOnlySQLSyntax(
+	name string,
+	dialect Dialect,
+	previous precedingSQLToken,
+	scanner sqlScanner,
+) bool {
+	switch dialect {
+	case DialectPostgres:
+		switch name {
+		case "all", "and", "any", "array", "as", "bigint", "bit", "boolean",
+			"case", "cast", "char", "character", "coalesce", "date", "decimal",
+			"distinct", "else", "except", "exists", "extract", "float", "from",
+			"greatest", "group", "grouping", "having", "in", "int", "integer",
+			"intersect", "interval", "json", "lateral", "least", "limit",
+			"normalize", "not", "nullif", "numeric", "offset", "on", "or",
+			"order", "overlay", "position", "real", "row", "select", "smallint",
+			"some", "substring", "table", "then", "time", "timestamp", "trim",
+			"union", "using", "varchar", "when", "where", "xmlattributes",
+			"xmlconcat", "xmlelement", "xmlforest", "xmlparse", "xmlpi",
+			"xmlroot", "xmlserialize":
+			return true
+		case "by":
+			return previous.isWord("group", "order", "partition")
+		case "cube", "rollup":
+			return previous.isWord("by")
+		case "filter":
+			return previous.symbol == ')' && parenthesizedStartsWith(scanner, "where")
+		case "join":
+			return parenthesizedStartsWith(scanner, "select", "values", "with")
+		case "over":
+			return previous.symbol == ')'
+		case "sets":
+			return previous.isWord("grouping")
+		}
+	case DialectMySQL:
+		switch name {
+		case "all", "and", "as", "bigint", "binary", "by", "case", "cast",
+			"char", "character", "convert", "cube", "decimal", "distinct",
+			"double", "else", "except", "exists", "explain", "extract", "float",
+			"from", "group", "grouping", "having", "in", "int", "integer",
+			"intersect", "interval", "join", "lateral", "limit", "not",
+			"numeric", "on", "or", "order", "over", "real", "row", "select",
+			"smallint", "table", "then", "union", "unsigned", "using",
+			"varchar", "when", "where":
+			return true
+		case "any", "some":
+			return previous.isComparisonOperator()
+		}
+	case DialectStrict:
+		return false
+	}
+	return false
+}
+
+func parenthesizedStartsWith(scanner sqlScanner, words ...string) bool {
+	if scanner.peek() != '(' {
+		return false
+	}
+	scanner.pos++
+	word, ok := scanner.readWord()
+	if !ok {
+		return false
+	}
+	for _, want := range words {
+		if word == want {
+			return true
+		}
+	}
+	return false
+}
+
+func isKnownPostgresReadOnlyFunction(name string) bool {
+	switch name {
+	case "abs", "acos", "age", "array_agg", "array_append", "array_cat",
+		"array_dims", "array_fill", "array_length", "array_lower", "array_ndims",
+		"array_position", "array_positions", "array_prepend", "array_remove",
+		"array_replace", "array_to_json", "array_to_string", "array_upper",
+		"ascii", "asin", "atan", "atan2", "avg", "bit_and", "bit_length",
+		"bit_or", "bool_and", "bool_or", "btrim", "cardinality", "cbrt",
+		"ceil", "ceiling", "char_length", "character_length", "chr",
+		"clock_timestamp", "coalesce", "col_description", "concat", "concat_ws",
+		"convert_from", "convert_to", "corr", "cos", "cot", "count",
+		"covar_pop", "covar_samp", "current_database", "current_schema",
+		"current_schemas", "currval", "date_bin", "date_part", "date_trunc",
+		"decode", "degrees", "dense_rank", "div", "encode", "every", "exp",
+		"factorial", "first_value", "floor", "format", "format_type", "gcd",
+		"generate_series", "get_bit", "get_byte", "greatest", "has_any_column_privilege",
+		"has_column_privilege", "has_database_privilege", "has_foreign_data_wrapper_privilege",
+		"has_function_privilege", "has_language_privilege", "has_parameter_privilege",
+		"has_schema_privilege", "has_sequence_privilege", "has_server_privilege",
+		"has_table_privilege", "has_tablespace_privilege", "has_type_privilege",
+		"initcap", "isfinite", "json_agg", "json_array_length",
+		"json_build_array", "json_build_object", "json_each", "json_each_text",
+		"json_extract_path", "json_extract_path_text", "json_object",
+		"json_object_agg", "json_object_keys", "json_populate_record",
+		"json_populate_recordset", "json_strip_nulls", "json_to_record",
+		"json_to_recordset", "json_typeof", "jsonb_agg", "jsonb_array_elements",
+		"jsonb_array_elements_text", "jsonb_array_length", "jsonb_build_array",
+		"jsonb_build_object", "jsonb_each", "jsonb_each_text",
+		"jsonb_extract_path", "jsonb_extract_path_text", "jsonb_insert",
+		"jsonb_object", "jsonb_object_agg", "jsonb_object_keys",
+		"jsonb_path_exists", "jsonb_path_match", "jsonb_path_query",
+		"jsonb_path_query_array", "jsonb_path_query_first", "jsonb_populate_record",
+		"jsonb_populate_recordset", "jsonb_pretty", "jsonb_set",
+		"jsonb_set_lax", "jsonb_strip_nulls", "jsonb_to_record",
+		"jsonb_to_recordset", "jsonb_typeof", "justify_days", "justify_hours",
+		"justify_interval", "lag", "last_value", "lastval", "lcm", "lead",
+		"least", "left", "length", "ln", "log", "log10", "lower", "lpad",
+		"ltrim", "make_date", "make_interval", "make_time", "make_timestamp",
+		"make_timestamptz", "max", "md5", "min", "min_scale", "mod",
+		"now", "nth_value", "ntile", "nullif", "obj_description",
+		"octet_length", "parse_ident", "percent_rank", "pg_backend_pid",
+		"pg_client_encoding", "pg_column_size", "pg_conf_load_time",
+		"pg_current_logfile", "pg_current_wal_flush_lsn", "pg_current_wal_insert_lsn",
+		"pg_current_wal_lsn", "pg_database_size", "pg_get_constraintdef",
+		"pg_get_expr", "pg_get_function_arguments", "pg_get_function_result",
+		"pg_get_functiondef", "pg_get_indexdef", "pg_get_keywords",
+		"pg_get_ruledef", "pg_get_serial_sequence", "pg_get_statisticsobjdef",
+		"pg_get_triggerdef", "pg_get_userbyid", "pg_get_viewdef",
+		"pg_indexes_size", "pg_is_in_recovery", "pg_last_wal_receive_lsn",
+		"pg_last_wal_replay_lsn", "pg_last_xact_replay_timestamp",
+		"pg_postmaster_start_time", "pg_relation_size", "pg_size_bytes",
+		"pg_size_pretty", "pg_table_is_visible", "pg_table_size",
+		"pg_tablespace_size", "pg_total_relation_size", "pg_type_is_visible",
+		"pg_typeof", "pi", "power", "quote_ident", "quote_literal",
+		"quote_nullable", "radians", "random", "rank", "regexp_count",
+		"regexp_instr", "regexp_like", "regexp_match", "regexp_matches",
+		"regexp_replace", "regexp_split_to_array", "regexp_split_to_table",
+		"regr_avgx", "regr_avgy", "regr_count", "regr_intercept", "regr_r2",
+		"regr_slope", "regr_sxx", "regr_sxy", "regr_syy", "repeat",
+		"replace", "reverse", "right", "round", "row_number", "row_to_json",
+		"rpad", "rtrim", "scale", "session_user", "set_bit", "set_byte",
+		"sign", "split_part", "sqrt", "statement_timestamp", "stddev",
+		"stddev_pop", "stddev_samp", "string_agg", "string_to_array",
+		"strpos", "substr", "sum", "timeofday", "to_ascii", "to_char",
+		"to_date", "to_hex", "to_json", "to_jsonb", "to_number",
+		"to_regclass", "to_regcollation", "to_regnamespace", "to_regoper",
+		"to_regoperator", "to_regproc", "to_regprocedure", "to_regrole",
+		"to_regtype", "to_timestamp", "transaction_timestamp", "translate",
+		"trim_array", "trim_scale", "trunc", "txid_current_if_assigned",
+		"txid_current_snapshot", "unnest", "upper", "var_pop", "var_samp",
+		"variance", "version", "width_bucket", "xmlagg":
+		return true
+	}
+	return false
+}
+
+func isKnownMySQLReadOnlyFunction(name string) bool {
+	switch name {
+	case "abs", "acos", "adddate", "addtime", "aes_decrypt", "aes_encrypt",
+		"any_value", "ascii", "asin", "atan", "atan2", "avg", "bin",
+		"bin_to_uuid", "bit_and", "bit_count", "bit_length", "bit_or",
+		"bit_xor", "ceil", "ceiling", "char", "char_length",
+		"character_length", "coalesce", "compress", "concat", "concat_ws",
+		"connection_id", "conv", "convert_tz", "cos", "cot", "count",
+		"crc32", "curdate", "current_date", "current_role", "current_time",
+		"current_timestamp", "current_user", "curtime", "database", "date",
+		"date_add", "date_format", "date_sub", "datediff", "day", "dayname",
+		"dayofmonth", "dayofweek", "dayofyear", "degrees", "dense_rank",
+		"elt", "exp", "export_set", "extract", "field", "find_in_set",
+		"first_value", "floor", "format", "from_base64", "from_days",
+		"from_unixtime", "get_format", "greatest", "group_concat", "hex",
+		"hour", "if", "ifnull", "inet6_aton", "inet6_ntoa", "inet_aton",
+		"inet_ntoa", "insert", "instr", "is_ipv4", "is_ipv4_compat",
+		"is_ipv4_mapped", "is_ipv6", "is_uuid", "isnull", "json_array",
+		"json_array_append", "json_array_insert", "json_arrayagg",
+		"json_contains", "json_contains_path", "json_depth", "json_extract",
+		"json_insert", "json_keys", "json_length", "json_merge_patch",
+		"json_merge_preserve", "json_object", "json_objectagg", "json_overlaps",
+		"json_pretty", "json_quote", "json_remove", "json_replace",
+		"json_schema_valid", "json_schema_validation_report", "json_search",
+		"json_set", "json_storage_free", "json_storage_size", "json_table",
+		"json_type", "json_unquote", "json_valid", "lag", "last_day",
+		"last_value", "lcase", "lead", "least", "left", "length", "ln",
+		"localtime", "localtimestamp", "locate", "log", "log10", "log2",
+		"lower", "lpad", "ltrim", "makedate", "maketime", "make_set",
+		"max", "md5", "microsecond", "mid", "min", "minute", "mod",
+		"month", "monthname", "name_const", "now", "nth_value", "ntile",
+		"nullif", "oct", "octet_length", "ord", "percent_rank", "period_add",
+		"period_diff", "pi", "position", "pow", "power", "quarter", "quote",
+		"radians", "rand", "random_bytes", "rank", "regexp_instr",
+		"regexp_like", "regexp_replace", "regexp_substr", "repeat", "replace",
+		"reverse", "right", "round", "row_count", "row_number", "rpad",
+		"rtrim", "schema", "sec_to_time", "second", "session_user", "sha",
+		"sha1", "sha2", "sign", "sin", "soundex", "space", "sqrt",
+		"std", "stddev", "stddev_pop", "stddev_samp", "strcmp", "str_to_date",
+		"subdate", "substr", "substring", "substring_index", "subtime", "sum",
+		"sysdate", "system_user", "tan", "time", "timediff", "timestamp",
+		"timestampadd", "timestampdiff", "time_format", "time_to_sec",
+		"to_base64", "to_days", "to_seconds", "trim", "truncate",
+		"ucase", "uncompress", "uncompressed_length", "unhex", "unix_timestamp",
+		"upper", "user", "utc_date", "utc_time", "utc_timestamp", "uuid",
+		"uuid_to_bin", "var_pop", "var_samp", "variance", "version", "week",
+		"weekday", "weekofyear", "year", "yearweek":
 		return true
 	}
 	return false
@@ -1019,6 +1307,14 @@ func isIdentifierStart(ch byte) bool {
 
 func isIdentifierPart(ch byte) bool {
 	return isIdentifierStart(ch) || ch >= '0' && ch <= '9' || ch == '$'
+}
+
+func isPotentialIdentifierStart(ch byte) bool {
+	return isIdentifierStart(ch) || ch >= '0' && ch <= '9' || ch == '$' || ch >= 0x80
+}
+
+func isPotentialIdentifierPart(ch byte) bool {
+	return isPotentialIdentifierStart(ch)
 }
 
 func isDollarTagPart(ch byte) bool {

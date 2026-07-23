@@ -627,22 +627,8 @@ func TestTableDDLRebuildsPostgresCreateTable(t *testing.T) {
 			t.Fatalf("TableDDL missing %q:\n%s", want, ddl)
 		}
 	}
-	parsed, err := schema.ParseDesiredSQL(ddl)
-	if err != nil {
-		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v\n%s", err, ddl)
-	}
-	current := schema.Schema{Tables: map[string]schema.Table{
-		`evil";--`: {
-			Name: `evil";--`,
-			Columns: []schema.Column{
-				{Name: `id";--`, Type: "integer", AutoIncrement: true},
-				{Name: "user_id", Type: "integer"},
-				{Name: "name", Type: "text"},
-			},
-		},
-	}}
-	if diff := schema.Diff(current, parsed); len(diff.Changes) != 0 {
-		t.Fatalf("round-trip diff = %+v, want none\nDDL:\n%s", diff.Changes, ddl)
+	if _, err := schema.ParseDesiredSQL(ddl); apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
+		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v, want fail-closed rejection for constraints\n%s", err, ddl)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -698,6 +684,39 @@ func TestExecDDLCommitsAllPostgresStatementsTogether(t *testing.T) {
 	}
 	if executed != 2 {
 		t.Fatalf("executed = %d, want 2", executed)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecDDLCommitErrorIsIndeterminateAndNonRetryable(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(`CREATE TABLE "one" (id integer);`)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta(`CREATE TABLE "two" (id integer);`)).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectCommit().WillReturnError(assertErr("connection lost during commit"))
+
+	executed, err := backend.ExecDDL(context.Background(), []string{
+		`CREATE TABLE "one" (id integer);`,
+		`CREATE TABLE "two" (id integer);`,
+	})
+	if executed != 2 {
+		t.Fatalf("executed = %d, want 2 statements with uncertain commit outcome", executed)
+	}
+	if !dbbackend.IsCommitIndeterminate(err) {
+		t.Fatalf("error = %v, want indeterminate commit", err)
+	}
+	appErr := apperrors.AsAppError(err)
+	if appErr.Code != apperrors.CodePartialFailure || appErr.Retryable || apperrors.ExitCode(err) != 11 {
+		t.Fatalf("commit error = %+v, want non-retryable PARTIAL_FAILURE exit 11", appErr)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

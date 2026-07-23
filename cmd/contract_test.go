@@ -23,6 +23,12 @@ func TestContractExitCodes(t *testing.T) {
 			exit: 1,
 		},
 		{
+			name: "unknown output format is usage error",
+			args: []string{"-o", "yaml", "version"},
+			code: apperrors.CodeUsageError,
+			exit: 1,
+		},
+		{
 			name: "schema describe missing table is resource not found",
 			args: []string{"schema", "describe", "missing", "--fake"},
 			code: apperrors.CodeResourceNotFound,

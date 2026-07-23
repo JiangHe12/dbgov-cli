@@ -154,7 +154,7 @@ dbgov query   --sql "SELECT ..." -o json          # read-only; rejects writes (R
 dbgov explain --sql "SELECT ..." -o json          # execution plan + estimated rows (R0)
 ```
 
-`query` rejects writable CTEs, row-locking clauses, file/session/administrative side-effect functions, and MySQL user-variable assignment. Accepted queries run inside a database read-only transaction that is explicitly rolled back after rows are consumed. JSON preserves SQL `NULL` as `null` (distinct from `""`), while table output renders it as `NULL`. Because custom functions and views cannot be proven side-effect-free lexically, production contexts must still use a database account whose privileges are read-only.
+`query` rejects writable CTEs, row-locking clauses, file/session/administrative side-effect functions, MySQL user-variable assignment, and unknown or user-defined function calls. MySQL permits only recognized unquoted native functions; quoted function identifiers are rejected as ambiguous. To prevent `search_path` and overload shadowing, ordinary PostgreSQL functions must use canonical `pg_catalog` qualification (for example, `pg_catalog.count(*)`); unqualified calls are limited to non-redefinable SQL grammar constructs such as `COALESCE`. Quoted PostgreSQL identifiers are matched with exact case, so `"pg_catalog"."count"` is accepted but `"PG_CATALOG"."count"` is not. Accepted queries run inside a database read-only transaction that is explicitly rolled back after rows are consumed. The lexical classifier cannot resolve view bodies, user-defined operators, or functions reached through implicit or explicit casts, so production contexts must still use a database account whose privileges are read-only. JSON preserves SQL `NULL` as `null` (distinct from `""`), while table output renders it as `NULL`.
 </details>
 
 <details>
@@ -270,7 +270,7 @@ dbgov install claude --skills --yes # also: codex, opencode, copilot, cursor, wi
 - **Verified release tags** — publication starts only from a GitHub-verified signed annotated tag that exactly matches `package.json`, `CHANGELOG.md`, and freshly fetched `origin/main`; CI and real database integrations rerun on that tag commit.
 - **Signed binaries** — every release artifact is signed with [cosign](https://github.com/sigstore/cosign) (keyless / OIDC); a signed `checksums.txt` covers all platforms.
 - **npm provenance** — published from CI via OpenID Connect with [provenance attestations](https://docs.npmjs.com/generating-provenance-statements) tying the package to this repo and workflow.
-- **Verified installs** — the npm postinstall checks the binary's SHA-256 against the signed `checksums.txt` before installing.
+- **Verified installs** — the npm postinstall trusts only the six platform SHA-256 digests embedded in `package.json` and covered by npm provenance. Mirrors may supply binary bytes but never verification data; verified bytes are fsynced and atomically replace the previous binary. There is no verification bypass.
 - **Tamper-evident audit** — `dbgov audit verify` re-walks the log and reports any gap or modification.
 
 ---

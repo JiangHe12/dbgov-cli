@@ -355,7 +355,7 @@ func (b *Backend) ExecDDL(ctx context.Context, statements []string) (int, error)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, backendErr("commit DDL transaction", err)
+		return len(statements), dbbackend.NewCommitIndeterminateError(backendErr("commit DDL transaction", err))
 	}
 	return len(statements), nil
 }

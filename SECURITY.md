@@ -34,7 +34,7 @@ Include, when possible:
 
 ## Trust Boundary
 
-`dbgov-cli` is a local CLI. It trusts the current OS user account, owner-only files under `~/.dbgov`, and binaries/checksums published by the canonical GitHub repository. It does not trust backend responses, local input files, npm mirrors, external validators, or user-provided URLs.
+`dbgov-cli` is a local CLI. It trusts the current OS user account, owner-only files under `~/.dbgov`, signed release assets from the canonical GitHub repository, and the binary manifest bound into the official npm package by provenance. It does not trust backend responses, local input files, npm mirror content, external validators, or user-provided URLs.
 
 ## Sensitive Data
 
@@ -50,7 +50,7 @@ AI agents and automation must not auto-fill `--ticket`, `--allow-*`, or high-ris
 
 ## Supply Chain
 
-Release artifacts are built by GitHub Actions. npm installation downloads platform binaries from GitHub Releases and verifies checksums when supported by the package installer. Prefer official releases and avoid running unverified binaries.
+Release artifacts are built and signed by GitHub Actions. Before GitHub Release and npm publication, the workflow verifies `checksums.txt` and all six binary signatures against this repository's exact `release.yml` identity, release ref, and GitHub Actions OIDC issuer. The npm package embeds those six verified digests in `package.json`, covered by npm provenance. The installer trusts only that package-bound manifest; mirrors can supply bytes but cannot replace verification data. There is no verification bypass, and a failed install leaves the previous binary unchanged.
 
 ## Hardening Checklist
 

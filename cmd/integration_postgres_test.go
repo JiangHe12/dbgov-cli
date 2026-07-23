@@ -10,6 +10,7 @@ import (
 
 	"github.com/JiangHe12/dbgov-cli/internal/backend/postgres"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 )
 
 func TestPostgresIntegrationQueryExplain(t *testing.T) {
@@ -58,9 +59,9 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 		}
 	})
 	ctx := context.Background()
-	_, _ = backend.ExecDDL(ctx, []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_shared_seq";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`, `DROP SEQUENCE IF EXISTS "dbgov_pg_shared_sequence";`})
+	_, _ = backend.ExecDDL(ctx, []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_shared_seq";`, `DROP TABLE IF EXISTS "dbgov_pg_simple";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`, `DROP SEQUENCE IF EXISTS "dbgov_pg_shared_sequence";`})
 	t.Cleanup(func() {
-		_, _ = backend.ExecDDL(context.Background(), []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_shared_seq";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`, `DROP SEQUENCE IF EXISTS "dbgov_pg_shared_sequence";`})
+		_, _ = backend.ExecDDL(context.Background(), []string{`DROP TABLE IF EXISTS "dbgov_pg_child";`, `DROP TABLE IF EXISTS "dbgov_pg_serial";`, `DROP TABLE IF EXISTS "dbgov_pg_shared_seq";`, `DROP TABLE IF EXISTS "dbgov_pg_simple";`, `DROP TABLE IF EXISTS "dbgov_pg_parent";`, `DROP SEQUENCE IF EXISTS "dbgov_pg_shared_sequence";`})
 	})
 	_, err = backend.ExecDDL(ctx, []string{
 		`CREATE SEQUENCE "dbgov_pg_shared_sequence";`,
@@ -68,6 +69,7 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 		`CREATE TABLE "dbgov_pg_child" ("id" integer NOT NULL, "parent_id" integer NOT NULL, CONSTRAINT "dbgov_pg_child_pkey" PRIMARY KEY ("id"), CONSTRAINT "dbgov_pg_child_parent_fkey" FOREIGN KEY ("parent_id") REFERENCES "dbgov_pg_parent" ("id"));`,
 		`CREATE TABLE "dbgov_pg_serial" ("id" serial PRIMARY KEY, "name" character varying(255));`,
 		`CREATE TABLE "dbgov_pg_shared_seq" ("id" integer DEFAULT nextval('"dbgov_pg_shared_sequence"'::regclass), "name" text);`,
+		`CREATE TABLE "dbgov_pg_simple" ("id" integer, "name" text);`,
 		`CREATE INDEX "dbgov_pg_child_parent_idx" ON "dbgov_pg_child" ("parent_id");`,
 	})
 	if err != nil {
@@ -102,19 +104,31 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 		!strings.Contains(ddl, `FOREIGN KEY ("parent_id") REFERENCES "public"."dbgov_pg_parent" ("id")`) {
 		t.Fatalf("unexpected TableDDL:\n%s", ddl)
 	}
+	if _, err := schema.ParseDesiredSQL(ddl); err == nil ||
+		apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
+		t.Fatalf("ParseDesiredSQL(child TableDDL) error = %v, want fail-closed rejection for PK/FK/not-null definitions\n%s", err, ddl)
+	}
 	serialDDL, err := backend.TableDDL(ctx, "dbgov_pg_serial")
 	if err != nil {
 		t.Fatalf("serial TableDDL() error = %v", err)
 	}
-	parsed, err := schema.ParseDesiredSQL(serialDDL)
+	if _, err := schema.ParseDesiredSQL(serialDDL); err == nil ||
+		apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
+		t.Fatalf("ParseDesiredSQL(serial TableDDL) error = %v, want fail-closed rejection for primary key\n%s", err, serialDDL)
+	}
+	simpleDDL, err := backend.TableDDL(ctx, "dbgov_pg_simple")
 	if err != nil {
-		t.Fatalf("ParseDesiredSQL(serial TableDDL) error = %v\n%s", err, serialDDL)
+		t.Fatalf("simple TableDDL() error = %v", err)
+	}
+	parsed, err := schema.ParseDesiredSQL(simpleDDL)
+	if err != nil {
+		t.Fatalf("ParseDesiredSQL(simple TableDDL) error = %v\n%s", err, simpleDDL)
 	}
 	expected := schema.Schema{Tables: map[string]schema.Table{
-		"dbgov_pg_serial": {Name: "dbgov_pg_serial", Columns: []schema.Column{{Name: "id", Type: "integer", AutoIncrement: true}, {Name: "name", Type: "character varying(255)"}}},
+		"dbgov_pg_simple": {Name: "dbgov_pg_simple", Columns: []schema.Column{{Name: "id", Type: "integer"}, {Name: "name", Type: "text"}}},
 	}}
 	if diff := schema.Diff(expected, parsed); len(diff.Changes) != 0 {
-		t.Fatalf("serial round-trip diff = %+v, want none\nDDL:\n%s", diff.Changes, serialDDL)
+		t.Fatalf("simple TableDDL round-trip diff = %+v, want none\nDDL:\n%s", diff.Changes, simpleDDL)
 	}
 	statements, err := backend.RenderDDL([]schema.Change{
 		{Action: schema.ActionAddColumn, Table: "dbgov_pg_parent", Column: "note", Type: "text"},

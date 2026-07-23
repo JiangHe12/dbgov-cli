@@ -204,7 +204,7 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) (resultErr error) { //noli
 	if err != nil && executed < len(statements) {
 		handle.spec.Event.FailedStatement = statements[executed]
 	}
-	if auditErr := finishBatchMutationAudit(handle, len(statements), executed, err); auditErr != nil {
+	if auditErr := finishDDLMutationAudit(handle, len(statements), executed, err); auditErr != nil {
 		return auditErr
 	}
 	return printRollbackResult(f, meta, rollbackResult{

@@ -108,15 +108,8 @@ func TestTableDDLUsesShowCreateTable(t *testing.T) {
 	if ddl != "CREATE TABLE `users` (`id` int AUTO_INCREMENT, `flags` int unsigned, PRIMARY KEY (`id`))" {
 		t.Fatalf("TableDDL() = %q", ddl)
 	}
-	parsed, err := schema.ParseDesiredSQL(ddl)
-	if err != nil {
-		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v", err)
-	}
-	current := schema.Schema{Tables: map[string]schema.Table{
-		"users": {Name: "users", Columns: []schema.Column{{Name: "id", Type: "int", AutoIncrement: true}, {Name: "flags", Type: "int unsigned"}}},
-	}}
-	if diff := schema.Diff(current, parsed); len(diff.Changes) != 0 {
-		t.Fatalf("round-trip diff = %+v, want none", diff.Changes)
+	if _, err := schema.ParseDesiredSQL(ddl); apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
+		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v, want fail-closed rejection for primary key", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)

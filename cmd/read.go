@@ -41,7 +41,11 @@ func runQuery(f *cliFlags, opts sqlCommandOptions) (resultErr error) {
 		return apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
 	}
 	if !sqlclass.IsReadOnly(opts.SQL, dialect) {
-		return apperrors.New(apperrors.CodeValidationFailed, "query only accepts read-only SQL", nil)
+		return apperrors.New(
+			apperrors.CodeValidationFailed,
+			"query only accepts read-only SQL using known safe built-in functions; PostgreSQL built-ins require pg_catalog qualification, and unknown or user-defined functions are rejected",
+			nil,
+		)
 	}
 	if err := authorizeRead(f); err != nil {
 		return err
@@ -96,7 +100,11 @@ func runExplain(f *cliFlags, opts sqlCommandOptions) (resultErr error) {
 		return apperrors.New(apperrors.CodeValidationFailed, "multiple SQL statements are not allowed; submit one statement at a time", nil)
 	}
 	if !sqlclass.IsReadOnly(opts.SQL, dialect) {
-		return apperrors.New(apperrors.CodeValidationFailed, "explain only accepts read-only SQL", nil)
+		return apperrors.New(
+			apperrors.CodeValidationFailed,
+			"explain only accepts read-only SQL using known safe built-in functions; PostgreSQL built-ins require pg_catalog qualification, and unknown or user-defined functions are rejected",
+			nil,
+		)
 	}
 	if err := authorizeRead(f); err != nil {
 		return err

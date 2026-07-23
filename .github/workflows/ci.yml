@@ -73,9 +73,29 @@ jobs:
       - name: go test
         run: go test ./... -count=1
 
-      - name: Test npm installer
+      - name: Test npm installer and package contents
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
-        run: npm test
+        shell: bash
+        run: |
+          npm test
+          npm pack --dry-run --json > npm-pack.json
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const pkg = require('./package.json');
+          const report = JSON.parse(fs.readFileSync('npm-pack.json', 'utf8'));
+          assert.equal(report.length, 1);
+          const actual = report[0].files.map((file) => file.path).sort();
+          const expected = [
+            'LICENSE',
+            'README.md',
+            `bin/${pkg.name}.js`,
+            'package.json',
+            'scripts/install.js',
+          ].sort();
+          assert.deepEqual(actual, expected);
+          NODE
+          rm npm-pack.json
 
       - name: Run race detector (Linux)
         if: matrix.os == 'ubuntu-latest' && matrix.go-version == 'stable'
@@ -143,6 +163,11 @@ jobs:
           go-version: 'stable'
           cache: true
 
+      - name: Set up Node.js for installer tests
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+
       - name: go vet (including integration-tagged files)
         run: go vet -tags=integration ./...
 
@@ -151,6 +176,9 @@ jobs:
 
       - name: go test
         run: go test ./... -count=1
+
+      - name: Test npm installer
+        run: npm test
 
   integration:
     # Real database integration suite. Excluded from PR gating because it starts

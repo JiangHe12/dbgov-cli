@@ -355,6 +355,7 @@ func TestIsReadOnlyRejectsSideEffectingBuiltInFunctions(t *testing.T) {
 		"pg_wal_replay_pause",
 		"postgres_fdw_disconnect_all",
 		"set_config",
+		"setseed",
 		"setval",
 		"txid_current",
 	}
@@ -424,6 +425,120 @@ func TestIsReadOnlyRejectsSideEffectingBuiltInFunctions(t *testing.T) {
 	}
 }
 
+func TestIsReadOnlyRejectsUnknownAndUserDefinedFunctions(t *testing.T) {
+	tests := []struct {
+		sql     string
+		dialect Dialect
+	}{
+		{sql: "SELECT dangerous_udf(id) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT count(*) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT public.safe_sounding_function(id) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT public /* schema */ . /* function */ count(*) FROM users", dialect: DialectPostgres},
+		{sql: `SELECT "public"."safe_sounding_function"(id) FROM users`, dialect: DialectPostgres},
+		{sql: `SELECT "COUNT"(*) FROM users`, dialect: DialectPostgres},
+		{sql: `SELECT "PG_CATALOG".count(*) FROM users`, dialect: DialectPostgres},
+		{sql: `SELECT pg_catalog."COUNT"(*) FROM users`, dialect: DialectPostgres},
+		{sql: `SELECT "pg_advisory_l""ock"(42)`, dialect: DialectPostgres},
+		{sql: `SELECT "select"(id) FROM users`, dialect: DialectPostgres},
+		{sql: "SELECT filter(id) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT over(id) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT by(id) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT explain(id) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT double(id) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT sets(id) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT 危险函数(id) FROM users", dialect: DialectPostgres},
+		{sql: "SELECT * FROM dangerous_udf(1) AS (id integer)", dialect: DialectPostgres},
+		{sql: "WITH rows AS (SELECT 1) SELECT extension_fn(*) FROM rows", dialect: DialectPostgres},
+		{sql: "SELECT dangerous_udf(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT app.safe_sounding_function(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT `app`.`safe_sounding_function`(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT `select`(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT `count`(*) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT `COUNT`(*) FROM users", dialect: DialectMySQL},
+		{sql: `SELECT "count"(*) FROM users`, dialect: DialectMySQL},
+		{sql: "SELECT any(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT filter(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT json(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT text(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT within(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT $count() FROM users", dialect: DialectMySQL},
+		{sql: "SELECT 1count() FROM users", dialect: DialectMySQL},
+		{sql: "SELECT 危险函数(id) FROM users", dialect: DialectMySQL},
+		{sql: "SELECT * FROM (SELECT extension_fn(id) FROM users) AS nested", dialect: DialectMySQL},
+	}
+	for _, test := range tests {
+		if IsReadOnly(test.sql, test.dialect) {
+			t.Errorf("IsReadOnly(%q, %s) = true, want fail-closed false", test.sql, test.dialect)
+		}
+	}
+}
+
+func TestIsReadOnlyAllowsKnownReadOnlyFunctionsAndCTEColumnLists(t *testing.T) {
+	tests := []struct {
+		sql     string
+		dialect Dialect
+	}{
+		{
+			sql:     "WITH ids(id) AS (SELECT 1) SELECT pg_catalog.count(*), coalesce(pg_catalog.max(id), 0) FROM ids WHERE id IN (1, 2)",
+			dialect: DialectPostgres,
+		},
+		{
+			sql:     "SELECT pg_catalog.date_trunc('day', pg_catalog.now()), pg_catalog.row_number() OVER (ORDER BY id) FROM users",
+			dialect: DialectPostgres,
+		},
+		{
+			sql:     "SELECT pg_catalog.count(*) FILTER (WHERE active), pg_catalog.sum(value) OVER (PARTITION BY (category) ORDER BY id) FROM users",
+			dialect: DialectPostgres,
+		},
+		{
+			sql:     `SELECT "pg_catalog"."count"(*), PG_CATALOG.MAX(id) FROM users`,
+			dialect: DialectPostgres,
+		},
+		{
+			sql:     "SELECT grouped.id FROM users JOIN (SELECT id FROM users WHERE (active)) AS grouped ON (grouped.id = users.id)",
+			dialect: DialectPostgres,
+		},
+		{
+			sql:     "SELECT id, pg_catalog.count(*) FROM users GROUP BY GROUPING SETS ((id), ())",
+			dialect: DialectPostgres,
+		},
+		{
+			sql:     "SELECT id, pg_catalog.count(*) FROM users GROUP BY CUBE(id)",
+			dialect: DialectPostgres,
+		},
+		{
+			sql:     "WITH ids(id) AS (SELECT 1) SELECT count(*), coalesce(max(id), 0) FROM ids WHERE id IN (1, 2)",
+			dialect: DialectMySQL,
+		},
+		{
+			sql:     "SELECT json_extract(payload, '$.id'), row_number() OVER (ORDER BY id) FROM users",
+			dialect: DialectMySQL,
+		},
+		{
+			sql:     "SELECT 1 = ANY (SELECT id FROM users), 2 = SOME (SELECT id FROM users)",
+			dialect: DialectMySQL,
+		},
+	}
+	for _, test := range tests {
+		if !IsReadOnly(test.sql, test.dialect) {
+			t.Errorf("IsReadOnly(%q, %s) = false, want true", test.sql, test.dialect)
+		}
+	}
+}
+
+func TestIsReadOnlyRejectsFunctionsInsideMySQLShow(t *testing.T) {
+	tests := []string{
+		"SHOW TABLE STATUS WHERE Name = dangerous_udf()",
+		"SHOW TABLE STATUS WHERE Name = GET_LOCK('dbgov', 10)",
+		"SHOW COLUMNS FROM users WHERE Field = SLEEP(1)",
+	}
+	for _, sql := range tests {
+		if IsReadOnly(sql, DialectMySQL) {
+			t.Errorf("IsReadOnly(%q, mysql) = true, want fail-closed false", sql)
+		}
+	}
+}
+
 func TestIsReadOnlyRejectsMariaDBSequenceMutationForms(t *testing.T) {
 	tests := []string{
 		"SELECT NEXTVAL(sequence_name)",
@@ -475,7 +590,6 @@ func TestIsReadOnlyDoesNotTreatLockNamesInDataAsCalls(t *testing.T) {
 	}{
 		{sql: "SELECT 'pg_advisory_lock(42)' AS text", dialect: DialectPostgres},
 		{sql: "SELECT pg_advisory_lock FROM metrics", dialect: DialectPostgres},
-		{sql: `SELECT "pg_advisory_l""ock"(42)`, dialect: DialectPostgres},
 		{sql: "SELECT 1 /* pg_catalog.pg_advisory_lock(42) */", dialect: DialectPostgres},
 		{sql: "SELECT 'GET_LOCK(1)' AS text", dialect: DialectMySQL},
 		{sql: `SELECT "GET_LOCK('dbgov', 10)" AS text`, dialect: DialectMySQL},

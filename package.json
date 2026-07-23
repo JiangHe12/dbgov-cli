@@ -1,6 +1,6 @@
 {
   "name": "dbgov-cli",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Governed MySQL and PostgreSQL operations CLI for AI agents",
   "bin": {
     "dbgov": "bin/dbgov-cli.js",
@@ -29,6 +29,12 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/JiangHe12/dbgov-cli.git"
+  },
+  "binaryManifest": {
+    "schema": 1,
+    "repository": "JiangHe12/dbgov-cli",
+    "version": "0.4.2",
+    "binaries": {}
   },
   "homepage": "https://github.com/JiangHe12/dbgov-cli",
   "engines": {

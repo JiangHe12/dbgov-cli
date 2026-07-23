@@ -154,7 +154,7 @@ dbgov query   --sql "SELECT ..." -o json          # 只读;拒绝写入(R0)
 dbgov explain --sql "SELECT ..." -o json          # 执行计划 + 预估行数(R0)
 ```
 
-`query` 会拒绝可写 CTE、行锁子句、具有文件 / 会话 / 管理副作用的函数，以及 MySQL 用户变量赋值。通过检查的查询会在数据库只读事务中运行，读取完结果后显式回滚。JSON 会把 SQL `NULL` 保留为 `null`（与 `""` 空字符串不同），表格输出则显示为 `NULL`。自定义函数和视图无法仅靠词法分析证明无副作用，因此生产上下文仍必须使用数据库只读账号。
+`query` 会拒绝可写 CTE、行锁子句、具有文件 / 会话 / 管理副作用的函数、MySQL 用户变量赋值，以及未知或用户自定义函数调用。MySQL 只允许已识别且未加引号的原生函数；带引号的函数标识符因语义不明确而被拒绝。为防止 `search_path` 和重载遮蔽，普通 PostgreSQL 函数必须使用规范的 `pg_catalog` 限定名（例如 `pg_catalog.count(*)`）；未限定调用只允许 `COALESCE` 等不可重定义的 SQL 语法结构。PostgreSQL 引号标识符按大小写精确匹配，因此 `"pg_catalog"."count"` 可通过，而 `"PG_CATALOG"."count"` 会被拒绝。通过检查的查询会在数据库只读事务中运行，读取完结果后显式回滚。词法分类器无法解析视图函数体、用户自定义运算符，或由隐式 / 显式类型转换间接调用的函数，因此生产上下文仍必须使用数据库只读账号。JSON 会把 SQL `NULL` 保留为 `null`（与 `""` 空字符串不同），表格输出则显示为 `NULL`。
 </details>
 
 <details>
@@ -270,7 +270,7 @@ dbgov install claude --skills --yes # 也支持:codex、opencode、copilot、cur
 - **已验证发布标签**——仅当 signed annotated tag 经 GitHub 验证，且精确匹配 `package.json`、`CHANGELOG.md` 与最新拉取的 `origin/main` 时才开始发布；CI 与真实数据库集成会在该标签提交上重跑。
 - **签名二进制**——每个发布产物都用 [cosign](https://github.com/sigstore/cosign) 无密钥(OIDC)签名;签名的 `checksums.txt` 覆盖全平台。
 - **npm provenance**——由 CI 经 OpenID Connect 发布,带 [provenance 溯源声明](https://docs.npmjs.com/generating-provenance-statements),将包与本仓库及工作流关联。
-- **校验式安装**——npm postinstall 在安装前对照签名的 `checksums.txt` 校验二进制 SHA-256。
+- **校验式安装**——npm postinstall 只信任受 npm provenance 绑定、嵌入 `package.json` 的六个平台 SHA-256 摘要。镜像只能提供二进制字节,不能提供校验数据;校验后的文件会先 fsync,再原子替换旧文件,且不存在跳过校验的开关。
 - **防篡改审计**——`dbgov audit verify` 重走日志并报告任何断裂或改动。
 
 ---

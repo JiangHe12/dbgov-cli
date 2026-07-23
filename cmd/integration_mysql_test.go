@@ -12,6 +12,7 @@ import (
 
 	"github.com/JiangHe12/dbgov-cli/internal/backend/mysql"
 	"github.com/JiangHe12/dbgov-cli/internal/schema"
+	"github.com/JiangHe12/opskit-core/v2/apperrors"
 )
 
 func TestMySQLIntegrationQueryExplain(t *testing.T) {
@@ -118,42 +119,34 @@ func TestMySQLIntegrationSchema(t *testing.T) {
 		!strings.Contains(ddl, "ENGINE=InnoDB") {
 		t.Fatalf("unexpected TableDDL:\n%s", ddl)
 	}
-	parsed, err := schema.ParseDesiredSQL(ddl)
-	if err != nil {
-		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v\n%s", err, ddl)
-	}
-	expected := schema.Schema{Tables: map[string]schema.Table{
-		childTable: {
-			Name: childTable,
-			Columns: []schema.Column{
-				{Name: "id", Type: "int", AutoIncrement: true},
-				{Name: "parent_id", Type: "int"},
-				{Name: "note", Type: "varchar(64)"},
-			},
-		},
-	}}
-	if diff := schema.Diff(expected, parsed); len(diff.Changes) != 0 {
-		t.Fatalf("TableDDL round-trip diff = %+v, want none\nDDL:\n%s", diff.Changes, ddl)
+	_, err = schema.ParseDesiredSQL(ddl)
+	if err == nil || apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
+		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v, want fail-closed rejection for PK/FK/default/index definitions\n%s", err, ddl)
 	}
 	unsignedDDL, err := backend.TableDDL(ctx, unsignedTable)
 	if err != nil {
 		t.Fatalf("unsigned TableDDL() error = %v", err)
 	}
-	unsignedParsed, err := schema.ParseDesiredSQL(unsignedDDL)
-	if err != nil {
-		t.Fatalf("ParseDesiredSQL(unsigned TableDDL) error = %v\n%s", err, unsignedDDL)
+	if _, err := schema.ParseDesiredSQL(unsignedDDL); err == nil ||
+		apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
+		t.Fatalf("ParseDesiredSQL(unsigned TableDDL) error = %v, want fail-closed rejection for primary key\n%s", err, unsignedDDL)
 	}
-	unsignedExpected := schema.Schema{Tables: map[string]schema.Table{
+	supportedSQL := "CREATE TABLE `" + unsignedTable + "` (`id` int, `flags` int unsigned);"
+	supportedParsed, err := schema.ParseDesiredSQL(supportedSQL)
+	if err != nil {
+		t.Fatalf("ParseDesiredSQL(supported desired schema) error = %v\n%s", err, supportedSQL)
+	}
+	supportedExpected := schema.Schema{Tables: map[string]schema.Table{
 		unsignedTable: {
 			Name: unsignedTable,
 			Columns: []schema.Column{
-				{Name: "id", Type: "int", AutoIncrement: true},
+				{Name: "id", Type: "int"},
 				{Name: "flags", Type: "int unsigned"},
 			},
 		},
 	}}
-	if diff := schema.Diff(unsignedExpected, unsignedParsed); len(diff.Changes) != 0 {
-		t.Fatalf("unsigned TableDDL round-trip diff = %+v, want none\nDDL:\n%s", diff.Changes, unsignedDDL)
+	if diff := schema.Diff(supportedExpected, supportedParsed); len(diff.Changes) != 0 {
+		t.Fatalf("supported desired schema diff = %+v, want none\nDDL:\n%s", diff.Changes, supportedSQL)
 	}
 
 	statements, err := backend.RenderDDL([]schema.Change{
