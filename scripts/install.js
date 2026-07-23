@@ -135,7 +135,9 @@ function downloadWithLimits(url, temp, overrides = {}) {
     const finish = (err) => {
       if (settled) return;
       if (err && pipelineActive) {
-        pendingPipelineError ||= err;
+        if (!pendingPipelineError) {
+          pendingPipelineError = err;
+        }
         if (activeResponse && !activeResponse.destroyed) activeResponse.destroy(err);
         if (activeRequest && !activeRequest.destroyed) activeRequest.destroy(err);
         return;

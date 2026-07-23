@@ -120,10 +120,13 @@ func capabilitiesData() CapabilitiesData {
 					Name:   "mysql",
 					Status: "available",
 					Rollback: CapRollback{
-						DDL:  "none",
+						DDL:  "bounded-structural-snapshot",
 						Data: "irreversible",
 						Notes: []string{
-							"DDL uses implicit commit; rollback uses structural snapshot guidance only.",
+							"Direct schema apply supports the simple parsed column subset; real SHOW CREATE exports are opaque.",
+							"Import/reconcile/rollback support exact no-op or one isolated missing InnoDB table recreation; existing opaque tables cannot be changed in place.",
+							"Opaque creation is R3; MySQL DDL uses implicit commit.",
+							"Zero-statement operations are R0 and write no snapshot.",
 							"Deleted data cannot be reconstructed by dbgov.",
 						},
 					},
@@ -132,17 +135,18 @@ func capabilitiesData() CapabilitiesData {
 					Name:   "postgres",
 					Status: "available",
 					Rollback: CapRollback{
-						DDL:  "structural-snapshot",
+						DDL:  "bounded-structural-snapshot",
 						Data: "irreversible",
 						Notes: []string{
-							"PostgreSQL supports query, explain, schema workflows, governed DML, import, reconcile, and rollback.",
-							"Rollback restores schema structure from snapshots only.",
+							"Direct schema apply supports the simple parsed column subset; rich exports support exact no-op or one isolated missing-table recreation.",
+							"Snapshot/export rejects serial/identity, sequence dependencies, non-catalog types/default dependencies, comments, standalone indexes, advanced constraints, partitioning/inheritance, non-default FK actions, triggers/policies, custom storage, and non-default collation.",
+							"Zero-statement operations are R0 and write no snapshot.",
 							"Deleted data cannot be reconstructed by dbgov.",
 						},
 					},
 				},
 			},
-			Schema: "MySQL and PostgreSQL schema diff/plan/apply manage normalized autoIncrement columns; serial-vs-identity, ALWAYS-vs-BY-DEFAULT, and sequence options are not preserved.",
+			Schema: "Direct diff/plan/apply manages only the parsed column subset; PostgreSQL supports bounded type/identity changes while MySQL existing-column type/autoIncrement changes fail closed. Rich safe CREATE TABLE definitions are opaque R3 restores that must be the plan's only change.",
 			RiskModel: []CapRisk{
 				{Level: "R0", Authorization: "free"},
 				{Level: "R1", Authorization: "--yes or interactive confirmation"},

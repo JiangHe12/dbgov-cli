@@ -45,18 +45,19 @@ func (b *Backend) Ping(ctx context.Context) error {
 	return b.db.PingContext(ctx)
 }
 
+//nolint:gocyclo // Catalog rows include nullable zero-column tables and sequence metadata in one ordered mapping pass.
 func (b *Backend) IntrospectSchema(ctx context.Context) (schema.Schema, error) {
 	rows, err := b.db.QueryContext(ctx, `
 SELECT c.relname AS table_name,
        a.attname AS column_name,
        pg_catalog.format_type(a.atttypid, a.atttypmod) AS column_type,
-       a.attnotnull AS not_null,
-       pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+       COALESCE(a.attnotnull, false) AS not_null,
+       pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
        a.attidentity AS identity_kind,
        EXISTS (
            SELECT 1
-           FROM pg_depend dep
-           JOIN pg_class seq ON seq.oid = dep.objid
+           FROM pg_catalog.pg_depend dep
+           JOIN pg_catalog.pg_class seq ON seq.oid = dep.objid
            WHERE seq.relkind = 'S'
              AND dep.refobjid = c.oid
              AND dep.refobjsubid = a.attnum
@@ -64,19 +65,30 @@ SELECT c.relname AS table_name,
        ) AS has_owned_sequence,
        EXISTS (
            SELECT 1
-           FROM pg_constraint pk
+           FROM pg_catalog.pg_depend dep
+           JOIN pg_catalog.pg_class seq
+             ON seq.oid = dep.refobjid
+            AND seq.relkind = 'S'
+           WHERE dep.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass
+             AND dep.objid = ad.oid
+             AND dep.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+       ) AS has_sequence_dependency,
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_constraint pk
            WHERE pk.conrelid = c.oid
              AND pk.contype = 'p'
              AND a.attnum = ANY(pk.conkey)
        ) AS is_primary
-FROM pg_class c
-JOIN pg_namespace n ON n.oid = c.relnamespace
-JOIN pg_attribute a ON a.attrelid = c.oid
-LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_catalog.pg_attribute a
+  ON a.attrelid = c.oid
+ AND a.attnum > 0
+ AND NOT a.attisdropped
+LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
 WHERE n.nspname = $1
   AND c.relkind IN ('r', 'p')
-  AND a.attnum > 0
-  AND NOT a.attisdropped
 ORDER BY c.relname, a.attnum`, b.schema)
 	if err != nil {
 		return schema.Schema{}, err
@@ -85,18 +97,31 @@ ORDER BY c.relname, a.attnum`, b.schema)
 
 	result := schema.Schema{Tables: map[string]schema.Table{}}
 	for rows.Next() {
-		var tableName, columnName, columnType string
-		var notNull, hasOwnedSequence, primary bool
+		var tableName string
+		var columnName, columnType sql.NullString
+		var notNull, hasOwnedSequence, hasSequenceDependency, primary bool
 		var defaultValue, identityKind sql.NullString
-		if err := rows.Scan(&tableName, &columnName, &columnType, &notNull, &defaultValue, &identityKind, &hasOwnedSequence, &primary); err != nil {
+		if err := rows.Scan(&tableName, &columnName, &columnType, &notNull, &defaultValue, &identityKind, &hasOwnedSequence, &hasSequenceDependency, &primary); err != nil {
 			return schema.Schema{}, err
 		}
 		table := result.Tables[tableName]
 		if table.Name == "" {
 			table.Name = tableName
 		}
-		autoIncrement := identityKind.String == "a" || identityKind.String == "d" || (hasOwnedSequence && isPostgresNextvalDefault(defaultValue.String))
-		column := schema.Column{Name: columnName, Type: columnType, Nullable: !notNull, AutoIncrement: autoIncrement}
+		if !columnName.Valid {
+			result.Tables[tableName] = table
+			continue
+		}
+		autoIncrement := identityKind.String == "a" ||
+			identityKind.String == "d" ||
+			(hasOwnedSequence && isPostgresNextvalDefault(defaultValue.String))
+		column := schema.Column{
+			Name:              columnName.String,
+			Type:              columnType.String,
+			Nullable:          !notNull,
+			AutoIncrement:     autoIncrement,
+			SequenceDependent: hasOwnedSequence || hasSequenceDependency,
+		}
 		if primary {
 			column.Key = "PRI"
 		}
@@ -129,12 +154,12 @@ SELECT tbl.relname AS table_name,
        att.attname AS column_name,
        i.indisunique AS is_unique,
        ord.n AS ordinal
-FROM pg_index i
-JOIN pg_class tbl ON tbl.oid = i.indrelid
-JOIN pg_namespace nsp ON nsp.oid = tbl.relnamespace
-JOIN pg_class idx ON idx.oid = i.indexrelid
-JOIN unnest(i.indkey) WITH ORDINALITY AS ord(attnum, n) ON true
-JOIN pg_attribute att ON att.attrelid = tbl.oid AND att.attnum = ord.attnum
+FROM pg_catalog.pg_index i
+JOIN pg_catalog.pg_class tbl ON tbl.oid = i.indrelid
+JOIN pg_catalog.pg_namespace nsp ON nsp.oid = tbl.relnamespace
+JOIN pg_catalog.pg_class idx ON idx.oid = i.indexrelid
+JOIN pg_catalog.unnest(i.indkey) WITH ORDINALITY AS ord(attnum, n) ON true
+JOIN pg_catalog.pg_attribute att ON att.attrelid = tbl.oid AND att.attnum = ord.attnum
 WHERE nsp.nspname = $1
 ORDER BY tbl.relname, idx.relname, ord.n`, b.schema)
 	if err != nil {
@@ -185,13 +210,14 @@ SELECT tbl.relname AS table_name,
        ref.relname AS referenced_table_name,
        dst.attname AS referenced_column_name,
        ord.n AS ordinal
-FROM pg_constraint con
-JOIN pg_class tbl ON tbl.oid = con.conrelid
-JOIN pg_namespace nsp ON nsp.oid = tbl.relnamespace
-JOIN pg_class ref ON ref.oid = con.confrelid
-JOIN unnest(con.conkey, con.confkey) WITH ORDINALITY AS ord(src_attnum, dst_attnum, n) ON true
-JOIN pg_attribute src ON src.attrelid = tbl.oid AND src.attnum = ord.src_attnum
-JOIN pg_attribute dst ON dst.attrelid = ref.oid AND dst.attnum = ord.dst_attnum
+FROM pg_catalog.pg_constraint con
+JOIN pg_catalog.pg_class tbl ON tbl.oid = con.conrelid
+JOIN pg_catalog.pg_namespace nsp ON nsp.oid = tbl.relnamespace
+JOIN pg_catalog.pg_class ref ON ref.oid = con.confrelid
+JOIN pg_catalog.unnest(con.conkey) WITH ORDINALITY AS ord(src_attnum, n) ON true
+JOIN pg_catalog.unnest(con.confkey) WITH ORDINALITY AS ref_ord(dst_attnum, n) ON ref_ord.n = ord.n
+JOIN pg_catalog.pg_attribute src ON src.attrelid = tbl.oid AND src.attnum = ord.src_attnum
+JOIN pg_catalog.pg_attribute dst ON dst.attrelid = ref.oid AND dst.attnum = ref_ord.dst_attnum
 WHERE nsp.nspname = $1
   AND con.contype = 'f'
 ORDER BY tbl.relname, con.conname, ord.n`, b.schema)
@@ -286,15 +312,34 @@ func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
 	if !ok {
 		return "", apperrors.New(apperrors.CodeResourceNotFound, fmt.Sprintf("table %q not found", table), nil)
 	}
+	if err := b.validateTableDDLFeatures(ctx, tbl); err != nil {
+		return "", err
+	}
 	return b.renderTableDDL(ctx, tbl)
 }
 
+//nolint:gocyclo // Each supported schema action is rendered explicitly so unknown or lossy shapes fail closed.
 func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 	statements := make([]string, 0, len(changes))
 	for _, change := range changes {
 		tableName := qualifiedIdent(b.schemaName(), change.Table)
 		switch change.Action {
 		case schema.ActionCreateTable:
+			if change.Opaque {
+				statement, err := schema.ValidatedOpaqueCreateDDL(change.Table, change.RawDDL)
+				if err != nil {
+					return nil, err
+				}
+				if !strings.HasPrefix(statement, "CREATE TABLE "+tableName) {
+					return nil, apperrors.New(
+						apperrors.CodeNotImplemented,
+						fmt.Sprintf("opaque PostgreSQL definition for table %q must use the canonical public-schema form", change.Table),
+						nil,
+					)
+				}
+				statements = append(statements, statement)
+				continue
+			}
 			columns := make([]string, 0, len(change.Columns))
 			for _, column := range change.Columns {
 				columns = append(columns, renderColumnDefinition(column))
@@ -467,7 +512,7 @@ func (b *Backend) renderTableDDL(ctx context.Context, table schema.Table) (strin
 	}
 	parts := make([]string, 0, len(table.Columns)+len(constraints))
 	for _, column := range table.Columns {
-		parts = append(parts, "  "+renderColumnDefinition(column))
+		parts = append(parts, "  "+renderCapturedColumnDefinition(column))
 	}
 	for _, constraint := range constraints {
 		parts = append(parts, "  "+constraint)
@@ -475,23 +520,313 @@ func (b *Backend) renderTableDDL(ctx context.Context, table schema.Table) (strin
 	return fmt.Sprintf("CREATE TABLE %s (\n%s\n);", qualifiedIdent(b.schemaName(), table.Name), strings.Join(parts, ",\n")), nil
 }
 
+//nolint:gocyclo // Lossless snapshot eligibility is intentionally a single auditable fail-closed predicate.
+func (b *Backend) validateTableDDLFeatures(ctx context.Context, table schema.Table) error {
+	if len(table.Columns) == 0 {
+		return unsupportedTableDDLError(table.Name)
+	}
+	for _, column := range table.Columns {
+		if column.AutoIncrement ||
+			column.SequenceDependent ||
+			(column.Default != nil && containsPostgresSequenceStateCall(*column.Default)) {
+			return unsupportedTableDDLError(table.Name)
+		}
+	}
+	var unsupportedRelKind bool
+	var unsupportedPersistence bool
+	var partitioned bool
+	var customTablespace bool
+	var relationOptions bool
+	var inherited bool
+	var unsupportedConstraint bool
+	var unsupportedIndex bool
+	var trigger bool
+	var policy bool
+	var generatedColumn bool
+	var foreignKeyOptions bool
+	var nonDefaultCollation bool
+	var constraintOptions bool
+	var unsupportedIndexShape bool
+	var rowSecurity bool
+	var replicaIdentity bool
+	var nonDefaultAccessMethod bool
+	var rewriteRule bool
+	var unsupportedIndexSemantics bool
+	var comment bool
+	var customColumnStorage bool
+	var typedTable bool
+	var nonCatalogColumnType bool
+	var nonCatalogDefaultDependency bool
+	err := b.db.QueryRowContext(ctx, `
+SELECT c.relkind <> 'r',
+       c.relpersistence <> 'p',
+       c.relispartition,
+       c.reltablespace <> 0,
+       COALESCE(pg_catalog.cardinality(c.reloptions), 0) > 0,
+       EXISTS (SELECT 1 FROM pg_catalog.pg_inherits inh WHERE inh.inhrelid = c.oid OR inh.inhparent = c.oid),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_constraint con WHERE con.conrelid = c.oid AND con.contype NOT IN ('p', 'u', 'f')),
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_index i
+           WHERE i.indrelid = c.oid
+             AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint con WHERE con.conindid = i.indexrelid)
+       ),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_trigger trg WHERE trg.tgrelid = c.oid AND NOT trg.tgisinternal),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_policy pol WHERE pol.polrelid = c.oid),
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_attribute a
+           WHERE a.attrelid = c.oid
+             AND a.attnum > 0
+             AND NOT a.attisdropped
+             AND COALESCE(pg_catalog.to_jsonb(a)->>'attgenerated', '') <> ''
+       ),
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_constraint con
+           WHERE con.conrelid = c.oid
+             AND con.contype = 'f'
+             AND (
+                 con.confupdtype <> 'a' OR
+                 con.confdeltype <> 'a' OR
+                 con.confmatchtype <> 's' OR
+                 con.condeferrable OR
+                 con.condeferred
+             )
+       ),
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_attribute a
+           JOIN pg_catalog.pg_type typ ON typ.oid = a.atttypid
+           WHERE a.attrelid = c.oid
+             AND a.attnum > 0
+             AND NOT a.attisdropped
+             AND a.attcollation <> 0
+             AND a.attcollation <> typ.typcollation
+       ),
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_constraint con
+           WHERE con.conrelid = c.oid
+             AND con.contype IN ('p', 'u', 'f')
+             AND (con.condeferrable OR con.condeferred OR NOT con.convalidated)
+       ),
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_index i
+           JOIN pg_catalog.pg_class idx ON idx.oid = i.indexrelid
+           WHERE i.indrelid = c.oid
+             AND (
+                 COALESCE((pg_catalog.to_jsonb(i)->>'indnkeyatts')::integer, i.indnatts) <> i.indnatts OR
+                 i.indexprs IS NOT NULL OR
+                 i.indpred IS NOT NULL OR
+                 COALESCE((pg_catalog.to_jsonb(i)->>'indnullsnotdistinct')::boolean, false) OR
+                 i.indoption::text !~ '^(0 ?)*$' OR
+                 idx.reltablespace <> 0 OR
+                 COALESCE(pg_catalog.cardinality(idx.reloptions), 0) > 0
+             )
+       ),
+       c.relrowsecurity OR c.relforcerowsecurity,
+       c.relreplident <> 'd',
+       COALESCE(
+           (SELECT am.amname <> 'heap' FROM pg_catalog.pg_am am WHERE am.oid = c.relam),
+           c.relam <> 0
+       ),
+       EXISTS (SELECT 1 FROM pg_catalog.pg_rewrite rw WHERE rw.ev_class = c.oid),
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_index i
+           JOIN pg_catalog.pg_class idx ON idx.oid = i.indexrelid
+           JOIN pg_catalog.pg_am am ON am.oid = idx.relam
+           CROSS JOIN LATERAL pg_catalog.generate_series(
+               0,
+               COALESCE((pg_catalog.to_jsonb(i)->>'indnkeyatts')::integer, i.indnatts) - 1
+           ) AS ord(pos)
+           JOIN pg_catalog.pg_attribute a
+             ON a.attrelid = i.indrelid
+            AND a.attnum = i.indkey[ord.pos]
+           JOIN pg_catalog.pg_opclass opc ON opc.oid = i.indclass[ord.pos]
+           WHERE i.indrelid = c.oid
+             AND (
+                 am.amname <> 'btree' OR
+                 NOT opc.opcdefault OR
+                 (
+                     i.indcollation[ord.pos] <> 0 AND
+                     i.indcollation[ord.pos] <> a.attcollation
+                 )
+             )
+       ),
+       pg_catalog.obj_description(c.oid, 'pg_class') IS NOT NULL OR EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_attribute a
+           WHERE a.attrelid = c.oid
+             AND a.attnum > 0
+             AND NOT a.attisdropped
+             AND pg_catalog.col_description(c.oid, a.attnum) IS NOT NULL
+       ),
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_attribute a
+           JOIN pg_catalog.pg_type typ ON typ.oid = a.atttypid
+           WHERE a.attrelid = c.oid
+             AND a.attnum > 0
+             AND NOT a.attisdropped
+             AND (
+                 a.attstorage <> typ.typstorage OR
+                 COALESCE(pg_catalog.to_jsonb(a)->>'attcompression', '') <> '' OR
+                 COALESCE(pg_catalog.cardinality(a.attoptions), 0) > 0
+             )
+       ),
+       c.reloftype <> 0,
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_attribute a
+           JOIN pg_catalog.pg_type typ ON typ.oid = a.atttypid
+           JOIN pg_catalog.pg_namespace typ_nsp ON typ_nsp.oid = typ.typnamespace
+           WHERE a.attrelid = c.oid
+             AND a.attnum > 0
+             AND NOT a.attisdropped
+             AND typ_nsp.nspname <> 'pg_catalog'
+       ),
+       EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_attrdef attr_default
+           JOIN pg_catalog.pg_depend dep
+             ON dep.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass
+            AND dep.objid = attr_default.oid
+           LEFT JOIN pg_catalog.pg_proc proc
+             ON dep.refclassid = 'pg_catalog.pg_proc'::pg_catalog.regclass
+            AND proc.oid = dep.refobjid
+           LEFT JOIN pg_catalog.pg_type dep_type
+             ON dep.refclassid = 'pg_catalog.pg_type'::pg_catalog.regclass
+            AND dep_type.oid = dep.refobjid
+           LEFT JOIN pg_catalog.pg_class dep_class
+             ON dep.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass
+            AND dep_class.oid = dep.refobjid
+           LEFT JOIN pg_catalog.pg_collation dep_collation
+             ON dep.refclassid = 'pg_catalog.pg_collation'::pg_catalog.regclass
+            AND dep_collation.oid = dep.refobjid
+           LEFT JOIN pg_catalog.pg_operator dep_operator
+             ON dep.refclassid = 'pg_catalog.pg_operator'::pg_catalog.regclass
+            AND dep_operator.oid = dep.refobjid
+           LEFT JOIN pg_catalog.pg_namespace dep_nsp
+             ON dep_nsp.oid = CASE
+                 WHEN dep.refclassid = 'pg_catalog.pg_namespace'::pg_catalog.regclass THEN dep.refobjid
+                 ELSE COALESCE(
+                     proc.pronamespace,
+                     dep_type.typnamespace,
+                     dep_class.relnamespace,
+                     dep_collation.collnamespace,
+                     dep_operator.oprnamespace
+                 )
+             END
+           WHERE attr_default.adrelid = c.oid
+             AND NOT (
+                 dep.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass AND
+                 dep.refobjid = c.oid AND
+                 dep.refobjsubid = attr_default.adnum
+             )
+             AND dep.refclassid IN (
+                 'pg_catalog.pg_proc'::pg_catalog.regclass,
+                 'pg_catalog.pg_type'::pg_catalog.regclass,
+                 'pg_catalog.pg_class'::pg_catalog.regclass,
+                 'pg_catalog.pg_collation'::pg_catalog.regclass,
+                 'pg_catalog.pg_operator'::pg_catalog.regclass,
+                 'pg_catalog.pg_namespace'::pg_catalog.regclass
+             )
+             AND dep_nsp.nspname <> 'pg_catalog'
+       )
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace nsp ON nsp.oid = c.relnamespace
+WHERE nsp.nspname = $1
+  AND c.relname = $2`, b.schemaName(), table.Name).Scan(
+		&unsupportedRelKind,
+		&unsupportedPersistence,
+		&partitioned,
+		&customTablespace,
+		&relationOptions,
+		&inherited,
+		&unsupportedConstraint,
+		&unsupportedIndex,
+		&trigger,
+		&policy,
+		&generatedColumn,
+		&foreignKeyOptions,
+		&nonDefaultCollation,
+		&constraintOptions,
+		&unsupportedIndexShape,
+		&rowSecurity,
+		&replicaIdentity,
+		&nonDefaultAccessMethod,
+		&rewriteRule,
+		&unsupportedIndexSemantics,
+		&comment,
+		&customColumnStorage,
+		&typedTable,
+		&nonCatalogColumnType,
+		&nonCatalogDefaultDependency,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return apperrors.New(apperrors.CodeResourceNotFound, fmt.Sprintf("table %q not found", table.Name), nil)
+	}
+	if err != nil {
+		return backendErr("inspect PostgreSQL table DDL support", err)
+	}
+	if unsupportedRelKind ||
+		unsupportedPersistence ||
+		partitioned ||
+		customTablespace ||
+		relationOptions ||
+		inherited ||
+		unsupportedConstraint ||
+		unsupportedIndex ||
+		trigger ||
+		policy ||
+		generatedColumn ||
+		foreignKeyOptions ||
+		nonDefaultCollation ||
+		constraintOptions ||
+		unsupportedIndexShape ||
+		rowSecurity ||
+		replicaIdentity ||
+		nonDefaultAccessMethod ||
+		rewriteRule ||
+		unsupportedIndexSemantics ||
+		comment ||
+		customColumnStorage ||
+		typedTable ||
+		nonCatalogColumnType ||
+		nonCatalogDefaultDependency {
+		return unsupportedTableDDLError(table.Name)
+	}
+	return nil
+}
+
+func unsupportedTableDDLError(table string) error {
+	return apperrors.New(
+		apperrors.CodeNotImplemented,
+		fmt.Sprintf("table %q contains PostgreSQL structure that cannot be captured losslessly", table),
+		nil,
+	)
+}
+
 func (b *Backend) tableConstraints(ctx context.Context, table string) ([]string, error) {
 	rows, err := b.db.QueryContext(ctx, `
 SELECT con.conname,
        con.contype,
-       string_agg(src.attname, E'\x1f' ORDER BY ord.n) AS columns,
+       pg_catalog.json_agg(src.attname ORDER BY ord.n)::text AS columns,
        ref_nsp.nspname AS referenced_schema,
        ref.relname AS referenced_table,
-       string_agg(dst.attname, E'\x1f' ORDER BY ord.n) FILTER (WHERE dst.attname IS NOT NULL) AS referenced_columns
-FROM pg_constraint con
-JOIN pg_class tbl ON tbl.oid = con.conrelid
-JOIN pg_namespace nsp ON nsp.oid = tbl.relnamespace
-JOIN unnest(con.conkey) WITH ORDINALITY AS ord(src_attnum, n) ON true
-JOIN pg_attribute src ON src.attrelid = tbl.oid AND src.attnum = ord.src_attnum
-LEFT JOIN pg_class ref ON ref.oid = con.confrelid
-LEFT JOIN pg_namespace ref_nsp ON ref_nsp.oid = ref.relnamespace
-LEFT JOIN unnest(con.confkey) WITH ORDINALITY AS ref_ord(dst_attnum, n) ON ref_ord.n = ord.n
-LEFT JOIN pg_attribute dst ON dst.attrelid = ref.oid AND dst.attnum = ref_ord.dst_attnum
+       (pg_catalog.json_agg(dst.attname ORDER BY ord.n) FILTER (WHERE dst.attname IS NOT NULL))::text AS referenced_columns
+FROM pg_catalog.pg_constraint con
+JOIN pg_catalog.pg_class tbl ON tbl.oid = con.conrelid
+JOIN pg_catalog.pg_namespace nsp ON nsp.oid = tbl.relnamespace
+JOIN pg_catalog.unnest(con.conkey) WITH ORDINALITY AS ord(src_attnum, n) ON true
+JOIN pg_catalog.pg_attribute src ON src.attrelid = tbl.oid AND src.attnum = ord.src_attnum
+LEFT JOIN pg_catalog.pg_class ref ON ref.oid = con.confrelid
+LEFT JOIN pg_catalog.pg_namespace ref_nsp ON ref_nsp.oid = ref.relnamespace
+LEFT JOIN pg_catalog.unnest(con.confkey) WITH ORDINALITY AS ref_ord(dst_attnum, n) ON ref_ord.n = ord.n
+LEFT JOIN pg_catalog.pg_attribute dst ON dst.attrelid = ref.oid AND dst.attnum = ref_ord.dst_attnum
 WHERE nsp.nspname = $1
   AND tbl.relname = $2
   AND con.contype IN ('p', 'u', 'f')
@@ -511,19 +846,27 @@ ORDER BY con.conname`, b.schema, table)
 		if err := rows.Scan(&name, &constraintType, &columns, &refSchema, &refTable, &refColumns); err != nil {
 			return nil, err
 		}
-		quotedColumns := quoteIdentList(splitCatalogList(columns))
+		columnNames, err := parseCatalogList(columns)
+		if err != nil {
+			return nil, backendErr("decode PostgreSQL constraint columns", err)
+		}
+		quotedColumns := quoteIdentList(columnNames)
 		switch constraintType {
 		case "p":
 			constraints = append(constraints, fmt.Sprintf("CONSTRAINT %s PRIMARY KEY (%s)", quoteIdent(name), strings.Join(quotedColumns, ", ")))
 		case "u":
 			constraints = append(constraints, fmt.Sprintf("CONSTRAINT %s UNIQUE (%s)", quoteIdent(name), strings.Join(quotedColumns, ", ")))
 		case "f":
+			referencedColumnNames, err := parseCatalogList(refColumns.String)
+			if err != nil {
+				return nil, backendErr("decode PostgreSQL referenced constraint columns", err)
+			}
 			constraints = append(constraints, fmt.Sprintf(
 				"CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)",
 				quoteIdent(name),
 				strings.Join(quotedColumns, ", "),
 				qualifiedIdent(refSchema.String, refTable.String),
-				strings.Join(quoteIdentList(splitCatalogList(refColumns.String)), ", "),
+				strings.Join(quoteIdentList(referencedColumnNames), ", "),
 			))
 		}
 	}
@@ -536,15 +879,168 @@ ORDER BY con.conname`, b.schema, table)
 	return constraints, nil
 }
 
-func splitCatalogList(value string) []string {
+func parseCatalogList(value string) ([]string, error) {
 	if value == "" {
-		return nil
+		return nil, nil
 	}
-	return strings.Split(value, "\x1f")
+	var result []string
+	if err := json.Unmarshal([]byte(value), &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func isPostgresNextvalDefault(value string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "nextval(")
+}
+
+//nolint:gocyclo // Quote, comment, identifier, and dollar-quote states must stay in one scanner to avoid bypasses.
+func containsPostgresSequenceStateCall(expression string) bool {
+	for pos := 0; pos < len(expression); {
+		switch expression[pos] {
+		case '\'':
+			pos = skipPostgresQuotedText(expression, pos, '\'')
+		case '"':
+			name, next := readPostgresQuotedIdentifier(expression, pos)
+			if isPostgresSequenceStateFunction(name) && postgresCallParenFollows(expression, next) {
+				return true
+			}
+			pos = next
+		case '$':
+			if next, ok := skipPostgresDollarQuotedText(expression, pos); ok {
+				pos = next
+			} else {
+				pos++
+			}
+		case '-':
+			if pos+1 < len(expression) && expression[pos+1] == '-' {
+				pos += 2
+				for pos < len(expression) && expression[pos] != '\n' && expression[pos] != '\r' {
+					pos++
+				}
+			} else {
+				pos++
+			}
+		case '/':
+			if pos+1 < len(expression) && expression[pos+1] == '*' {
+				end := strings.Index(expression[pos+2:], "*/")
+				if end < 0 {
+					return true
+				}
+				pos += end + 4
+			} else {
+				pos++
+			}
+		default:
+			if !isPostgresIdentifierStart(expression[pos]) {
+				pos++
+				continue
+			}
+			start := pos
+			pos++
+			for pos < len(expression) && isPostgresIdentifierPart(expression[pos]) {
+				pos++
+			}
+			if isPostgresSequenceStateFunction(expression[start:pos]) && postgresCallParenFollows(expression, pos) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isPostgresSequenceStateFunction(name string) bool {
+	switch strings.ToLower(name) {
+	case "currval", "lastval", "nextval", "setval":
+		return true
+	default:
+		return false
+	}
+}
+
+func skipPostgresQuotedText(expression string, start int, quote byte) int {
+	pos := start + 1
+	for pos < len(expression) {
+		if expression[pos] == '\\' {
+			pos += 2
+			continue
+		}
+		if expression[pos] != quote {
+			pos++
+			continue
+		}
+		pos++
+		if pos < len(expression) && expression[pos] == quote {
+			pos++
+			continue
+		}
+		return pos
+	}
+	return len(expression)
+}
+
+func readPostgresQuotedIdentifier(expression string, start int) (string, int) {
+	var value strings.Builder
+	pos := start + 1
+	for pos < len(expression) {
+		if expression[pos] != '"' {
+			value.WriteByte(expression[pos])
+			pos++
+			continue
+		}
+		pos++
+		if pos < len(expression) && expression[pos] == '"' {
+			value.WriteByte('"')
+			pos++
+			continue
+		}
+		return value.String(), pos
+	}
+	return value.String(), len(expression)
+}
+
+func skipPostgresDollarQuotedText(expression string, start int) (int, bool) {
+	tagEnd := start + 1
+	if tagEnd < len(expression) && expression[tagEnd] != '$' {
+		if !isPostgresIdentifierStart(expression[tagEnd]) {
+			return start, false
+		}
+		tagEnd++
+		for tagEnd < len(expression) &&
+			(isPostgresIdentifierStart(expression[tagEnd]) ||
+				expression[tagEnd] >= '0' && expression[tagEnd] <= '9') {
+			tagEnd++
+		}
+	}
+	if tagEnd >= len(expression) || expression[tagEnd] != '$' {
+		return start, false
+	}
+	delimiter := expression[start : tagEnd+1]
+	end := strings.Index(expression[tagEnd+1:], delimiter)
+	if end < 0 {
+		return len(expression), true
+	}
+	return tagEnd + 1 + end + len(delimiter), true
+}
+
+func postgresCallParenFollows(expression string, pos int) bool {
+	for pos < len(expression) {
+		switch expression[pos] {
+		case ' ', '\t', '\n', '\r', '\v', '\f':
+			pos++
+		default:
+			return expression[pos] == '('
+		}
+	}
+	return false
+}
+
+func isPostgresIdentifierStart(value byte) bool {
+	return value == '_' || value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
+}
+
+func isPostgresIdentifierPart(value byte) bool {
+	return isPostgresIdentifierStart(value) || value >= '0' && value <= '9' || value == '$'
 }
 
 func scanRows(rows *sql.Rows) (dbbackend.QueryResult, error) {
@@ -702,6 +1198,17 @@ func renderColumnDefinition(column schema.Column) string {
 	}
 	if column.AutoIncrement {
 		parts = append(parts, "GENERATED BY DEFAULT AS IDENTITY")
+	}
+	return strings.Join(parts, " ")
+}
+
+func renderCapturedColumnDefinition(column schema.Column) string {
+	parts := []string{renderColumn(column)}
+	if !column.Nullable {
+		parts = append(parts, "NOT NULL")
+	}
+	if column.Default != nil {
+		parts = append(parts, "DEFAULT "+*column.Default)
 	}
 	return strings.Join(parts, " ")
 }

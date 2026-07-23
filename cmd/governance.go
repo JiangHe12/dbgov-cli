@@ -19,7 +19,6 @@ import (
 	"github.com/JiangHe12/dbgov-cli/internal/backend/postgres"
 	"github.com/JiangHe12/dbgov-cli/internal/dbgovctx"
 	"github.com/JiangHe12/dbgov-cli/internal/safety"
-	"github.com/JiangHe12/dbgov-cli/internal/schema"
 	dbgsnapshot "github.com/JiangHe12/dbgov-cli/internal/snapshot"
 )
 
@@ -275,21 +274,15 @@ func snapshotBaseDir() (string, error) {
 	return filepath.Join(filepath.Dir(path), "snapshots"), nil
 }
 
-func captureSchemaSnapshot(f *cliFlags, b interface {
-	TableDDL(context.Context, string) (string, error)
-}, current schema.Schema, meta contextMeta, command string,
+func capturePreparedSchemaSnapshot(
+	f *cliFlags,
+	tables map[string]string,
+	meta contextMeta,
+	command string,
 ) (string, error) {
 	baseDir, err := snapshotBaseDir()
 	if err != nil {
 		return "", err
-	}
-	tables := make(map[string]string, len(current.Tables))
-	for _, table := range sortedTableNames(current) {
-		ddl, err := b.TableDDL(commandContext(f), table)
-		if err != nil {
-			return "", err
-		}
-		tables[table] = ddl
 	}
 	snapshotID, data, err := dbgsnapshot.Prepare(dbgsnapshot.Meta{
 		Operator: currentOperator(f),

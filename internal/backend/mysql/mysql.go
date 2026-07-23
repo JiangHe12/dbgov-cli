@@ -47,10 +47,14 @@ func (b *Backend) Ping(ctx context.Context) error {
 
 func (b *Backend) IntrospectSchema(ctx context.Context) (schema.Schema, error) {
 	rows, err := b.db.QueryContext(ctx, `
-SELECT table_name, column_name, column_type, is_nullable, column_default, column_key, extra
-FROM information_schema.columns
-WHERE table_schema = ?
-ORDER BY table_name, ordinal_position`, b.database)
+SELECT c.table_name, c.column_name, c.column_type, c.is_nullable, c.column_default, c.column_key, c.extra
+FROM information_schema.columns c
+JOIN information_schema.tables t
+  ON t.table_schema = c.table_schema
+ AND t.table_name = c.table_name
+WHERE c.table_schema = ?
+  AND t.table_type = 'BASE TABLE'
+ORDER BY c.table_name, c.ordinal_position`, b.database)
 	if err != nil {
 		return schema.Schema{}, err
 	}
@@ -247,7 +251,33 @@ func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
 	if err := rows.Close(); err != nil {
 		return "", err
 	}
-	return ddl, nil
+	statement, err := validateOpaqueMySQLDDL(table, ddl)
+	if err != nil {
+		return "", err
+	}
+	return statement, nil
+}
+
+func validateOpaqueMySQLDDL(table, ddl string) (string, error) {
+	statement, err := schema.ValidatedOpaqueCreateDDL(table, ddl)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(statement, "CREATE TABLE `"+escapeIdent(table)+"`") {
+		return "", apperrors.New(
+			apperrors.CodeNotImplemented,
+			fmt.Sprintf("opaque MySQL definition for table %q must use canonical SHOW CREATE TABLE syntax", table),
+			nil,
+		)
+	}
+	if engine, ok := schema.OpaqueTableEngine(statement); !ok || engine != "innodb" {
+		return "", apperrors.New(
+			apperrors.CodeNotImplemented,
+			fmt.Sprintf("opaque MySQL definition for table %q must use the InnoDB storage engine", table),
+			nil,
+		)
+	}
+	return statement, nil
 }
 
 func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
@@ -255,6 +285,14 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 	for _, change := range changes {
 		switch change.Action {
 		case schema.ActionCreateTable:
+			if change.Opaque {
+				statement, err := validateOpaqueMySQLDDL(change.Table, change.RawDDL)
+				if err != nil {
+					return nil, err
+				}
+				statements = append(statements, statement)
+				continue
+			}
 			columns := make([]string, 0, len(change.Columns))
 			autoIncrementKey := ""
 			for _, column := range change.Columns {
@@ -278,12 +316,11 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 			}
 			statements = append(statements, statement+";")
 		case schema.ActionModifyColumn:
-			column := schema.Column{Name: change.Column, Type: change.Type, AutoIncrement: change.AutoIncrement}
-			statement := fmt.Sprintf("ALTER TABLE `%s` MODIFY COLUMN %s", escapeIdent(change.Table), renderColumn(column))
-			if change.AutoIncrementIndexRequired {
-				statement += fmt.Sprintf(", ADD UNIQUE KEY `%s` (`%s`)", escapeIdent(autoIncrementIndexName(change.Table, change.Column)), escapeIdent(change.Column))
-			}
-			statements = append(statements, statement+";")
+			return nil, apperrors.New(
+				apperrors.CodeNotImplemented,
+				fmt.Sprintf("in-place MySQL column modification for %s.%s cannot preserve the complete column definition; use a reviewed manual migration", change.Table, change.Column),
+				nil,
+			)
 		case schema.ActionDropColumn:
 			statements = append(statements, fmt.Sprintf("ALTER TABLE `%s` DROP COLUMN `%s`;", escapeIdent(change.Table), escapeIdent(change.Column)))
 		case schema.ActionDropTable:

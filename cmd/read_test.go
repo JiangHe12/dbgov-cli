@@ -505,6 +505,44 @@ func TestSchemaPlanBindingIsStableAndBindsStateAndTarget(t *testing.T) {
 	}
 }
 
+func TestSchemaPlanBindingIgnoresOnlyVolatileMySQLAutoIncrementCounter(t *testing.T) {
+	before, err := schema.ParseSchemaDDL(
+		"CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB AUTO_INCREMENT=7;",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := schema.ParseSchemaDDL(
+		"CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB AUTO_INCREMENT=42;",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := contextMeta{Name: "dev", Engine: "mysql", Host: "db.example", Port: 3306, Database: "app"}
+	backend := fake.New()
+	first, err := buildBoundSchemaPlan(backend, meta, before, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := buildBoundSchemaPlan(backend, meta, after, before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.PlanFingerprint != second.PlanFingerprint {
+		t.Fatalf("volatile AUTO_INCREMENT counter changed plan binding: %s != %s", first.PlanFingerprint, second.PlanFingerprint)
+	}
+
+	changed, err := schema.ParseSchemaDDL(
+		"CREATE TABLE `users` (`id` bigint NOT NULL, `name` text, PRIMARY KEY (`id`)) ENGINE=InnoDB AUTO_INCREMENT=42;",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildBoundSchemaPlan(backend, meta, changed, before); apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
+		t.Fatalf("non-counter opaque drift error = %v, want NOT_IMPLEMENTED", err)
+	}
+}
+
 func TestSchemaApplyCommitIndeterminateAuditsEveryStatementAsUncertain(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -590,8 +628,8 @@ func TestSchemaMutationsRejectPostAuthorizationDriftBeforeDDL(t *testing.T) {
 			if appErr := apperrors.AsAppError(err); appErr.Code != apperrors.CodeConflict {
 				t.Fatalf("error = %+v, want CONFLICT", appErr)
 			}
-			if backend.IntrospectCalls != 2 {
-				t.Fatalf("introspection calls = %d, want initial plan plus post-authorization revalidation", backend.IntrospectCalls)
+			if backend.IntrospectCalls != 3 {
+				t.Fatalf("introspection calls = %d, want initial plan plus stable pre/post collection reads", backend.IntrospectCalls)
 			}
 			if len(backend.Executed) != 0 {
 				t.Fatalf("DDL executed after drift: %+v", backend.Executed)
@@ -616,6 +654,44 @@ func TestSchemaMutationsRejectPostAuthorizationDriftBeforeDDL(t *testing.T) {
 				t.Fatalf("snapshots created after drift: %+v", snapshots)
 			}
 		})
+	}
+}
+
+func TestSchemaApplyRejectsSameTableDDLDriftDuringSnapshotCollection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	desired := writeTestFile(t, home, "desired.sql", "CREATE TABLE users (id BIGINT, legacy TEXT, name VARCHAR(100));")
+	baseline := fake.New().Schema
+
+	backend := fake.New()
+	backend.Schema = baseline
+	backend.IntrospectSchemas = []schema.Schema{baseline, baseline, baseline}
+	backend.DDLSequences = map[string][]string{
+		"users": {
+			"CREATE TABLE users (id BIGINT, legacy TEXT);",
+			"CREATE TABLE users (id BIGINT, legacy TEXT, changed TEXT);",
+		},
+	}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, err := executeCommandForTest("--yes", "schema", "apply", "-f", desired, "--fake")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeConflict {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeConflict, err)
+	}
+	if calls := backend.TableDDLCalls["users"]; calls != 2 {
+		t.Fatalf("TableDDL calls = %d, want two stable-collection reads", calls)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed after same-table collection drift: %+v", backend.Executed)
+	}
+	snapshots, listErr := dbgsnapshot.List(snapshotDirForTest(home))
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(snapshots) != 0 {
+		t.Fatalf("snapshots created after collection drift: %+v", snapshots)
 	}
 }
 
@@ -1650,6 +1726,220 @@ func TestImportR3RequiresTicketAllowDestructive(t *testing.T) {
 	}
 }
 
+func TestImportOpaqueCreateRequiresR3AndExecutesBoundDefinition(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	ddl := "CREATE TABLE `orders` (`id` bigint NOT NULL AUTO_INCREMENT, `user_id` bigint NOT NULL, PRIMARY KEY (`id`), CONSTRAINT `fk_orders_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)) ENGINE=InnoDB;"
+	writeTestFile(t, dir, "orders.sql", ddl)
+
+	deniedBackend := fake.New()
+	deniedBackend.Schema = schema.Schema{Tables: map[string]schema.Table{}}
+	restore := stubFakeBackend(t, deniedBackend)
+	_, err := executeCommandForTest("--yes", "--ticket", "CHG-1", "import", dir, "--fake")
+	restore()
+	if err == nil {
+		t.Fatal("opaque import without --allow-destructive succeeded")
+	}
+	if len(deniedBackend.Executed) != 0 {
+		t.Fatalf("executed denied opaque DDL: %+v", deniedBackend.Executed)
+	}
+
+	backend := fake.New()
+	backend.Schema = schema.Schema{Tables: map[string]schema.Table{}}
+	restore = stubFakeBackend(t, backend)
+	defer restore()
+	_, err = executeCommandForTest(
+		"--yes",
+		"--ticket", "CHG-1",
+		"import", dir,
+		"--fake",
+		"--allow-destructive",
+	)
+	if err != nil {
+		t.Fatalf("opaque import error = %v", err)
+	}
+	if len(backend.Executed) != 1 || backend.Executed[0] != ddl {
+		t.Fatalf("executed = %+v, want exact bound opaque DDL", backend.Executed)
+	}
+	if event := lastAuditEvent(t, home); event.Risk != "R3" || !event.Destructive {
+		t.Fatalf("opaque import audit event = %+v, want R3 destructive", event)
+	}
+}
+
+func TestBuildSchemaPlanRejectsOpaqueCreateCombinedWithPrune(t *testing.T) {
+	desired, err := schema.ParseSchemaDDL("CREATE TABLE `orders` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff := schema.Diff(schema.Schema{Tables: map[string]schema.Table{}}, desired)
+	diff.Changes = append(diff.Changes, schema.Change{
+		Action:      schema.ActionDropTable,
+		Table:       "legacy",
+		Destructive: true,
+	})
+	_, err = buildSchemaPlanFromDiff(fake.New(), diff)
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeNotImplemented, err)
+	}
+}
+
+func TestImportOpaqueExistingTableDriftFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	writeTestFile(
+		t,
+		dir,
+		"users.sql",
+		"CREATE TABLE `users` (`id` bigint NOT NULL, `name` text, PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+	)
+	backend := fake.New()
+	backend.DDLs = map[string]string{
+		"users": "CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;",
+	}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, err := executeCommandForTest("import", dir, "--fake", "--dry-run")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeNotImplemented, err)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed opaque in-place drift: %+v", backend.Executed)
+	}
+}
+
+func TestImportNoopDoesNotAuthorizeOrWriteSnapshot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	ddl := "CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;"
+	writeTestFile(t, dir, "users.sql", ddl)
+
+	backend := fake.New()
+	backend.DDLSequences = map[string][]string{
+		"users": {ddl},
+	}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	if _, err := executeCommandForTest("import", dir, "--fake"); err != nil {
+		t.Fatalf("opaque no-op import error = %v", err)
+	}
+	if calls := backend.TableDDLCalls["users"]; calls != 1 {
+		t.Fatalf("TableDDL calls = %d, want initial read only", calls)
+	}
+	metas, err := dbgsnapshot.List(snapshotDirForTest(home))
+	if err != nil || len(metas) != 0 {
+		t.Fatalf("snapshots = %+v, err=%v", metas, err)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed no-op DDL: %+v", backend.Executed)
+	}
+	if event := lastAuditEvent(t, home); event.Risk != "R0" || event.Status != dbgaudit.StatusSucceeded {
+		t.Fatalf("no-op audit event = %+v", event)
+	}
+}
+
+func TestImportPlanAndSnapshotUseSameVerifiedDDLState(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	initialDDL := "CREATE TABLE users (id BIGINT);"
+	verifiedDDL := "CREATE TABLE users (id BIGINT);"
+	writeTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT, name TEXT);")
+
+	backend := fake.New()
+	backend.Schema = schema.Schema{Tables: map[string]schema.Table{
+		"users": {Name: "users", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+	backend.DDLSequences = map[string][]string{
+		"users": {
+			initialDDL,
+			verifiedDDL,
+			verifiedDDL,
+			"CREATE TABLE users (id BIGINT, changed TEXT);",
+		},
+	}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	if _, err := executeCommandForTest("--yes", "import", dir, "--fake"); err != nil {
+		t.Fatalf("import error = %v", err)
+	}
+	if calls := backend.TableDDLCalls["users"]; calls != 3 {
+		t.Fatalf("TableDDL calls = %d, want initial plus two post-authorization verification reads", calls)
+	}
+	metas, err := dbgsnapshot.List(snapshotDirForTest(home))
+	if err != nil || len(metas) != 1 {
+		t.Fatalf("snapshots = %+v, err=%v", metas, err)
+	}
+	snap, err := dbgsnapshot.Load(snapshotDirForTest(home), metas[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Tables["users"] != verifiedDDL {
+		t.Fatalf("snapshot DDL = %q, want verified DDL state", snap.Tables["users"])
+	}
+	if len(backend.Executed) != 1 || !strings.Contains(backend.Executed[0], "ADD COLUMN `name` TEXT") {
+		t.Fatalf("executed = %+v", backend.Executed)
+	}
+}
+
+func TestImportRejectsSameTableDDLDriftDuringSnapshotCollection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := t.TempDir()
+	stableDDL := "CREATE TABLE users (id BIGINT);"
+	driftedDDL := "CREATE TABLE users (id BIGINT, email TEXT);"
+	writeTestFile(t, dir, "users.sql", "CREATE TABLE users (id BIGINT, name TEXT);")
+
+	baseline := schema.Schema{Tables: map[string]schema.Table{
+		"users": {Name: "users", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+	backend := fake.New()
+	backend.Schema = baseline
+	backend.IntrospectSchemas = []schema.Schema{baseline, baseline, baseline}
+	backend.DDLSequences = map[string][]string{
+		"users": {stableDDL, stableDDL, driftedDDL},
+	}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, err := executeCommandForTest("--yes", "import", dir, "--fake")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeConflict {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeConflict, err)
+	}
+	if calls := backend.TableDDLCalls["users"]; calls != 3 {
+		t.Fatalf("TableDDL calls = %d, want initial plus two collection reads", calls)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed after collection drift: %+v", backend.Executed)
+	}
+	metas, listErr := dbgsnapshot.List(snapshotDirForTest(home))
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(metas) != 0 {
+		t.Fatalf("snapshots created after collection drift: %+v", metas)
+	}
+	event := lastAuditEvent(t, home)
+	if event.Status != dbgaudit.StatusFailed ||
+		event.Error == nil ||
+		event.Error.Code != string(apperrors.CodeConflict) ||
+		event.Outcome == nil ||
+		event.Outcome.Skipped != 1 ||
+		event.Executed != 0 {
+		t.Fatalf("collection drift audit event = %+v", event)
+	}
+}
+
 func TestImportDryRunAndNoDropTableForMissingDesiredTable(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -2046,6 +2336,119 @@ func TestRollbackToIncrementalRestoreHasR2FloorAndAuditsSnapshot(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rollback result missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestRollbackRejectsPostAuthorizationDriftBeforeSnapshotOrDDL(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	sourceID := captureSnapshotForTest(t, home, map[string]string{
+		"users":  "CREATE TABLE users (id BIGINT, legacy TEXT);",
+		"orders": "CREATE TABLE orders (id BIGINT);",
+	})
+
+	baseline := fake.New().Schema
+	drifted := schema.Schema{Tables: map[string]schema.Table{
+		"users": baseline.Tables["users"],
+		"audit": {Name: "audit", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+	backend := fake.New()
+	backend.IntrospectSchemas = []schema.Schema{baseline, drifted}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, err := executeCommandForTest(
+		"--yes",
+		"--ticket", "CHG-1",
+		"rollback", "--to", sourceID,
+		"--fake",
+	)
+	if appErr := apperrors.AsAppError(err); appErr.Code != apperrors.CodeConflict {
+		t.Fatalf("error = %+v, want CONFLICT", appErr)
+	}
+	if backend.IntrospectCalls != 3 {
+		t.Fatalf("introspection calls = %d, want initial plan plus pre/post collection revalidation", backend.IntrospectCalls)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("DDL executed after drift: %+v", backend.Executed)
+	}
+	metas, listErr := dbgsnapshot.List(snapshotDirForTest(home))
+	if listErr != nil {
+		t.Fatalf("list snapshots: %v", listErr)
+	}
+	if len(metas) != 1 || metas[0].ID != sourceID {
+		t.Fatalf("snapshots after drift = %+v, want only source snapshot %s", metas, sourceID)
+	}
+	event := lastAuditEvent(t, home)
+	if event.EventType != dbgaudit.EventTypeRollback ||
+		event.Status != dbgaudit.StatusFailed ||
+		event.Error == nil ||
+		event.Error.Code != string(apperrors.CodeConflict) ||
+		event.Outcome == nil ||
+		event.Outcome.Succeeded != 0 ||
+		event.Outcome.Failed != 0 ||
+		event.Outcome.Uncertain != 0 ||
+		event.Outcome.Skipped != 1 ||
+		event.Executed != 0 {
+		t.Fatalf("drift audit event = %+v", event)
+	}
+}
+
+func TestRollbackRejectsPostAuthorizationOpaqueDDLDriftWithSameIntrospectionModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	usersDDL := "CREATE TABLE users (id BIGINT);"
+	sourceID := captureSnapshotForTest(t, home, map[string]string{"users": usersDDL})
+
+	current := schema.Schema{Tables: map[string]schema.Table{
+		"users": {Name: "users", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}},
+		"audit": {Name: "audit", Columns: []schema.Column{{Name: "id", Type: "BIGINT"}}},
+	}}
+	initialAuditDDL := "CREATE TABLE `audit` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;"
+	driftedAuditDDL := "CREATE TABLE `audit` (`id` bigint NOT NULL, `actor` text, PRIMARY KEY (`id`)) ENGINE=InnoDB;"
+	backend := fake.New()
+	backend.Schema = current
+	backend.IntrospectSchemas = []schema.Schema{current, current}
+	backend.DDLSequences = map[string][]string{
+		"audit": {initialAuditDDL, driftedAuditDDL},
+		"users": {usersDDL, usersDDL},
+	}
+	restore := stubFakeBackend(t, backend)
+	defer restore()
+
+	_, err := executeCommandForTest(
+		"--yes",
+		"--ticket", "CHG-1",
+		"rollback", "--to", sourceID,
+		"--fake",
+		"--allow-production-prune",
+	)
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeConflict {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeConflict, err)
+	}
+	if len(backend.Executed) != 0 {
+		t.Fatalf("executed same-SQL rollback after opaque drift: %+v", backend.Executed)
+	}
+	if backend.IntrospectCalls != 3 {
+		t.Fatalf("introspection calls = %d, want unchanged model before and around DDL collection", backend.IntrospectCalls)
+	}
+	metas, listErr := dbgsnapshot.List(snapshotDirForTest(home))
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	if len(metas) != 1 || metas[0].ID != sourceID {
+		t.Fatalf("snapshots after drift = %+v, want only source snapshot %s", metas, sourceID)
+	}
+	event := lastAuditEvent(t, home)
+	if event.Status != dbgaudit.StatusFailed ||
+		event.Error == nil ||
+		event.Error.Code != string(apperrors.CodeConflict) ||
+		event.Outcome == nil ||
+		event.Outcome.Skipped != 1 ||
+		event.Executed != 0 {
+		t.Fatalf("same-model opaque drift audit event = %+v", event)
 	}
 }
 

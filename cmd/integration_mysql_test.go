@@ -123,6 +123,28 @@ func TestMySQLIntegrationSchema(t *testing.T) {
 	if err == nil || apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
 		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v, want fail-closed rejection for PK/FK/default/index definitions\n%s", err, ddl)
 	}
+	roundTrip, err := schema.ParseSchemaDDL(ddl)
+	if err != nil || !roundTrip.Tables[childTable].Opaque {
+		t.Fatalf("ParseSchemaDDL(TableDDL) = %+v, %v, want opaque lossless definition", roundTrip, err)
+	}
+	createDiff := schema.Diff(schema.Schema{Tables: map[string]schema.Table{}}, roundTrip)
+	if len(createDiff.Changes) != 1 || !createDiff.Changes[0].Opaque || createDiff.Changes[0].RawDDL != ddl {
+		t.Fatalf("TableDDL create round-trip diff = %+v", createDiff)
+	}
+	opaqueStatements, err := backend.RenderDDL(createDiff.Changes)
+	if err != nil || len(opaqueStatements) != 1 || opaqueStatements[0] != ddl {
+		t.Fatalf("RenderDDL(opaque round-trip) = %+v, %v; want exact captured DDL", opaqueStatements, err)
+	}
+	if _, err := backend.ExecDDL(ctx, []string{"DROP TABLE `" + childTable + "`;"}); err != nil {
+		t.Fatalf("drop opaque round-trip fixture error = %v", err)
+	}
+	if _, err := backend.ExecDDL(ctx, opaqueStatements); err != nil {
+		t.Fatalf("execute opaque round-trip DDL error = %v", err)
+	}
+	recreatedDDL, err := backend.TableDDL(ctx, childTable)
+	if err != nil || !schema.SameOpaqueDDL(ddl, recreatedDDL) {
+		t.Fatalf("recreated TableDDL = %q, %v; want captured definition %q", recreatedDDL, err, ddl)
+	}
 	unsignedDDL, err := backend.TableDDL(ctx, unsignedTable)
 	if err != nil {
 		t.Fatalf("unsigned TableDDL() error = %v", err)
@@ -151,14 +173,18 @@ func TestMySQLIntegrationSchema(t *testing.T) {
 
 	statements, err := backend.RenderDDL([]schema.Change{
 		{Action: schema.ActionAddColumn, Table: parentTable, Column: "note", Type: "varchar(200)"},
-		{Action: schema.ActionModifyColumn, Table: parentTable, Column: "name", Type: "varchar(200)"},
 	})
 	if err != nil {
 		t.Fatalf("RenderDDL() error = %v", err)
 	}
-	if statements[0] != "ALTER TABLE `"+parentTable+"` ADD COLUMN `note` varchar(200);" ||
-		statements[1] != "ALTER TABLE `"+parentTable+"` MODIFY COLUMN `name` varchar(200);" {
+	if len(statements) != 1 || statements[0] != "ALTER TABLE `"+parentTable+"` ADD COLUMN `note` varchar(200);" {
 		t.Fatalf("RenderDDL statements = %+v", statements)
+	}
+	_, err = backend.RenderDDL([]schema.Change{
+		{Action: schema.ActionModifyColumn, Table: parentTable, Column: "name", Type: "varchar(200)"},
+	})
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("RenderDDL(modify column) error = %v, want fail-closed NOT_IMPLEMENTED", err)
 	}
 	autoAddStatements, err := backend.RenderDDL(schema.Diff(
 		schema.Schema{Tables: map[string]schema.Table{
@@ -185,7 +211,7 @@ func TestMySQLIntegrationSchema(t *testing.T) {
 	if _, err := backend.ExecDDL(ctx, autoAddStatements); err != nil {
 		t.Fatalf("apply add autoincrement with existing primary key error = %v; statements=%+v", err, autoAddStatements)
 	}
-	autoModifyStatements, err := backend.RenderDDL(schema.Diff(
+	_, err = backend.RenderDDL(schema.Diff(
 		schema.Schema{Tables: map[string]schema.Table{
 			autoModifyTable: {
 				Name:    autoModifyTable,
@@ -200,11 +226,8 @@ func TestMySQLIntegrationSchema(t *testing.T) {
 			},
 		}},
 	).Changes)
-	if err != nil {
-		t.Fatalf("RenderDDL(modify autoincrement) error = %v", err)
-	}
-	if _, err := backend.ExecDDL(ctx, autoModifyStatements); err != nil {
-		t.Fatalf("apply modify autoincrement with existing primary key error = %v; statements=%+v", err, autoModifyStatements)
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("RenderDDL(modify autoincrement) error = %v, want fail-closed NOT_IMPLEMENTED", err)
 	}
 
 	affected, err := backend.ExecDML(ctx, "UPDATE `"+parentTable+"` SET `name` = 'changed' WHERE `name` = 'seed'")

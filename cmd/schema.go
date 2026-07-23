@@ -79,6 +79,7 @@ type schemaPlanStatement struct {
 	Table       string        `json:"table"`
 	Column      string        `json:"column,omitempty"`
 	Risk        string        `json:"risk"`
+	Opaque      bool          `json:"opaque,omitempty"`
 	Destructive bool          `json:"destructive"`
 }
 
@@ -112,6 +113,8 @@ type schemaPlanFingerprintPayload struct {
 	Warnings              []string              `json:"warnings,omitempty"`
 	RequiredAuthorization string                `json:"requiredAuthorization,omitempty"`
 }
+
+const opaqueCreateIsolation = "an opaque CREATE TABLE cannot be combined safely with other schema changes; create or restore that table in a separate plan"
 
 func newSchemaCmd(f *cliFlags) *cobra.Command {
 	cmd := &cobra.Command{
@@ -273,6 +276,7 @@ func runSchemaPlan(f *cliFlags, opts schemaPlanOptions) (resultErr error) {
 	return printSchemaPlan(f, meta, targetRead, plan)
 }
 
+//nolint:gocyclo // Apply keeps authorization, durable intent, stable snapshot, execution, and audit outcomes visibly ordered.
 func runSchemaApply(f *cliFlags, opts schemaApplyOptions) (resultErr error) {
 	desiredBytes, err := os.ReadFile(opts.file)
 	if err != nil {
@@ -303,6 +307,10 @@ func runSchemaApply(f *cliFlags, opts schemaApplyOptions) (resultErr error) {
 		event := newSchemaApplyAuditEvent(f, meta, plan)
 		event.DryRun = true
 		emitAudit(f, event, nil)
+		return printSchemaPlan(f, meta, targetWrite, plan)
+	}
+	if len(plan.Statements) == 0 {
+		emitAudit(f, newSchemaApplyAuditEvent(f, meta, plan), nil)
 		return printSchemaPlan(f, meta, targetWrite, plan)
 	}
 
@@ -477,9 +485,57 @@ func collectSchemaDump(ctx context.Context, b interface {
 		if err != nil {
 			return result, err
 		}
+		if _, err := parseBoundTableDDL(name, ddl); err != nil {
+			return result, err
+		}
 		result.Tables = append(result.Tables, schemaDumpTable{Name: name, DDL: ddl})
 	}
 	return result, nil
+}
+
+func schemaFromTableDDL(ctx context.Context, b interface {
+	TableDDL(context.Context, string) (string, error)
+}, current schema.Schema,
+) (schema.Schema, error) {
+	result, _, err := schemaAndDDLFromTableDDL(ctx, b, current)
+	return result, err
+}
+
+func schemaAndDDLFromTableDDL(ctx context.Context, b interface {
+	TableDDL(context.Context, string) (string, error)
+}, current schema.Schema,
+) (schema.Schema, map[string]string, error) {
+	result := schema.Schema{Tables: make(map[string]schema.Table, len(current.Tables))}
+	tables := make(map[string]string, len(current.Tables))
+	for _, name := range sortedTableNames(current) {
+		ddl, err := b.TableDDL(ctx, name)
+		if err != nil {
+			return schema.Schema{}, nil, err
+		}
+		table, err := parseBoundTableDDL(name, ddl)
+		if err != nil {
+			return schema.Schema{}, nil, err
+		}
+		result.Tables[name] = table
+		tables[name] = ddl
+	}
+	return result, tables, nil
+}
+
+func parseBoundTableDDL(expectedName, ddl string) (schema.Table, error) {
+	parsed, err := schema.ParseSchemaDDL(ddl)
+	if err != nil {
+		return schema.Table{}, err
+	}
+	table, ok := parsed.Tables[expectedName]
+	if len(parsed.Tables) != 1 || !ok || table.Name != expectedName {
+		return schema.Table{}, apperrors.New(
+			apperrors.CodeConflict,
+			fmt.Sprintf("table DDL does not match introspected table %q", expectedName),
+			nil,
+		)
+	}
+	return table, nil
 }
 
 func writeSchemaDump(dir string, source schemaDumpResult) (schemaDumpResult, int, error) {
@@ -550,7 +606,20 @@ func buildSchemaPlan(b schemaPlanRenderer, current, desired schema.Schema) (sche
 }
 
 func buildSchemaPlanFromDiff(b schemaPlanRenderer, diff schema.DiffResult) (schemaPlan, error) {
+	ensureOpaqueCreateIsolation(&diff)
 	risk := schema.ClassifyDiff(diff)
+	if len(diff.Unsupported) > 0 {
+		return schemaPlan{
+				OverallRisk:           string(risk.OverallRisk),
+				Destructive:           risk.Destructive,
+				Warnings:              append(append([]string(nil), diff.Warnings...), diff.Unsupported...),
+				RequiredAuthorization: requiredAuthorization(risk.OverallRisk),
+			}, apperrors.New(
+				apperrors.CodeNotImplemented,
+				diff.Unsupported[0],
+				nil,
+			)
+	}
 	statements, err := b.RenderDDL(diff.Changes)
 	if err != nil {
 		return schemaPlan{OverallRisk: string(risk.OverallRisk), Destructive: risk.Destructive, Warnings: diff.Warnings, RequiredAuthorization: requiredAuthorization(risk.OverallRisk)}, err
@@ -571,10 +640,33 @@ func buildSchemaPlanFromDiff(b schemaPlanRenderer, diff schema.DiffResult) (sche
 			Table:       change.Table,
 			Column:      change.Column,
 			Risk:        string(changeRisk),
+			Opaque:      change.Opaque,
 			Destructive: destructive,
 		})
 	}
 	return plan, nil
+}
+
+func ensureOpaqueCreateIsolation(diff *schema.DiffResult) {
+	if len(diff.Changes) <= 1 {
+		return
+	}
+	hasOpaqueCreate := false
+	for _, change := range diff.Changes {
+		if change.Action == schema.ActionCreateTable && change.Opaque {
+			hasOpaqueCreate = true
+			break
+		}
+	}
+	if !hasOpaqueCreate {
+		return
+	}
+	for _, unsupported := range diff.Unsupported {
+		if unsupported == opaqueCreateIsolation {
+			return
+		}
+	}
+	diff.Unsupported = append(diff.Unsupported, opaqueCreateIsolation)
 }
 
 func buildBoundSchemaPlan(
@@ -594,8 +686,8 @@ func bindSchemaPlan(plan *schemaPlan, meta contextMeta, current, desired schema.
 	plan.PlannedStatements = len(plan.Statements)
 	payload := schemaPlanFingerprintPayload{
 		TargetFingerprint:     plan.TargetFingerprint,
-		Current:               current,
-		Desired:               desired,
+		Current:               schemaForPlanBinding(current),
+		Desired:               schemaForPlanBinding(desired),
 		Statements:            plan.Statements,
 		OverallRisk:           plan.OverallRisk,
 		Destructive:           plan.Destructive,
@@ -606,6 +698,17 @@ func bindSchemaPlan(plan *schemaPlan, meta contextMeta, current, desired schema.
 	plan.PlanFingerprint, _ = dbgaudit.Fingerprint("schema-plan", string(payloadData))
 }
 
+func schemaForPlanBinding(source schema.Schema) schema.Schema {
+	bound := schema.Schema{Tables: make(map[string]schema.Table, len(source.Tables))}
+	for name, table := range source.Tables {
+		if table.Opaque {
+			table.RawDDL = schema.OpaqueDDLComparisonKey(table.RawDDL)
+		}
+		bound.Tables[name] = table
+	}
+	return bound
+}
+
 func schemaPlanExecutionBinding(plan schemaPlan) schemaExecutionBinding {
 	return schemaExecutionBinding{
 		PlanFingerprint:   plan.PlanFingerprint,
@@ -614,43 +717,31 @@ func schemaPlanExecutionBinding(plan schemaPlan) schemaExecutionBinding {
 	}
 }
 
-func revalidateSchemaExecutionPlan(
-	f *cliFlags,
-	b schemaPlanBackend,
-	expected schemaPlan,
-	rebuild func(schema.Schema) (schemaPlan, error),
-) (schema.Schema, error) {
+func validateSchemaExecutionPlanBinding(expected schemaPlan) error {
 	if expected.PlanFingerprint == "" ||
 		expected.TargetFingerprint == "" ||
 		expected.PlannedStatements != len(expected.Statements) {
-		return schema.Schema{}, apperrors.New(
+		return apperrors.New(
 			apperrors.CodeConflict,
 			"schema plan binding is invalid; review and retry",
 			nil,
 		)
 	}
-	fresh, err := b.IntrospectSchema(commandContext(f))
-	if err != nil {
-		return schema.Schema{}, err
-	}
-	actual, err := rebuild(fresh)
-	if err != nil {
-		return fresh, apperrors.New(
-			apperrors.CodeConflict,
-			"database schema changed after authorization; review and retry",
-			err,
-		)
-	}
-	if actual.PlanFingerprint != expected.PlanFingerprint ||
-		actual.TargetFingerprint != expected.TargetFingerprint ||
-		actual.PlannedStatements != expected.PlannedStatements {
-		return fresh, apperrors.New(
-			apperrors.CodeConflict,
-			"database schema changed after authorization; review and retry",
-			nil,
-		)
-	}
-	return fresh, nil
+	return nil
+}
+
+func sameSchemaExecutionPlan(expected, actual schemaPlan) bool {
+	return actual.PlanFingerprint == expected.PlanFingerprint &&
+		actual.TargetFingerprint == expected.TargetFingerprint &&
+		actual.PlannedStatements == expected.PlannedStatements
+}
+
+func schemaExecutionDriftError(cause error) error {
+	return apperrors.New(
+		apperrors.CodeConflict,
+		"database schema changed after authorization; review and retry",
+		cause,
+	)
 }
 
 func prepareSchemaExecutionSnapshot(
@@ -661,11 +752,90 @@ func prepareSchemaExecutionSnapshot(
 	expected schemaPlan,
 	rebuild func(schema.Schema) (schemaPlan, error),
 ) (string, error) {
-	fresh, err := revalidateSchemaExecutionPlan(f, b, expected, rebuild)
+	return prepareStableSchemaExecutionSnapshot(f, b, meta, command, expected, rebuild, func(stable stableSchemaState) schema.Schema {
+		return stable.Structured
+	})
+}
+
+func prepareGitOpsExecutionSnapshot(
+	f *cliFlags,
+	b schemaExecutionBackend,
+	meta contextMeta,
+	command string,
+	expected schemaPlan,
+	rebuild func(schema.Schema) (schemaPlan, error),
+) (string, error) {
+	return prepareStableSchemaExecutionSnapshot(f, b, meta, command, expected, rebuild, func(stable stableSchemaState) schema.Schema {
+		return stable.RoundTrip
+	})
+}
+
+func prepareStableSchemaExecutionSnapshot(
+	f *cliFlags,
+	b schemaExecutionBackend,
+	meta contextMeta,
+	command string,
+	expected schemaPlan,
+	rebuild func(schema.Schema) (schemaPlan, error),
+	selectSchema func(stableSchemaState) schema.Schema,
+) (string, error) {
+	if err := validateSchemaExecutionPlanBinding(expected); err != nil {
+		return "", err
+	}
+	stable, err := collectStableSchemaState(f, b)
 	if err != nil {
 		return "", err
 	}
-	return captureSchemaSnapshot(f, b, fresh, meta, command)
+	actual, err := rebuild(selectSchema(stable))
+	if err != nil {
+		return "", schemaExecutionDriftError(err)
+	}
+	if !sameSchemaExecutionPlan(expected, actual) {
+		return "", schemaExecutionDriftError(nil)
+	}
+	return capturePreparedSchemaSnapshot(f, stable.Tables, meta, command)
+}
+
+type stableSchemaState struct {
+	Structured schema.Schema
+	RoundTrip  schema.Schema
+	Tables     map[string]string
+}
+
+func collectStableSchemaState(f *cliFlags, b schemaExecutionBackend) (stableSchemaState, error) {
+	firstStructured, err := b.IntrospectSchema(commandContext(f))
+	if err != nil {
+		return stableSchemaState{}, err
+	}
+	firstRoundTrip, _, err := schemaAndDDLFromTableDDL(commandContext(f), b, firstStructured)
+	if err != nil {
+		return stableSchemaState{}, err
+	}
+	secondStructured, err := b.IntrospectSchema(commandContext(f))
+	if err != nil {
+		return stableSchemaState{}, err
+	}
+	if !sameSchemaCollection(firstStructured, secondStructured) {
+		return stableSchemaState{}, schemaExecutionDriftError(nil)
+	}
+	secondRoundTrip, tables, err := schemaAndDDLFromTableDDL(commandContext(f), b, secondStructured)
+	if err != nil {
+		return stableSchemaState{}, err
+	}
+	if !sameSchemaCollection(firstRoundTrip, secondRoundTrip) {
+		return stableSchemaState{}, schemaExecutionDriftError(nil)
+	}
+	return stableSchemaState{
+		Structured: secondStructured,
+		RoundTrip:  secondRoundTrip,
+		Tables:     tables,
+	}, nil
+}
+
+func sameSchemaCollection(left, right schema.Schema) bool {
+	leftData, leftErr := json.Marshal(schemaForPlanBinding(left))
+	rightData, rightErr := json.Marshal(schemaForPlanBinding(right))
+	return leftErr == nil && rightErr == nil && string(leftData) == string(rightData)
 }
 
 func printSchemaPlan(f *cliFlags, meta contextMeta, mode targetMode, plan schemaPlan) error {

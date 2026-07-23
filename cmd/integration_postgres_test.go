@@ -5,7 +5,6 @@ package cmd
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/JiangHe12/dbgov-cli/internal/backend/postgres"
@@ -96,25 +95,13 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 	if len(child.Indexes) == 0 || len(child.ForeignKeys) != 1 {
 		t.Fatalf("child table = %+v", child)
 	}
-	ddl, err := backend.TableDDL(ctx, "dbgov_pg_child")
-	if err != nil {
-		t.Fatalf("TableDDL() error = %v", err)
+	_, err = backend.TableDDL(ctx, "dbgov_pg_child")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("TableDDL(child) error = %v, want fail-closed rejection for standalone index", err)
 	}
-	if !strings.Contains(ddl, `CREATE TABLE "public"."dbgov_pg_child"`) ||
-		!strings.Contains(ddl, `FOREIGN KEY ("parent_id") REFERENCES "public"."dbgov_pg_parent" ("id")`) {
-		t.Fatalf("unexpected TableDDL:\n%s", ddl)
-	}
-	if _, err := schema.ParseDesiredSQL(ddl); err == nil ||
-		apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
-		t.Fatalf("ParseDesiredSQL(child TableDDL) error = %v, want fail-closed rejection for PK/FK/not-null definitions\n%s", err, ddl)
-	}
-	serialDDL, err := backend.TableDDL(ctx, "dbgov_pg_serial")
-	if err != nil {
-		t.Fatalf("serial TableDDL() error = %v", err)
-	}
-	if _, err := schema.ParseDesiredSQL(serialDDL); err == nil ||
-		apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
-		t.Fatalf("ParseDesiredSQL(serial TableDDL) error = %v, want fail-closed rejection for primary key\n%s", err, serialDDL)
+	_, err = backend.TableDDL(ctx, "dbgov_pg_serial")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("TableDDL(serial) error = %v, want fail-closed rejection for sequence semantics", err)
 	}
 	simpleDDL, err := backend.TableDDL(ctx, "dbgov_pg_simple")
 	if err != nil {
@@ -129,6 +116,28 @@ func TestPostgresIntegrationSchema(t *testing.T) {
 	}}
 	if diff := schema.Diff(expected, parsed); len(diff.Changes) != 0 {
 		t.Fatalf("simple TableDDL round-trip diff = %+v, want none\nDDL:\n%s", diff.Changes, simpleDDL)
+	}
+	createDiff := schema.Diff(schema.Schema{Tables: map[string]schema.Table{}}, parsed)
+	recreateStatements, err := backend.RenderDDL(createDiff.Changes)
+	if err != nil || len(recreateStatements) != 1 {
+		t.Fatalf("RenderDDL(simple round-trip) = %+v, %v", recreateStatements, err)
+	}
+	if _, err := backend.ExecDDL(ctx, []string{`DROP TABLE "dbgov_pg_simple";`}); err != nil {
+		t.Fatalf("drop simple round-trip fixture error = %v", err)
+	}
+	if _, err := backend.ExecDDL(ctx, recreateStatements); err != nil {
+		t.Fatalf("execute simple round-trip DDL error = %v", err)
+	}
+	recreatedDDL, err := backend.TableDDL(ctx, "dbgov_pg_simple")
+	if err != nil {
+		t.Fatalf("recreated TableDDL() error = %v", err)
+	}
+	recreated, err := schema.ParseDesiredSQL(recreatedDDL)
+	if err != nil {
+		t.Fatalf("ParseDesiredSQL(recreated TableDDL) error = %v\n%s", err, recreatedDDL)
+	}
+	if diff := schema.Diff(parsed, recreated); len(diff.Changes) != 0 {
+		t.Fatalf("recreated PostgreSQL table drift = %+v\nDDL:\n%s", diff.Changes, recreatedDDL)
 	}
 	statements, err := backend.RenderDDL([]schema.Change{
 		{Action: schema.ActionAddColumn, Table: "dbgov_pg_parent", Column: "note", Type: "text"},

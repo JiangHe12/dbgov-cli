@@ -278,6 +278,136 @@ func TestParseCreateTableRejectsLossySchemaDefinitions(t *testing.T) {
 	}
 }
 
+func TestParseSchemaDDLKeepsUnsupportedCreateTableOpaque(t *testing.T) {
+	ddl := "CREATE TABLE `orders` (`id` bigint NOT NULL AUTO_INCREMENT, `user_id` bigint NOT NULL, PRIMARY KEY (`id`), CONSTRAINT `fk_orders_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`)) ENGINE=InnoDB;"
+	got, err := ParseSchemaDDL(ddl)
+	if err != nil {
+		t.Fatalf("ParseSchemaDDL() error = %v", err)
+	}
+	table := got.Tables["orders"]
+	if !table.Opaque || table.RawDDL != ddl || len(table.Columns) != 0 {
+		t.Fatalf("opaque table = %+v", table)
+	}
+
+	diff := Diff(Schema{Tables: map[string]Table{}}, got)
+	if len(diff.Changes) != 1 || !diff.Changes[0].Opaque ||
+		diff.Changes[0].RawDDL != ddl || !diff.Destructive {
+		t.Fatalf("opaque create diff = %+v", diff)
+	}
+	if risk, destructive := ClassifyChange(diff.Changes[0]); risk != RiskR3 || !destructive {
+		t.Fatalf("opaque create risk = %s/%t, want R3/destructive", risk, destructive)
+	}
+}
+
+func TestOpaqueSchemaDDLOnlySupportsExactNoopOrFullCreate(t *testing.T) {
+	left, err := ParseSchemaDDL("CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, err := ParseSchemaDDL("CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := Diff(left, same); len(diff.Changes) != 0 || len(diff.Unsupported) != 0 {
+		t.Fatalf("exact opaque diff = %+v, want no-op", diff)
+	}
+	volatileCounter, err := ParseSchemaDDL("CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB AUTO_INCREMENT=42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineCounter, err := ParseSchemaDDL("CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB AUTO_INCREMENT=7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff := Diff(baselineCounter, volatileCounter); len(diff.Changes) != 0 || len(diff.Unsupported) != 0 {
+		t.Fatalf("AUTO_INCREMENT counter diff = %+v, want structural no-op", diff)
+	}
+	if SameOpaqueDDL(
+		"CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB COMMENT='AUTO_INCREMENT=7';",
+		"CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB COMMENT='AUTO_INCREMENT=42';",
+	) {
+		t.Fatal("quoted AUTO_INCREMENT text must not be normalized")
+	}
+
+	changed, err := ParseSchemaDDL("CREATE TABLE `users` (`id` bigint NOT NULL, `name` text, PRIMARY KEY (`id`)) ENGINE=InnoDB;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff := Diff(left, changed)
+	if len(diff.Changes) != 0 || len(diff.Unsupported) != 1 {
+		t.Fatalf("changed opaque diff = %+v, want fail-closed unsupported result", diff)
+	}
+}
+
+func TestOpaqueTableEngineReadsOnlyTheActualTableOption(t *testing.T) {
+	ddl := "CREATE TABLE `users` (`id` bigint NOT NULL) ENGINE=SPIDER COMMENT=' ENGINE=InnoDB';"
+	engine, ok := OpaqueTableEngine(ddl)
+	if !ok || engine != "spider" {
+		t.Fatalf("OpaqueTableEngine() = %q, %t", engine, ok)
+	}
+}
+
+func TestDiffRejectsOpaqueCreateCombinedWithAnyOtherChange(t *testing.T) {
+	users, err := ParseSchemaDDL("CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := Schema{Tables: map[string]Table{
+		"users": users.Tables["users"],
+		"logs": {
+			Name:    "logs",
+			Columns: []Column{{Name: "id", Type: "BIGINT"}},
+		},
+	}}
+	diff := Diff(Schema{Tables: map[string]Table{}}, desired)
+	if len(diff.Changes) != 2 || len(diff.Unsupported) != 1 {
+		t.Fatalf("mixed opaque create diff = %+v, want fail-closed isolation error", diff)
+	}
+}
+
+func TestParseSchemaDDLRejectsUnsafeOpaqueTableOptions(t *testing.T) {
+	for _, ddl := range []string{
+		"CREATE TABLE users (id int PRIMARY KEY) ENGINE=FEDERATED CONNECTION='mysql://remote/db/table';",
+		"CREATE TABLE users (id int PRIMARY KEY) ENGINE=FEDERATED/**/CONNECTION='mysql://remote/db/table';",
+		"CREATE TABLE users (id int PRIMARY KEY) ENGINE=InnoDB DATA DIRECTORY='/tmp';",
+		"CREATE TABLE users (id int PRIMARY KEY) ENGINE=InnoDB DATA/**/DIRECTORY='/tmp';",
+		"CREATE TABLE users (id int PRIMARY KEY) ENGINE=InnoDB PARTITION BY HASH(id);",
+		"CREATE TABLE users (id int /*!50100 AUTO_INCREMENT */) ENGINE=InnoDB;",
+		"CREATE TABLE users (id int PRIMARY KEY) ENGINE=InnoDB /*!50100 FEDERATED CONNECTION='mysql://remote/db/table' */;",
+		"CREATE TABLE users (id int PRIMARY KEY) ENGINE=InnoDB /*+ SET_VAR(foreign_key_checks=0) */;",
+		`CREATE TABLE "public"."copy" (LIKE "public"."source" INCLUDING ALL);`,
+		"CREATE TABLE users (id int PRIMARY KEY) WITH (fillfactor=70) AS SELECT 1;",
+		"CREATE TABLE users (id int PRIMARY KEY) INHERITS (privileged_table);",
+		"CREATE TABLE users (id int PRIMARY KEY); DROP TABLE audit;",
+		"CREATE TABLE users (id int PRIMARY KEY) /* unterminated",
+	} {
+		if _, err := ParseSchemaDDL(ddl); err == nil {
+			t.Fatalf("ParseSchemaDDL(%q) error = nil, want fail-closed rejection", ddl)
+		}
+	}
+}
+
+func TestParseSchemaDDLAllowsExecutableCommentMarkersInsideLiterals(t *testing.T) {
+	ddl := "CREATE TABLE users (id int PRIMARY KEY) ENGINE=InnoDB COMMENT='/*! literal */ and /*+ literal */';"
+	got, err := ParseSchemaDDL(ddl)
+	if err != nil {
+		t.Fatalf("ParseSchemaDDL() error = %v", err)
+	}
+	if table := got.Tables["users"]; !table.Opaque || table.RawDDL != ddl {
+		t.Fatalf("opaque table = %+v", table)
+	}
+}
+
+func TestOpaqueDDLValidatesBoundTableName(t *testing.T) {
+	ddl := "CREATE TABLE `users` (`id` bigint NOT NULL, PRIMARY KEY (`id`)) ENGINE=InnoDB;"
+	if _, err := ValidatedOpaqueCreateDDL("orders", ddl); err == nil {
+		t.Fatal("ValidatedOpaqueCreateDDL() accepted mismatched table name")
+	}
+	if _, err := SchemaFromDDLMap(map[string]string{"orders": ddl}); err == nil {
+		t.Fatal("SchemaFromDDLMap() accepted mismatched map key and table name")
+	}
+}
+
 func TestParseCreateTableRejectsTrailingAndTypeStatementInjection(t *testing.T) {
 	tests := []struct {
 		name string
@@ -333,11 +463,22 @@ func TestParseCreateTableRejectsTrailingAndTypeStatementInjection(t *testing.T) 
 	}
 }
 
-func TestParseCreateTableAcceptsSafeMySQLTailAndQuotedTypeValues(t *testing.T) {
+func TestParseCreateTableRejectsLossyMySQLTailButKeepsQuotedTypeValues(t *testing.T) {
+	ddl := `CREATE TABLE events (
+	  kind enum('created;ok','C:\\path'),
+	  path varchar(255)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`
+	if _, err := ParseDesiredSQL(ddl); apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
+		t.Fatalf("ParseDesiredSQL(table options) error = %v, want fail-closed NOT_IMPLEMENTED", err)
+	}
+	roundTrip, err := ParseSchemaDDL(ddl)
+	if err != nil || !roundTrip.Tables["events"].Opaque {
+		t.Fatalf("ParseSchemaDDL(table options) = %+v, %v, want opaque definition", roundTrip, err)
+	}
 	got, err := ParseDesiredSQL(`CREATE TABLE events (
 	  kind enum('created;ok','C:\\path'),
 	  path varchar(255)
-	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;`)
+	);`)
 	if err != nil {
 		t.Fatalf("ParseDesiredSQL() error = %v", err)
 	}

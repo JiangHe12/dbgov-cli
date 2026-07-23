@@ -27,7 +27,7 @@ allowed-tools: Bash(dbgov:*), Bash(dbgov-cli:*), Bash(go:*)
 | R0 | Free to run; still audited | `query` read-only SQL, `explain`, `schema list`, `schema describe`, `schema dump` to stdout, `schema diff`, `schema plan`, `audit query`, `audit verify`, `version`, `capabilities`, `doctor` |
 | R1 | Requires `--yes` or interactive confirmation | `schema dump --dir`, `export`, `install --skills`, `schema apply` adding columns, `data exec` with `WHERE` and small impact, incremental `import` |
 | R2 | Requires `--ticket` plus `--yes` | `data exec` with `WHERE` but EXPLAIN estimated rows over the threshold, default 1000; R1 operations in a protected context |
-| R3 | Requires `--ticket`, the relevant `--allow-*` flag, and `--yes` | destructive schema changes, no-WHERE UPDATE/DELETE, production prune, destructive rollback, context replacement/deletion, credential migration, role changes |
+| R3 | Requires `--ticket`, the relevant `--allow-*` flag, and `--yes` | destructive schema changes, opaque full-table CREATE/restore, no-WHERE UPDATE/DELETE, production prune, destructive rollback, context replacement/deletion, credential migration, role changes |
 
 `--yes` only confirms R1. It does not satisfy R2 or R3 by itself. Never auto-supply `--ticket`, `--allow-*`, or high-risk `--yes`; surface the missing authorization to the user. `--ticket` must be non-empty for R2/R3. If the active context sets a `ticketPattern` via `ctx set --ticket-pattern`, the ticket must match it; by default no pattern is enforced.
 
@@ -35,16 +35,16 @@ allowed-tools: Bash(dbgov:*), Bash(dbgov-cli:*), Bash(go:*)
 
 | Operation | Required allow flag |
 |---|---|
-| `dbgov-cli schema apply` or `dbgov-cli import` with DROP COLUMN or MODIFY COLUMN | `--allow-destructive` |
+| `dbgov-cli schema apply` or `dbgov-cli import` with DROP COLUMN, an engine-supported lossless MODIFY COLUMN, or an opaque full-table CREATE | `--allow-destructive` |
 | `dbgov-cli data exec` with no-WHERE UPDATE/DELETE | `--allow-no-where` |
 | `dbgov-cli reconcile --prune` dropping tables | `--allow-production-prune` |
-| `dbgov-cli rollback --to` restoring structure with dropped columns | `--allow-destructive` |
+| `dbgov-cli rollback --to` restoring dropped columns or an opaque full-table definition | `--allow-destructive` |
 | `dbgov-cli rollback --to` restoring structure with dropped tables | `--allow-production-prune` |
 | `dbgov-cli ctx set`, `ctx use`, `ctx import`, or `ctx migrate-credentials` | `--allow-context-change` |
 | `dbgov-cli ctx delete` | `--allow-context-delete` |
 | `dbgov-cli ctx role set` or `ctx role unset` | `--allow-role-change` |
 
-Rollback has an R2 floor even when the generated plan is incremental. If rollback includes both dropped columns and dropped tables, both allow flags are required.
+A non-empty rollback has an R2 floor even when the generated plan is incremental; an exact zero-statement no-op is R0 and writes no snapshot. If rollback includes both dropped columns and dropped tables, both allow flags are required.
 
 ### RBAC
 
@@ -66,7 +66,7 @@ Authorization and audit identity always use the local OS `username@hostname`. Th
 
 ### Snapshots and Rollback
 
-Before schema mutations (`schema apply`, `import`, `reconcile`, `rollback`), dbgov captures a pre-change schema DDL snapshot bound to the context and physical database target. Legacy snapshots without a target binding can still be listed but cannot be executed. Rollback restores structure only for MySQL and PostgreSQL: dropped data is not recovered. Dry-run returns a fingerprinted `SchemaPlan`; successful execution returns an honest `RollbackResult` with planned/applied counts and `dataRestored: false`.
+Before non-empty schema mutations (`schema apply`, `import`, `reconcile`, `rollback`), dbgov captures stable pre-change DDL evidence bound to the context and physical database target. Legacy snapshots without a target binding can still be listed but cannot be executed. Direct schema plan/apply supports the parsed column subset, except MySQL in-place type/auto-increment modifications fail closed because full column attributes cannot be preserved. Export-driven GitOps/rollback treats rich definitions as opaque: an exact match is a no-op, one missing table can be recreated verbatim as the plan's only change at R3 with `--allow-destructive`, and any in-place difference fails closed. Real MySQL exports are opaque, so existing MySQL tables cannot be changed in place through import/reconcile/rollback; missing-table recreation is limited to InnoDB, non-InnoDB tables block snapshot-backed mutations, and reversing a direct apply on an existing table requires a reviewed manual migration. PostgreSQL snapshot/export also rejects identity/sequence state, non-catalog types/default dependencies, comments, standalone indexes, advanced constraints, partitions/inheritance, non-default FK actions, triggers/policies, custom storage, and non-default collation. Rollback never recovers dropped row data, triggers, routines, comments, or external sequence state. Dry-run returns a fingerprinted `SchemaPlan`; successful execution returns an honest `RollbackResult` with planned/applied counts and `dataRestored: false`.
 
 ### Audit
 
@@ -265,6 +265,8 @@ dbgov-cli reconcile ./schema --prune --ticket DB-123 --allow-production-prune --
 
 If the same reconcile plan also drops or modifies columns, add `--allow-destructive` too.
 
+Direct schema apply covers the accepted column/type/normalized-autoIncrement subset, but MySQL existing-column type/autoIncrement changes fail closed because the subset cannot render a lossless `MODIFY COLUMN`; PostgreSQL supports those changes within its documented boundary. Rich exported definitions are opaque and require `--ticket --allow-destructive --yes` for full-table creation. They must remain in the canonical export form for their database engine and cannot be copied across engines. An opaque create must be the plan's only change because dependency order cannot be inferred safely. Real MySQL exports are opaque: import/reconcile/rollback can only no-op on an exact match or recreate one missing InnoDB table, never edit an existing table in place. MySQL's volatile table-level `AUTO_INCREMENT=<next>` value is ignored for equality only; recreation still uses the bound original DDL.
+
 ### Rollback
 
 List snapshots:
@@ -286,7 +288,7 @@ dbgov-cli rollback --to <snapshot-id> --ticket DB-123 --yes -o json
 dbgov-cli rollback --to <snapshot-id> --ticket DB-123 --allow-destructive --allow-production-prune --yes -o json
 ```
 
-Rollback restores schema structure only. Dropped table/column data is not recovered. Treat the returned plan/target fingerprints and `dataRestored: false` as authoritative.
+Rollback restores structure only, and only within the supported table boundary. Dropped table/column data is not recovered, and unsupported PostgreSQL structures prevent snapshot creation rather than producing a misleading rollback point. Treat the returned plan/target fingerprints and `dataRestored: false` as authoritative.
 
 ### Audit
 

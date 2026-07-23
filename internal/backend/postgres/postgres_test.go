@@ -491,17 +491,18 @@ func TestIntrospectSchemaMapsPostgresCatalog(t *testing.T) {
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.relname AS table_name")).
 		WithArgs(defaultSchema).
-		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "not_null", "column_default", "identity_kind", "has_owned_sequence", "is_primary"}).
-			AddRow("orders", "id", "integer", true, nil, "d", false, true).
-			AddRow("orders", "user_id", "integer", true, "nextval('orders_user_id_seq'::regclass)", "", true, false).
-			AddRow("orders", "shared_seq_value", "integer", false, "nextval('shared_seq'::regclass)", "", false, false).
-			AddRow("orders", "name", "character varying(100)", false, "'new'::character varying", "", false, false))
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "not_null", "column_default", "identity_kind", "has_owned_sequence", "has_sequence_dependency", "is_primary"}).
+			AddRow("orders", "id", "integer", true, nil, "d", false, false, true).
+			AddRow("orders", "user_id", "integer", true, "nextval('orders_user_id_seq'::regclass)", "", true, true, false).
+			AddRow("orders", "shared_seq_value", "integer", false, "nextval('shared_seq'::regclass)", "", false, true, false).
+			AddRow("orders", "name", "character varying(100)", false, "'new'::character varying", "", false, false, false).
+			AddRow("zero_columns", nil, nil, false, nil, nil, false, false, false))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
 		WithArgs(defaultSchema).
 		WillReturnRows(sqlmock.NewRows([]string{"table_name", "index_name", "column_name", "is_unique", "ordinal"}).
 			AddRow("orders", "orders_pkey", "id", true, 1).
 			AddRow("orders", "orders_user_id_idx", "user_id", false, 1))
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
+	mock.ExpectQuery(`(?s)SELECT tbl\.relname AS table_name,.*JOIN pg_catalog\.unnest\(con\.conkey\) WITH ORDINALITY AS ord.*JOIN pg_catalog\.unnest\(con\.confkey\) WITH ORDINALITY AS ref_ord`).
 		WithArgs(defaultSchema).
 		WillReturnRows(sqlmock.NewRows([]string{"table_name", "constraint_name", "column_name", "referenced_table_name", "referenced_column_name", "ordinal"}).
 			AddRow("orders", "orders_user_id_fkey", "user_id", "users", "id", 1))
@@ -531,6 +532,39 @@ func TestIntrospectSchemaMapsPostgresCatalog(t *testing.T) {
 	}
 	if len(table.ForeignKeys) != 1 || table.ForeignKeys[0].RefTable != "users" || table.ForeignKeys[0].RefColumns[0] != "id" {
 		t.Fatalf("foreign keys = %+v", table.ForeignKeys)
+	}
+	if empty, ok := current.Tables["zero_columns"]; !ok || empty.Name != "zero_columns" || len(empty.Columns) != 0 {
+		t.Fatalf("zero-column table = %+v, present=%t", empty, ok)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTableDDLRejectsZeroColumnTableInsteadOfOmittingIt(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "not_null", "column_default", "identity_kind", "has_owned_sequence", "has_sequence_dependency", "is_primary"}).
+			AddRow("zero_columns", nil, nil, false, nil, nil, false, false, false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "index_name", "column_name", "is_unique", "ordinal"}))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "constraint_name", "column_name", "referenced_table_name", "referenced_column_name", "ordinal"}))
+
+	_, err = backend.TableDDL(context.Background(), "zero_columns")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeNotImplemented, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -565,6 +599,19 @@ func TestRenderDDLEscapesPostgresIdentifiers(t *testing.T) {
 	}
 }
 
+func TestRenderDDLRejectsOpaqueCreateTableLike(t *testing.T) {
+	backend := &Backend{}
+	_, err := backend.RenderDDL([]schema.Change{{
+		Action: schema.ActionCreateTable,
+		Table:  "copy",
+		Opaque: true,
+		RawDDL: `CREATE TABLE "public"."copy" (LIKE "public"."source" INCLUDING ALL);`,
+	}})
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeNotImplemented, err)
+	}
+}
+
 func TestRenderDDLUsesPostgresIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -596,7 +643,7 @@ func TestRenderDDLUsesPostgresIdentity(t *testing.T) {
 	}
 }
 
-func TestTableDDLRebuildsPostgresCreateTable(t *testing.T) {
+func TestTableDDLRebuildsSupportedPostgresCreateTable(t *testing.T) {
 	t.Parallel()
 
 	db, mock, err := sqlmock.New()
@@ -606,11 +653,12 @@ func TestTableDDLRebuildsPostgresCreateTable(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "app")
 	expectIntrospectForTableDDL(mock)
+	expectSupportedTableDDLFeatures(mock, `evil";--`)
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT con.conname,")).
 		WithArgs(defaultSchema, `evil";--`).
 		WillReturnRows(sqlmock.NewRows([]string{"conname", "contype", "columns", "referenced_schema", "referenced_table", "referenced_columns"}).
-			AddRow(`evil";--_pkey`, "p", `id";--`, nil, nil, nil).
-			AddRow(`evil";--_user_fkey`, "f", "user_id", "public", "users", "id"))
+			AddRow(`evil";--_pkey`, "p", `["id\";--"]`, nil, nil, nil).
+			AddRow(`evil";--_user_fkey`, "f", `["user_id"]`, "public", "users", `["id"]`))
 
 	ddl, err := backend.TableDDL(context.Background(), `evil";--`)
 	if err != nil {
@@ -618,7 +666,7 @@ func TestTableDDLRebuildsPostgresCreateTable(t *testing.T) {
 	}
 	for _, want := range []string{
 		`CREATE TABLE "public"."evil"";--"`,
-		`"id"";--" integer NOT NULL GENERATED BY DEFAULT AS IDENTITY`,
+		`"id"";--" integer NOT NULL`,
 		`"name" text DEFAULT 'new'::text`,
 		`CONSTRAINT "evil"";--_pkey" PRIMARY KEY ("id"";--")`,
 		`CONSTRAINT "evil"";--_user_fkey" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id")`,
@@ -629,6 +677,143 @@ func TestTableDDLRebuildsPostgresCreateTable(t *testing.T) {
 	}
 	if _, err := schema.ParseDesiredSQL(ddl); apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
 		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v, want fail-closed rejection for constraints\n%s", err, ddl)
+	}
+	parsed, err := schema.ParseSchemaDDL(ddl)
+	if err != nil || !parsed.Tables[`evil";--`].Opaque {
+		t.Fatalf("ParseSchemaDDL(TableDDL) = %+v, %v, want opaque round-trip definition", parsed, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseCatalogListPreservesControlCharacters(t *testing.T) {
+	got, err := parseCatalogList(`["left\u001fright","normal"]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "left\x1fright" || got[1] != "normal" {
+		t.Fatalf("parseCatalogList() = %#v", got)
+	}
+}
+
+func TestTableDDLRejectsPostgresIdentityThatCannotRoundTripLosslessly(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	expectIntrospectForIdentityTableDDL(mock)
+
+	_, err = backend.TableDDL(context.Background(), "identity_users")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeNotImplemented, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTableDDLRejectsNestedDynamicNextvalWithoutCatalogDependency(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "not_null", "column_default", "identity_kind", "has_owned_sequence", "has_sequence_dependency", "is_primary"}).
+			AddRow("sequence_users", "id", "bigint", true, "COALESCE(pg_catalog.nextval(pg_catalog.to_regclass('external.user_ids')), 1)", "", false, false, false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "index_name", "column_name", "is_unique", "ordinal"}))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "constraint_name", "column_name", "referenced_table_name", "referenced_column_name", "ordinal"}))
+
+	_, err = backend.TableDDL(context.Background(), "sequence_users")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeNotImplemented, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestContainsPostgresSequenceStateCallIsQuoteAware(t *testing.T) {
+	for _, expression := range []string{
+		"COALESCE(pg_catalog.nextval(pg_catalog.to_regclass('public.seq')), 1)",
+		"pg_catalog.currval(pg_catalog.to_regclass('public.seq'))",
+		"pg_catalog.setval(pg_catalog.to_regclass('public.seq'), 42)",
+		"pg_catalog.lastval()",
+		`"pg_catalog"."nextval"('public.seq')`,
+	} {
+		if !containsPostgresSequenceStateCall(expression) {
+			t.Fatalf("containsPostgresSequenceStateCall(%q) = false", expression)
+		}
+	}
+	for _, expression := range []string{
+		`'nextval('::text`,
+		`$tag$nextval($tag$::text`,
+		`$tag$foo nextval($tag$::text`,
+		`$$prefix nextval($$::text`,
+		`"nextval"`,
+	} {
+		if containsPostgresSequenceStateCall(expression) {
+			t.Fatalf("containsPostgresSequenceStateCall(%q) = true", expression)
+		}
+	}
+}
+
+func TestTableDDLRejectsConstraintIndexAndRowSecurityDetailsThatCannotRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "app")
+	expectIntrospectForSimpleTableDDL(mock, "secured_users")
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.relkind <> 'r'")).
+		WithArgs(defaultSchema, "secured_users").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"unsupported_relkind",
+			"unsupported_persistence",
+			"partitioned",
+			"custom_tablespace",
+			"relation_options",
+			"inherited",
+			"unsupported_constraint",
+			"unsupported_index",
+			"trigger",
+			"policy",
+			"generated_column",
+			"foreign_key_options",
+			"non_default_collation",
+			"constraint_options",
+			"unsupported_index_shape",
+			"row_security",
+			"replica_identity",
+			"non_default_access_method",
+			"rewrite_rule",
+			"unsupported_index_semantics",
+			"comment",
+			"custom_column_storage",
+			"typed_table",
+			"non_catalog_column_type",
+			"non_catalog_default_dependency",
+		}).AddRow(false, false, false, false, false, false, false, false, false, false, false, false, false, true, true, true, true, true, true, true, true, true, true, true, true))
+
+	_, err = backend.TableDDL(context.Background(), "secured_users")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeNotImplemented, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -726,10 +911,10 @@ func TestExecDDLCommitErrorIsIndeterminateAndNonRetryable(t *testing.T) {
 func expectIntrospectForTableDDL(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.relname AS table_name")).
 		WithArgs(defaultSchema).
-		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "not_null", "column_default", "identity_kind", "has_owned_sequence", "is_primary"}).
-			AddRow(`evil";--`, `id";--`, "integer", true, nil, "d", false, true).
-			AddRow(`evil";--`, "user_id", "integer", true, nil, "", false, false).
-			AddRow(`evil";--`, "name", "text", false, "'new'::text", "", false, false))
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "not_null", "column_default", "identity_kind", "has_owned_sequence", "has_sequence_dependency", "is_primary"}).
+			AddRow(`evil";--`, `id";--`, "integer", true, nil, "", false, false, true).
+			AddRow(`evil";--`, "user_id", "integer", true, nil, "", false, false, false).
+			AddRow(`evil";--`, "name", "text", false, "'new'::text", "", false, false, false))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
 		WithArgs(defaultSchema).
 		WillReturnRows(sqlmock.NewRows([]string{"table_name", "index_name", "column_name", "is_unique", "ordinal"}).
@@ -738,6 +923,67 @@ func expectIntrospectForTableDDL(mock sqlmock.Sqlmock) {
 		WithArgs(defaultSchema).
 		WillReturnRows(sqlmock.NewRows([]string{"table_name", "constraint_name", "column_name", "referenced_table_name", "referenced_column_name", "ordinal"}).
 			AddRow(`evil";--`, `evil";--_user_fkey`, "user_id", "users", "id", 1))
+}
+
+func expectSupportedTableDDLFeatures(mock sqlmock.Sqlmock, table string) {
+	columns := []string{
+		"unsupported_relkind",
+		"unsupported_persistence",
+		"partitioned",
+		"custom_tablespace",
+		"relation_options",
+		"inherited",
+		"unsupported_constraint",
+		"unsupported_index",
+		"trigger",
+		"policy",
+		"generated_column",
+		"foreign_key_options",
+		"non_default_collation",
+		"constraint_options",
+		"unsupported_index_shape",
+		"row_security",
+		"replica_identity",
+		"non_default_access_method",
+		"rewrite_rule",
+		"unsupported_index_semantics",
+		"comment",
+		"custom_column_storage",
+		"typed_table",
+		"non_catalog_column_type",
+		"non_catalog_default_dependency",
+	}
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.relkind <> 'r'")).
+		WithArgs(defaultSchema, table).
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false))
+}
+
+func expectIntrospectForIdentityTableDDL(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "not_null", "column_default", "identity_kind", "has_owned_sequence", "has_sequence_dependency", "is_primary"}).
+			AddRow("identity_users", "id", "integer", true, nil, "d", false, false, true))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "index_name", "column_name", "is_unique", "ordinal"}).
+			AddRow("identity_users", "identity_users_pkey", "id", true, 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "constraint_name", "column_name", "referenced_table_name", "referenced_column_name", "ordinal"}))
+}
+
+func expectIntrospectForSimpleTableDDL(mock sqlmock.Sqlmock, table string) {
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "not_null", "column_default", "identity_kind", "has_owned_sequence", "has_sequence_dependency", "is_primary"}).
+			AddRow(table, "id", "integer", false, nil, "", false, false, false))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "index_name", "column_name", "is_unique", "ordinal"}))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT tbl.relname AS table_name")).
+		WithArgs(defaultSchema).
+		WillReturnRows(sqlmock.NewRows([]string{"table_name", "constraint_name", "column_name", "referenced_table_name", "referenced_column_name", "ordinal"}))
 }
 
 type assertErr string

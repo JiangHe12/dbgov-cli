@@ -21,7 +21,7 @@ func TestIntrospectSchemaQueriesInformationSchema(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "appdb")
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, column_name, column_type, is_nullable, column_default, column_key, extra\nFROM information_schema.columns\nWHERE table_schema = ?\nORDER BY table_name, ordinal_position")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.table_name, c.column_name, c.column_type, c.is_nullable, c.column_default, c.column_key, c.extra\nFROM information_schema.columns c\nJOIN information_schema.tables t\n  ON t.table_schema = c.table_schema\n AND t.table_name = c.table_name\nWHERE c.table_schema = ?\n  AND t.table_type = 'BASE TABLE'\nORDER BY c.table_name, c.ordinal_position")).
 		WithArgs("appdb").
 		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "is_nullable", "column_default", "column_key", "extra"}).
 			AddRow("users", "id", "bigint", "NO", nil, "PRI", "auto_increment").
@@ -69,7 +69,7 @@ func TestIntrospectSchemaAllowsEmptyDatabase(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "emptydb")
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, column_name, column_type, is_nullable, column_default, column_key, extra\nFROM information_schema.columns\nWHERE table_schema = ?\nORDER BY table_name, ordinal_position")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT c.table_name, c.column_name, c.column_type, c.is_nullable, c.column_default, c.column_key, c.extra\nFROM information_schema.columns c\nJOIN information_schema.tables t\n  ON t.table_schema = c.table_schema\n AND t.table_name = c.table_name\nWHERE c.table_schema = ?\n  AND t.table_type = 'BASE TABLE'\nORDER BY c.table_name, c.ordinal_position")).
 		WithArgs("emptydb").
 		WillReturnRows(sqlmock.NewRows([]string{"table_name", "column_name", "column_type", "is_nullable", "column_default", "column_key", "extra"}))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT table_name, index_name, column_name, non_unique, seq_in_index\nFROM information_schema.statistics\nWHERE table_schema = ?\nORDER BY table_name, index_name, seq_in_index")).
@@ -98,21 +98,39 @@ func TestTableDDLUsesShowCreateTable(t *testing.T) {
 	}
 	defer func() { _ = db.Close() }()
 	backend := NewWithDB(db, "appdb")
+	wantDDL := "CREATE TABLE `users` (`id` int AUTO_INCREMENT, `flags` int unsigned, PRIMARY KEY (`id`)) ENGINE=InnoDB"
 	mock.ExpectQuery(regexp.QuoteMeta("SHOW CREATE TABLE `users`")).
-		WillReturnRows(sqlmock.NewRows([]string{"Table", "Create Table"}).AddRow("users", "CREATE TABLE `users` (`id` int AUTO_INCREMENT, `flags` int unsigned, PRIMARY KEY (`id`))"))
+		WillReturnRows(sqlmock.NewRows([]string{"Table", "Create Table"}).AddRow("users", wantDDL))
 
 	ddl, err := backend.TableDDL(context.Background(), "users")
 	if err != nil {
 		t.Fatalf("TableDDL() error = %v", err)
 	}
-	if ddl != "CREATE TABLE `users` (`id` int AUTO_INCREMENT, `flags` int unsigned, PRIMARY KEY (`id`))" {
-		t.Fatalf("TableDDL() = %q", ddl)
+	if ddl != wantDDL+";" {
+		t.Fatalf("TableDDL() = %q, want canonical terminated statement", ddl)
 	}
 	if _, err := schema.ParseDesiredSQL(ddl); apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
 		t.Fatalf("ParseDesiredSQL(TableDDL) error = %v, want fail-closed rejection for primary key", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
+func TestTableDDLRejectsNonInnoDBSnapshot(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	backend := NewWithDB(db, "appdb")
+	mock.ExpectQuery(regexp.QuoteMeta("SHOW CREATE TABLE `legacy`")).
+		WillReturnRows(sqlmock.NewRows([]string{"Table", "Create Table"}).
+			AddRow("legacy", "CREATE TABLE `legacy` (`id` int) ENGINE=MyISAM"))
+
+	_, err = backend.TableDDL(context.Background(), "legacy")
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeNotImplemented, err)
 	}
 }
 
@@ -137,9 +155,7 @@ func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 	statements, err := backend.RenderDDL([]schema.Change{
 		{Action: schema.ActionCreateTable, Table: "orders", Columns: []schema.Column{{Name: "id", Type: "BIGINT", AutoIncrement: true}, {Name: "user_id", Type: "BIGINT"}}},
 		{Action: schema.ActionAddColumn, Table: "users", Column: "name", Type: "VARCHAR(100)"},
-		{Action: schema.ActionModifyColumn, Table: "users", Column: "name", Type: "TEXT"},
 		{Action: schema.ActionAddColumn, Table: "users", Column: "seq", Type: "int unsigned", AutoIncrement: true, AutoIncrementIndexRequired: true},
-		{Action: schema.ActionModifyColumn, Table: "users", Column: "seq", Type: "int unsigned", AutoIncrement: true, AutoIncrementChanged: true, AutoIncrementIndexRequired: true},
 		{Action: schema.ActionDropColumn, Table: "users", Column: "legacy"},
 	})
 	if err != nil {
@@ -148,9 +164,7 @@ func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 	want := []string{
 		"CREATE TABLE `orders` (`id` BIGINT AUTO_INCREMENT, `user_id` BIGINT, PRIMARY KEY (`id`));",
 		"ALTER TABLE `users` ADD COLUMN `name` VARCHAR(100);",
-		"ALTER TABLE `users` MODIFY COLUMN `name` TEXT;",
 		"ALTER TABLE `users` ADD COLUMN `seq` int unsigned AUTO_INCREMENT, ADD UNIQUE KEY `idx_users_seq_autoinc` (`seq`);",
-		"ALTER TABLE `users` MODIFY COLUMN `seq` int unsigned AUTO_INCREMENT, ADD UNIQUE KEY `idx_users_seq_autoinc` (`seq`);",
 		"ALTER TABLE `users` DROP COLUMN `legacy`;",
 	}
 	if len(statements) != len(want) {
@@ -160,6 +174,19 @@ func TestRenderDDLUsesMySQLSyntax(t *testing.T) {
 		if statements[i] != want[i] {
 			t.Fatalf("statement[%d] = %q, want %q", i, statements[i], want[i])
 		}
+	}
+}
+
+func TestRenderDDLRejectsOpaqueNonInnoDBStorageEngine(t *testing.T) {
+	backend := &Backend{}
+	_, err := backend.RenderDDL([]schema.Change{{
+		Action: schema.ActionCreateTable,
+		Table:  "users",
+		Opaque: true,
+		RawDDL: "CREATE TABLE `users` (`id` bigint NOT NULL) ENGINE=SPIDER COMMENT=' ENGINE=InnoDB';",
+	}})
+	if got := apperrors.AsAppError(err).Code; got != apperrors.CodeNotImplemented {
+		t.Fatalf("error code = %s, want %s (err=%v)", got, apperrors.CodeNotImplemented, err)
 	}
 }
 
@@ -186,15 +213,22 @@ func TestRenderDDLDoesNotAddSecondPrimaryKeyForAutoIncrementOnExistingTable(t *t
 	}}
 
 	for _, tc := range []struct {
-		name string
-		diff schema.DiffResult
-		want string
+		name    string
+		diff    schema.DiffResult
+		want    string
+		wantErr apperrors.ErrorCode
 	}{
 		{name: "add", diff: schema.Diff(current, desiredAdd), want: "ALTER TABLE `users` ADD COLUMN `new_seq` int AUTO_INCREMENT, ADD UNIQUE KEY `idx_users_new_seq_autoinc` (`new_seq`);"},
-		{name: "modify", diff: schema.Diff(current, desiredModify), want: "ALTER TABLE `users` MODIFY COLUMN `seq` int AUTO_INCREMENT, ADD UNIQUE KEY `idx_users_seq_autoinc` (`seq`);"},
+		{name: "modify", diff: schema.Diff(current, desiredModify), wantErr: apperrors.CodeNotImplemented},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			statements, err := backend.RenderDDL(tc.diff.Changes)
+			if tc.wantErr != "" {
+				if got := apperrors.AsAppError(err).Code; got != tc.wantErr {
+					t.Fatalf("error code = %s, want %s (err=%v)", got, tc.wantErr, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("RenderDDL() error = %v", err)
 			}

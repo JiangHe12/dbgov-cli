@@ -147,11 +147,7 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) (resultErr error) { //noli
 		emitAudit(f, event, err)
 		return err
 	}
-	diff := schema.Diff(current, desired)
-	diff.Changes = append(diff.Changes, schema.PruneChanges(current, desired)...)
-	plan, err := buildSchemaPlanFromDiff(b, diff)
-	applyRollbackPlanMetadata(&plan)
-	bindRollbackPlan(&plan, *snap.Meta.Target)
+	plan, roundTripCurrent, err := buildBoundRollbackPlan(f, b, current, desired, *snap.Meta.Target)
 	if err != nil {
 		event := rollbackAuditEvent(f, meta, opts.to, plan)
 		emitAudit(f, event, err)
@@ -162,6 +158,19 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) (resultErr error) { //noli
 		event.DryRun = true
 		emitAudit(f, event, nil)
 		return printSchemaPlan(f, meta, targetWrite, plan)
+	}
+	if len(plan.Statements) == 0 {
+		emitAudit(f, rollbackAuditEvent(f, meta, opts.to, plan), nil)
+		return printRollbackResult(f, meta, rollbackResult{
+			SnapshotID:        opts.to,
+			Scope:             rollbackScope,
+			PlannedStatements: 0,
+			AppliedStatements: 0,
+			DataRestored:      false,
+			PlanFingerprint:   plan.PlanFingerprint,
+			TargetFingerprint: plan.TargetFingerprint,
+			Warnings:          append([]string(nil), plan.Warnings...),
+		})
 	}
 
 	requiredAllows, granted := planAllowFlags(plan, opts.allowDestructive, opts.allowProductionPrune)
@@ -174,7 +183,7 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) (resultErr error) { //noli
 		return err
 	}
 	statements := schemaPlanStatements(plan)
-	if err := validateRollbackExecutionBinding(plan, *snap.Meta.Target, statements); err != nil {
+	if err := validateRollbackExecutionBinding(plan, *snap.Meta.Target, roundTripCurrent, desired, statements); err != nil {
 		event := rollbackAuditEvent(f, meta, opts.to, plan)
 		emitAudit(f, event, err)
 		return err
@@ -194,7 +203,9 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) (resultErr error) { //noli
 	if err != nil {
 		return err
 	}
-	snapshotID, err := captureSchemaSnapshot(f, b, current, meta, "rollback")
+	snapshotID, err := prepareGitOpsExecutionSnapshot(f, b, meta, "rollback", plan, func(roundTripFresh schema.Schema) (schemaPlan, error) {
+		return buildBoundRollbackPlanFromRoundTrip(b, roundTripFresh, desired, *snap.Meta.Target)
+	})
 	if err != nil {
 		return finishSkippedMutationAudit(handle, len(statements), err)
 	}
@@ -219,6 +230,35 @@ func runRollbackTo(f *cliFlags, opts rollbackOptions) (resultErr error) { //noli
 	})
 }
 
+func buildBoundRollbackPlan(
+	f *cliFlags,
+	b schemaExecutionBackend,
+	current schema.Schema,
+	desired schema.Schema,
+	target dbgsnapshot.Target,
+) (schemaPlan, schema.Schema, error) {
+	roundTripCurrent, err := schemaFromTableDDL(commandContext(f), b, current)
+	if err != nil {
+		return schemaPlan{}, schema.Schema{}, err
+	}
+	plan, err := buildBoundRollbackPlanFromRoundTrip(b, roundTripCurrent, desired, target)
+	return plan, roundTripCurrent, err
+}
+
+func buildBoundRollbackPlanFromRoundTrip(
+	b schemaPlanRenderer,
+	roundTripCurrent schema.Schema,
+	desired schema.Schema,
+	target dbgsnapshot.Target,
+) (schemaPlan, error) {
+	diff := schema.Diff(roundTripCurrent, desired)
+	diff.Changes = append(diff.Changes, schema.PruneChanges(roundTripCurrent, desired)...)
+	plan, err := buildSchemaPlanFromDiff(b, diff)
+	applyRollbackPlanMetadata(&plan)
+	bindRollbackPlan(&plan, target, roundTripCurrent, desired)
+	return plan, err
+}
+
 func rollbackListAuditEvent(f *cliFlags) dbgaudit.Event {
 	return dbgaudit.New(dbgaudit.EventTypeRollback, currentOperator(f), dbgaudit.Context{}, dbgaudit.Target{ObjectType: "rollback", Object: "list"})
 }
@@ -232,6 +272,11 @@ func rollbackAuditEvent(f *cliFlags, meta contextMeta, snapshotID string, plan s
 }
 
 func applyRollbackPlanMetadata(plan *schemaPlan) {
+	if len(plan.Statements) == 0 {
+		plan.OverallRisk = safetyRiskLabel(safety.R0)
+		plan.RequiredAuthorization = requiredAuthorization(schemaRiskLabel(safety.R0))
+		return
+	}
 	plan.Warnings = append([]string{rollbackDataLossWarning}, plan.Warnings...)
 	risk := maxRisk(safetyRisk(plan.OverallRisk), safety.R2)
 	plan.OverallRisk = safetyRiskLabel(risk)
@@ -266,22 +311,34 @@ func normalizedSnapshotTarget(target dbgsnapshot.Target) dbgsnapshot.Target {
 	return target
 }
 
-func bindRollbackPlan(plan *schemaPlan, target dbgsnapshot.Target) {
+func bindRollbackPlan(plan *schemaPlan, target dbgsnapshot.Target, current, desired schema.Schema) {
 	targetData, _ := json.Marshal(normalizedSnapshotTarget(target))
 	plan.TargetFingerprint, _ = dbgaudit.Fingerprint("snapshot-target", string(targetData))
 	plan.PlannedStatements = len(plan.Statements)
-	binding := rollbackExecutionBinding{
-		TargetFingerprint: plan.TargetFingerprint,
-		Statements:        schemaPlanStatements(*plan),
+	binding := schemaPlanFingerprintPayload{
+		TargetFingerprint:     plan.TargetFingerprint,
+		Current:               schemaForPlanBinding(current),
+		Desired:               schemaForPlanBinding(desired),
+		Statements:            plan.Statements,
+		OverallRisk:           plan.OverallRisk,
+		Destructive:           plan.Destructive,
+		Warnings:              plan.Warnings,
+		RequiredAuthorization: plan.RequiredAuthorization,
 	}
 	bindingData, _ := json.Marshal(binding)
 	plan.PlanFingerprint, _ = dbgaudit.Fingerprint("rollback-plan", string(bindingData))
 }
 
-func validateRollbackExecutionBinding(plan schemaPlan, target dbgsnapshot.Target, statements []string) error {
+func validateRollbackExecutionBinding(
+	plan schemaPlan,
+	target dbgsnapshot.Target,
+	current schema.Schema,
+	desired schema.Schema,
+	statements []string,
+) error {
 	recomputed := plan
 	recomputed.Statements = append([]schemaPlanStatement(nil), plan.Statements...)
-	bindRollbackPlan(&recomputed, target)
+	bindRollbackPlan(&recomputed, target, current, desired)
 	if plan.PlanFingerprint == "" ||
 		plan.TargetFingerprint == "" ||
 		plan.PlannedStatements != len(statements) ||

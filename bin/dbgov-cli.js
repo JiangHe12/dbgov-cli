@@ -21,20 +21,18 @@ function main() {
     process.exit(1);
   }
 
-  const args = process.argv.slice(2);
-
-  try {
-    const result = spawn(binaryPath, args, {
-      stdio: 'inherit'
-    });
-
-    result.on('exit', (code) => {
-      process.exit(code || 0);
-    });
-  } catch (err) {
+  const child = spawn(binaryPath, process.argv.slice(2), { stdio: 'inherit' });
+  child.on('error', (err) => {
     console.error('Failed to run dbgov:', err.message);
     process.exit(1);
-  }
+  });
+  child.on('exit', (code, signal) => {
+    if (signal) {
+      process.kill(process.pid, signal);
+      return;
+    }
+    process.exit(code == null ? 1 : code);
+  });
 }
 
 main();

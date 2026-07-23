@@ -163,7 +163,7 @@ func runImport(f *cliFlags, opts importOptions) (resultErr error) {
 		emitAudit(f, event, err)
 		return err
 	}
-	plan, err := buildBoundSchemaPlan(b, meta, current, desired)
+	plan, err := buildBoundGitOpsSchemaPlan(f, b, meta, current, desired)
 	if err != nil {
 		event := newImportAuditEvent(f, meta, plan)
 		emitAudit(f, event, err)
@@ -173,6 +173,10 @@ func runImport(f *cliFlags, opts importOptions) (resultErr error) {
 		event := newImportAuditEvent(f, meta, plan)
 		event.DryRun = true
 		emitAudit(f, event, nil)
+		return printSchemaPlan(f, meta, targetWrite, plan)
+	}
+	if len(plan.Statements) == 0 {
+		emitAudit(f, newImportAuditEvent(f, meta, plan), nil)
 		return printSchemaPlan(f, meta, targetWrite, plan)
 	}
 
@@ -202,8 +206,8 @@ func runImport(f *cliFlags, opts importOptions) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	snapshotID, err := prepareSchemaExecutionSnapshot(f, b, meta, "import", plan, func(fresh schema.Schema) (schemaPlan, error) {
-		return buildBoundSchemaPlan(b, meta, fresh, desired)
+	snapshotID, err := prepareGitOpsExecutionSnapshot(f, b, meta, "import", plan, func(roundTripFresh schema.Schema) (schemaPlan, error) {
+		return buildBoundSchemaPlan(b, meta, roundTripFresh, desired)
 	})
 	if err != nil {
 		return finishSkippedMutationAudit(handle, len(statements), err)
@@ -236,7 +240,7 @@ func runReconcile(f *cliFlags, opts reconcileOptions) (resultErr error) {
 		emitAudit(f, event, err)
 		return err
 	}
-	plan, err := buildBoundReconcilePlan(b, meta, current, desired, opts.prune)
+	plan, err := buildBoundGitOpsReconcilePlan(f, b, meta, current, desired, opts.prune)
 	if err != nil {
 		event := newReconcileAuditEvent(f, meta, plan)
 		emitAudit(f, event, err)
@@ -246,6 +250,10 @@ func runReconcile(f *cliFlags, opts reconcileOptions) (resultErr error) {
 		event := newReconcileAuditEvent(f, meta, plan)
 		event.DryRun = true
 		emitAudit(f, event, nil)
+		return printSchemaPlan(f, meta, targetWrite, plan)
+	}
+	if len(plan.Statements) == 0 {
+		emitAudit(f, newReconcileAuditEvent(f, meta, plan), nil)
 		return printSchemaPlan(f, meta, targetWrite, plan)
 	}
 
@@ -268,8 +276,8 @@ func runReconcile(f *cliFlags, opts reconcileOptions) (resultErr error) {
 	if err != nil {
 		return err
 	}
-	snapshotID, err := prepareSchemaExecutionSnapshot(f, b, meta, "reconcile", plan, func(fresh schema.Schema) (schemaPlan, error) {
-		return buildBoundReconcilePlan(b, meta, fresh, desired, opts.prune)
+	snapshotID, err := prepareGitOpsExecutionSnapshot(f, b, meta, "reconcile", plan, func(roundTripFresh schema.Schema) (schemaPlan, error) {
+		return buildBoundReconcilePlan(b, meta, roundTripFresh, desired, opts.prune)
 	})
 	if err != nil {
 		return finishSkippedMutationAudit(handle, len(statements), err)
@@ -284,6 +292,35 @@ func runReconcile(f *cliFlags, opts reconcileOptions) (resultErr error) {
 		return auditErr
 	}
 	return printSchemaPlan(f, meta, targetWrite, plan)
+}
+
+func buildBoundGitOpsSchemaPlan(
+	f *cliFlags,
+	b schemaExecutionBackend,
+	meta contextMeta,
+	current schema.Schema,
+	desired schema.Schema,
+) (schemaPlan, error) {
+	roundTripCurrent, err := schemaFromTableDDL(commandContext(f), b, current)
+	if err != nil {
+		return schemaPlan{}, err
+	}
+	return buildBoundSchemaPlan(b, meta, roundTripCurrent, desired)
+}
+
+func buildBoundGitOpsReconcilePlan(
+	f *cliFlags,
+	b schemaExecutionBackend,
+	meta contextMeta,
+	current schema.Schema,
+	desired schema.Schema,
+	prune bool,
+) (schemaPlan, error) {
+	roundTripCurrent, err := schemaFromTableDDL(commandContext(f), b, current)
+	if err != nil {
+		return schemaPlan{}, err
+	}
+	return buildBoundReconcilePlan(b, meta, roundTripCurrent, desired, prune)
 }
 
 func buildBoundReconcilePlan(
@@ -347,7 +384,9 @@ func planAllowFlags(plan schemaPlan, allowDestructive, allowProductionPrune bool
 
 func planRequiresDestructiveAllow(plan schemaPlan) bool {
 	for _, stmt := range plan.Statements {
-		if stmt.Action == schema.ActionDropColumn || stmt.Action == schema.ActionModifyColumn {
+		if stmt.Action == schema.ActionDropColumn ||
+			stmt.Action == schema.ActionModifyColumn ||
+			stmt.Opaque {
 			return true
 		}
 	}

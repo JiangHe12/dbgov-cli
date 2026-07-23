@@ -4,7 +4,7 @@
 
 **Governed MySQL & PostgreSQL operations for humans _and_ AI agents.**
 
-Run queries, change schemas, and execute DML behind guardrails — every change is measured by `EXPLAIN`, previewed, snapshotted for rollback, and audited, so neither you nor an AI assistant can accidentally nuke a production database.
+Run queries, change schemas, and execute DML behind guardrails — DML impact is estimated with `EXPLAIN`, changes are previewed and audited, and non-empty schema mutations require a validated, stable pre-change DDL snapshot.
 
 [![npm version](https://img.shields.io/npm/v/dbgov-cli.svg)](https://www.npmjs.com/package/dbgov-cli)
 [![CI](https://github.com/JiangHe12/dbgov-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/JiangHe12/dbgov-cli/actions/workflows/ci.yml)
@@ -23,9 +23,11 @@ Touching a production database is one of the scariest things in ops: a missing `
 
 **dbgov-cli wraps every database operation in guardrails.** Think of it as a careful DBA sitting between you and the database:
 
-- 📏 **Measures impact before acting** — `explain`, `schema plan`, and `--dry-run` tell you *exactly* how many rows or which columns a change will hit. dbgov never guesses; if it can't measure, it refuses.
+- 📏 **Measures impact before acting** — `explain` and DML dry-runs report the database optimizer's row estimate, while `schema plan` reports the exact rendered DDL plan. dbgov never substitutes an AI guess; if it cannot obtain a usable plan, it refuses.
 - 🛡️ **Scales the friction to the danger** — a one-row update just needs a confirmation; a no-`WHERE` `DELETE` or a `DROP COLUMN` needs a change ticket *and* an explicit "yes, allow destruction" flag.
-- 📸 **Snapshots schema before every mutation** — so you can roll structure back if something's wrong.
+- 📸 **Snapshots supported non-empty schema mutations** — after two matching
+  reads, dbgov stores validated pre-change DDL; rollback proceeds only when the
+  structure can be represented or preserved losslessly, otherwise it refuses.
 - 👥 **Honors roles** — readers can't write, writers can't do destructive ops, only admins can.
 - 📜 **Audits everything** — every action (including denied ones) lands in a tamper-evident log.
 - 🤖 **Is safe to hand to an AI agent** — it can read and preview freely, but **cannot** invent the human approvals that destructive changes require.
@@ -38,14 +40,14 @@ Works with **MySQL** and **PostgreSQL**.
 
 | | |
 |---|---|
-| 🗄️ **Two engines** | **MySQL** and **PostgreSQL**, at full parity. `dbgov capabilities` reports what the current build supports. |
+| 🗄️ **Two engines** | **MySQL** and **PostgreSQL** with engine-specific schema boundaries. `dbgov capabilities` reports the authoritative support level. |
 | 🔎 **Read & explain** | `query` (read-only SQL, rejects writes) and `explain` (real execution plan + estimated rows). |
 | 🧱 **Declarative schema** | `schema list / describe / dump / diff / plan / apply` — diff your DB against a desired `.sql` and apply the delta. |
 | ✏️ **Governed DML** | `data exec` runs `UPDATE`/`DELETE`/`INSERT` with `EXPLAIN`-measured blast radius and risk-scaled authorization. |
 | 🔄 **GitOps for schema** | `export` → `import` → `reconcile` (with drift detection + optional `--prune`) → `rollback` from snapshots. |
 | 🚦 **R0–R3 governance** | every operation is risk-classified; protected contexts escalate one tier; AI callers can never self-authorize. |
 | 👥 **RBAC** | per-context `reader` / `writer` / `admin` roles cap the maximum risk a write path can reach. |
-| 📸 **Snapshots & rollback** | automatic pre-change schema snapshot; structure-level restore with explicit data-loss warnings. |
+| 📸 **Snapshots & rollback** | automatic pre-change DDL evidence; automated structure restore only within the documented engine boundary. |
 | 📜 **Tamper-evident audit** | every operation appended to a hash-verifiable log; `audit verify` detects tampering. |
 | 🔏 **Trusted supply chain** | **cosign-signed** binaries, npm **provenance**, and a **SHA-256**-verified installer. |
 
@@ -89,8 +91,8 @@ export DBGOV_PASSWORD='***'   # consumed when commands connect if the context ha
 # 2. Read — read-only SQL is free (R0) and rejects writes
 dbgov query --sql "SELECT id, name FROM users LIMIT 10" -o json
 
-# 3. Measure before you change — see the plan & estimated rows
-dbgov explain --sql "UPDATE users SET active = 0 WHERE last_seen < '2025-01-01'" -o json
+# 3. Inspect a read plan and its optimizer row estimate
+dbgov explain --sql "SELECT id FROM users WHERE last_seen < '2025-01-01'" -o json
 
 # 4. Preview a DML change (nothing runs yet)
 dbgov data exec --sql "UPDATE users SET active = 0 WHERE id = 42" --dry-run -o json
@@ -121,7 +123,7 @@ Every command is sorted into a **risk tier**. The more dangerous it is, the more
 
 | Operation | Required flag |
 |---|---|
-| `schema apply` / `import` dropping or modifying a column | `--allow-destructive` |
+| `schema apply` / `import` dropping a column, or modifying one where the engine supports lossless rendering | `--allow-destructive` |
 | `data exec` with a no-`WHERE` `UPDATE`/`DELETE` | `--allow-no-where` |
 | `reconcile --prune` dropping tables | `--allow-production-prune` |
 | `rollback --to` that drops columns / tables | `--allow-destructive` / `--allow-production-prune` |
@@ -137,7 +139,7 @@ The authorization and audit identity is always the trusted local OS identity `us
 Three rules keep this safe — especially for automation:
 
 1. **Impact comes from the database, not a guess.** Use `explain` / `schema plan` / `--dry-run`. dbgov fails closed rather than estimating. For governed `UPDATE` / `DELETE`, execution revalidates the exact EXPLAIN fingerprint and row estimate in the same transaction before changing data.
-2. **Mutations are snapshotted first.** New snapshots are bound to their context and physical database target; an unbound legacy snapshot remains listable but cannot be executed. Rollback restores *structure* only — dropped row data is never recovered (dbgov warns you loudly and returns `dataRestored: false`).
+2. **Non-empty schema mutations are snapshotted first.** New snapshots are bound to their context and physical database target; an unbound legacy snapshot remains listable but cannot be executed. A snapshot is always pre-change DDL evidence, but automated rollback is available only where the engine boundary below can reproduce the structure safely. Dropped row data is never recovered.
 3. **🤖 AI agents must never invent `--ticket`, `--allow-*`, or a high-risk `--yes`.** Those are *human* authorization inputs. An agent should surface "this needs approval X" and stop.
 
 ---
@@ -172,7 +174,7 @@ dbgov schema apply -f desired.sql --yes                                  -o json
 dbgov schema apply -f desired.sql --ticket DB-123 --allow-destructive --yes -o json # R3 (destructive)
 ```
 
-> Auto-increment columns are modeled as a normalized boolean across both engines; create / diff / apply / snapshot / rollback are preserved, but PostgreSQL `serial`-vs-identity, `ALWAYS`-vs-`BY DEFAULT`, and sequence start/increment options are intentionally **not** preserved. Generated PostgreSQL table DDL is explicitly qualified to the fixed `public` schema, and applicable DDL batches execute in one transaction.
+> Incremental `schema diff / plan / apply` manages the deliberately narrow `CREATE TABLE` subset accepted by the parser: column names, types, and normalized auto-increment. PostgreSQL supports the resulting type/identity changes; MySQL existing-column type/auto-increment changes fail closed because a lossless `MODIFY COLUMN` cannot be rendered from this subset. Desired SQL containing defaults, nullability modifiers, keys, indexes, foreign keys, checks, generated columns, or identity options is rejected instead of being silently reduced. PostgreSQL DDL is qualified to the fixed `public` schema, and applicable batches execute in one transaction.
 </details>
 
 <details>
@@ -201,6 +203,10 @@ dbgov rollback list -o json                                       # list pre-cha
 dbgov rollback --to <snapshot-id> --dry-run -o json
 dbgov rollback --to <snapshot-id> --ticket DB-123 --yes -o json   # structure only; data not recovered
 ```
+
+Direct `schema plan/apply` accepts the simple parsed subset for column-level changes. MySQL in-place type/auto-increment modifications are rejected because `MODIFY COLUMN` cannot preserve attributes that the parsed subset does not carry. Export-driven GitOps and rollback use the richer table DDL instead: an exact opaque match is a no-op, while one missing table may be recreated verbatim at R3 with `--allow-destructive`; any in-place opaque difference fails closed for manual migration. An opaque create must be the plan's only change, use the canonical export form for its database engine, and cannot be copied across engines.
+
+Real MySQL `SHOW CREATE TABLE` output is opaque, so import/reconcile/rollback cannot modify an existing MySQL table in place; they support exact no-op or isolated recreation of one missing InnoDB table. A direct apply that changes an existing MySQL table therefore leaves verified DDL evidence but requires a reviewed manual migration to reverse. Non-InnoDB tables block snapshot-backed mutations. MySQL's volatile table-level `AUTO_INCREMENT=<next>` counter is ignored only for comparison, while recreation uses the bound original DDL. PostgreSQL snapshot/export fails closed when a table cannot be reconstructed losslessly, including serial/identity or sequence-backed columns, non-catalog types/default dependencies, comments, standalone indexes, unsupported constraints, partitioning/inheritance, non-default foreign-key actions, triggers/policies, custom storage, or non-default collation. Snapshots cover table structure, not row data, triggers, routines, comments, or external sequence state. A zero-statement operation is R0 and writes no snapshot.
 
 Rollback dry-run returns a `SchemaPlan` with plan/target fingerprints. Successful execution returns `RollbackResult` with planned/applied statement counts, `scope: "schema-structure"`, and `dataRestored: false`.
 </details>

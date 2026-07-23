@@ -285,9 +285,15 @@ test('idle timeout destroys the underlying request and response', () => {
 
 test('release workflow verifies signed assets and embeds the provenance-bound manifest', () => {
   const installerSource = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'install.js'), 'utf8');
+  const launcherSource = fs.readFileSync(path.join(__dirname, '..', 'bin', 'dbgov-cli.js'), 'utf8');
   const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'release.yml'), 'utf8');
 
+  assert.doesNotMatch(installerSource, /\|\|=/);
   assert.doesNotMatch(installerSource, /SKIP_VERIFY|checksums\.txt|downloadToString|parseChecksums/);
+  assert.match(launcherSource, /child\.on\('error'/);
+  assert.match(launcherSource, /if \(signal\) \{\s*process\.kill\(process\.pid, signal\)/);
+  assert.match(launcherSource, /process\.exit\(code == null \? 1 : code\)/);
+  assert.doesNotMatch(launcherSource, /process\.exit\(code \|\| 0\)/);
   assert.equal((workflow.match(/cosign-release: 'v2\.6\.4'/g) || []).length, 4);
   assert.ok((workflow.match(/cosign verify-blob/g) || []).length >= 4);
   assert.match(workflow, /--certificate-oidc-issuer "\$\{OIDC_ISSUER\}"/);

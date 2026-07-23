@@ -4,7 +4,7 @@
 
 **面向人类与 AI 智能体的「带治理」MySQL & PostgreSQL 数据库操作命令行。**
 
-在护栏下执行查询、改表结构、跑 DML——每次改动都由 `EXPLAIN` 实测影响、可预览、改前自动快照可回滚、并全程审计,让你和 AI 助手都不会手滑搞挂生产库。
+在护栏下执行查询、改表结构、跑 DML——DML 影响由 `EXPLAIN` 给出预估，变更可预览、全程审计，非空表结构变更还必须先生成经过校验且状态稳定的变更前 DDL 快照。
 
 [![npm version](https://img.shields.io/npm/v/dbgov-cli.svg)](https://www.npmjs.com/package/dbgov-cli)
 [![CI](https://github.com/JiangHe12/dbgov-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/JiangHe12/dbgov-cli/actions/workflows/ci.yml)
@@ -23,9 +23,10 @@
 
 **dbgov-cli 给每一个数据库操作都套上护栏。** 把它想成坐在你和数据库之间的一位谨慎 DBA:
 
-- 📏 **动手前先量影响**——`explain`、`schema plan`、`--dry-run` 精确告诉你一次改动会命中多少行、哪些列。dbgov 绝不猜;量不出就拒绝执行。
+- 📏 **动手前先量影响**——`explain` 与 DML dry-run 报告数据库优化器的行数预估，`schema plan` 报告精确渲染出的 DDL 计划。dbgov 不会用 AI 猜测替代数据库计划；拿不到可用计划就拒绝执行。
 - 🛡️ **危险越大,门槛越高**——改一行只需确认;无 `WHERE` 的 `DELETE` 或 `DROP COLUMN` 需要变更工单**外加**一句明确的「是的,允许破坏」。
-- 📸 **每次变更前先快照表结构**——出问题可把结构回滚。
+- 📸 **为受支持的非空表结构变更生成快照**——连续两次读取一致后，dbgov
+  才保存经过校验的变更前 DDL；只有能无损表示或保留结构时才允许回滚，否则拒绝执行。
 - 👥 **尊重角色**——reader 不能写,writer 不能做破坏性操作,只有 admin 可以。
 - 📜 **全部审计**——每次操作(含被拒绝的)都进防篡改日志。
 - 🤖 **可放心交给 AI 智能体**——它能自由读取、预览,但**无法**伪造破坏性操作所需的人类审批。
@@ -38,14 +39,14 @@
 
 | | |
 |---|---|
-| 🗄️ **双引擎** | **MySQL** 与 **PostgreSQL**,功能对等。`dbgov capabilities` 报告当前构建支持什么。 |
+| 🗄️ **双引擎** | **MySQL** 与 **PostgreSQL**，表结构能力边界因引擎而异。`dbgov capabilities` 是当前构建支持级别的权威来源。 |
 | 🔎 **读取与解释** | `query`(只读 SQL,拒绝写入)与 `explain`(真实执行计划 + 预估行数)。 |
 | 🧱 **声明式表结构** | `schema list / describe / dump / diff / plan / apply`——把库与目标 `.sql` 对比并只应用差异。 |
 | ✏️ **受治理 DML** | `data exec` 执行 `UPDATE`/`DELETE`/`INSERT`,按 `EXPLAIN` 实测影响面做风险分级授权。 |
 | 🔄 **表结构 GitOps** | `export` → `import` → `reconcile`(漂移检测 + 可选 `--prune`)→ 从快照 `rollback`。 |
 | 🚦 **R0–R3 治理** | 每个操作都做风险分级;受保护上下文整体升一档;AI 调用者永远无法自我授权。 |
 | 👥 **RBAC** | 每个上下文的 `reader` / `writer` / `admin` 角色限定写路径能达到的最高风险档。 |
-| 📸 **快照与回滚** | 变更前自动快照表结构;结构级恢复,并明确告知数据丢失风险。 |
+| 📸 **快照与回滚** | 自动保存变更前 DDL 证据；仅在文档声明的引擎边界内自动恢复结构。 |
 | 📜 **防篡改审计** | 每个操作写入可哈希校验的日志;`audit verify` 检测篡改。 |
 | 🔏 **可信供应链** | 二进制经 **cosign 签名**、npm 带 **provenance**、安装器校验 **SHA-256**。 |
 
@@ -89,8 +90,8 @@ export DBGOV_PASSWORD='***'   # context 未保存凭据时,连接命令会读取
 # 2. 读——只读 SQL 免费(R0)且拒绝写入
 dbgov query --sql "SELECT id, name FROM users LIMIT 10" -o json
 
-# 3. 改之前先量——看计划与预估行数
-dbgov explain --sql "UPDATE users SET active = 0 WHERE last_seen < '2025-01-01'" -o json
+# 3. 查看只读查询计划与优化器行数预估
+dbgov explain --sql "SELECT id FROM users WHERE last_seen < '2025-01-01'" -o json
 
 # 4. 预览一次 DML(此时什么都不会执行)
 dbgov data exec --sql "UPDATE users SET active = 0 WHERE id = 42" --dry-run -o json
@@ -121,7 +122,7 @@ dbgov audit query --since 1h -o json
 
 | 操作 | 所需标志 |
 |---|---|
-| `schema apply` / `import` 删列或改列 | `--allow-destructive` |
+| `schema apply` / `import` 删列，或在引擎可无损渲染时改列 | `--allow-destructive` |
 | `data exec` 无 `WHERE` 的 `UPDATE`/`DELETE` | `--allow-no-where` |
 | `reconcile --prune` 删表 | `--allow-production-prune` |
 | `rollback --to` 涉及删列 / 删表 | `--allow-destructive` / `--allow-production-prune` |
@@ -137,7 +138,7 @@ dbgov audit query --since 1h -o json
 三条原则保证安全——尤其对自动化:
 
 1. **影响来自数据库,而非猜测。** 用 `explain` / `schema plan` / `--dry-run`;dbgov 宁可 fail-closed 也不估算。受治理的 `UPDATE` / `DELETE` 在真正改数据前，会在同一事务内重新校验精确的 EXPLAIN 指纹与预估行数。
-2. **变更先快照。** 新快照会绑定上下文与物理数据库目标；旧的未绑定快照仍可列出，但不能执行回滚。回滚只恢复*结构*——被删的行数据永不恢复(dbgov 会大声警告，并返回 `dataRestored: false`)。
+2. **非空表结构变更先快照。** 新快照会绑定上下文与物理数据库目标；旧的未绑定快照仍可列出，但不能执行回滚。快照始终是变更前 DDL 证据，但只有下文明确支持的引擎结构才能自动回滚；被删的行数据永不恢复。
 3. **🤖 AI 智能体绝不能伪造 `--ticket`、`--allow-*` 或高风险 `--yes`。** 它们是*人类*授权输入;智能体应上报「这步需要审批 X」然后停下。
 
 ---
@@ -172,7 +173,7 @@ dbgov schema apply -f desired.sql --yes                                  -o json
 dbgov schema apply -f desired.sql --ticket DB-123 --allow-destructive --yes -o json # R3(破坏性)
 ```
 
-> 自增列在两种引擎上以归一化的布尔模型表示;create / diff / apply / snapshot / rollback 行为保留,但 PostgreSQL 的 `serial` 与 identity、`ALWAYS` 与 `BY DEFAULT`、序列 start/increment 选项**有意不保留**。生成的 PostgreSQL 表 DDL 会显式限定到固定的 `public` schema，适用的 DDL 批次在单个事务中执行。
+> 增量 `schema diff / plan / apply` 只管理解析器明确接受的窄版 `CREATE TABLE` 子集：列名、类型和归一化自增属性。PostgreSQL 支持由此产生的类型 / identity 变更；MySQL 既有列的类型 / 自增变更会 fail-closed，因为无法从该子集无损渲染 `MODIFY COLUMN`。目标 SQL 若包含 default、可空性修饰、键、索引、外键、check、生成列或 identity 选项，会直接拒绝，而不是静默丢掉。PostgreSQL DDL 显式限定到固定的 `public` schema，适用的批次在单个事务中执行。
 </details>
 
 <details>
@@ -201,6 +202,10 @@ dbgov rollback list -o json                                       # 列出变更
 dbgov rollback --to <snapshot-id> --dry-run -o json
 dbgov rollback --to <snapshot-id> --ticket DB-123 --yes -o json   # 仅结构;数据不恢复
 ```
+
+直接使用 `schema plan/apply` 时，简单解析子集支持列级变更；MySQL 原地修改类型或自增属性会被拒绝，因为 `MODIFY COLUMN` 无法保留解析子集未携带的完整列属性。基于导出 DDL 的 GitOps 与 rollback 使用更完整的表定义：不透明定义完全一致时为 no-op，整表缺失时可在 R3 下配合 `--allow-destructive` 原样重建，既有表出现任何不透明差异都会 fail-closed 并交由人工迁移。不透明建表必须是计划中的唯一变更，必须保持对应数据库引擎的规范导出格式，且不能跨引擎复制。
+
+真实 MySQL 的 `SHOW CREATE TABLE` 输出均按不透明定义处理，因此 import/reconcile/rollback 不能原地修改既有 MySQL 表，只支持完全一致的 no-op，或在隔离计划中恢复一张缺失的 InnoDB 表。直接 apply 改动既有 MySQL 表后，快照仍提供经过校验的 DDL 证据，但反向恢复必须由人工审核迁移；非 InnoDB 表会阻断依赖快照的变更。比较时只忽略易变的表级 `AUTO_INCREMENT=<next>` 计数，真正重建仍使用受绑定的原始 DDL。PostgreSQL 表若无法无损重建，snapshot/export 会直接拒绝，包括 serial/identity 或序列驱动列、非系统类型/默认值依赖、注释、独立索引、不支持的约束、分区/继承、非默认外键动作、trigger/policy、自定义存储或非默认 collation。快照只覆盖表结构，不覆盖行数据、trigger、routine、注释或外部序列状态。零语句操作为 R0，且不会写快照。
 
 回滚 dry-run 返回带计划/目标指纹的 `SchemaPlan`；成功执行返回 `RollbackResult`，其中包含计划/已应用语句数、`scope: "schema-structure"` 与 `dataRestored: false`。
 </details>

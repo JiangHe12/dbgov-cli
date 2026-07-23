@@ -20,15 +20,18 @@ type Table struct {
 	Columns     []Column     `json:"columns"`
 	Indexes     []Index      `json:"indexes,omitempty"`
 	ForeignKeys []ForeignKey `json:"foreignKeys,omitempty"`
+	RawDDL      string       `json:"rawDDL,omitempty"`
+	Opaque      bool         `json:"opaque,omitempty"`
 }
 
 type Column struct {
-	Name          string  `json:"name"`
-	Type          string  `json:"type"`
-	Nullable      bool    `json:"nullable"`
-	AutoIncrement bool    `json:"autoIncrement,omitempty"`
-	Default       *string `json:"default,omitempty"`
-	Key           string  `json:"key,omitempty"`
+	Name              string  `json:"name"`
+	Type              string  `json:"type"`
+	Nullable          bool    `json:"nullable"`
+	AutoIncrement     bool    `json:"autoIncrement,omitempty"`
+	SequenceDependent bool    `json:"sequenceDependent,omitempty"`
+	Default           *string `json:"default,omitempty"`
+	Key               string  `json:"key,omitempty"`
 }
 
 type Index struct {
@@ -64,6 +67,8 @@ type Change struct {
 	AutoIncrementChanged       bool     `json:"-"`
 	AutoIncrementIndexRequired bool     `json:"-"`
 	Columns                    []Column `json:"columns,omitempty"`
+	RawDDL                     string   `json:"rawDDL,omitempty"`
+	Opaque                     bool     `json:"opaque,omitempty"`
 	Destructive                bool     `json:"destructive"`
 }
 
@@ -71,6 +76,7 @@ type DiffResult struct {
 	Changes     []Change `json:"changes"`
 	Destructive bool     `json:"destructive"`
 	Warnings    []string `json:"warnings,omitempty"`
+	Unsupported []string `json:"unsupported,omitempty"`
 }
 
 type Risk string
@@ -93,6 +99,10 @@ func ParseDesiredSQL(sqlText string) (Schema, error) {
 	if !ok {
 		return Schema{}, apperrors.New(apperrors.CodeNotImplemented, "unsupported DDL: only simple CREATE TABLE statements are supported", nil)
 	}
+	tailStart, ok := createTableTailStart(trimmed)
+	if !ok || strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(trimmed[tailStart:]), ";")) != "" {
+		return Schema{}, unsupportedSchemaDefinition()
+	}
 	columns, err := parseColumns(body)
 	if err != nil {
 		return Schema{}, err
@@ -100,6 +110,303 @@ func ParseDesiredSQL(sqlText string) (Schema, error) {
 	return Schema{Tables: map[string]Table{
 		tableName: {Name: tableName, Columns: columns},
 	}}, nil
+}
+
+// ParseSchemaDDL accepts the normalized declarative subset used for incremental
+// reconciliation. A single, bounded CREATE TABLE statement outside that subset
+// is retained opaquely so it can only be compared byte-for-byte or recreated
+// exactly; callers must never derive column-level changes from it.
+func ParseSchemaDDL(sqlText string) (Schema, error) {
+	parsed, err := ParseDesiredSQL(sqlText)
+	if err == nil {
+		return parsed, nil
+	}
+	if apperrors.AsAppError(err).Code != apperrors.CodeNotImplemented {
+		return Schema{}, err
+	}
+	trimmed := strings.TrimSpace(sqlText)
+	tableName, body, ok := parseCreateTableEnvelope(trimmed)
+	if !ok || !safeOpaqueCreateTable(body, trimmed) {
+		return Schema{}, err
+	}
+	return Schema{Tables: map[string]Table{
+		tableName: {
+			Name:   tableName,
+			RawDDL: canonicalCreateDDL(trimmed),
+			Opaque: true,
+		},
+	}}, nil
+}
+
+func safeOpaqueCreateTable(body, statement string) bool {
+	if strings.TrimSpace(body) == "" ||
+		containsExecutableBlockComment(statement) ||
+		!validDDLFragment(body, true) ||
+		containsDangerousDDLWord(body, "copy", "do", "grant", "like", "program", "revoke") {
+		return false
+	}
+	tailStart, ok := createTableTailStart(statement)
+	return ok && !opaqueTailHasDisallowedWord(statement[tailStart:])
+}
+
+func containsExecutableBlockComment(statement string) bool {
+	scanner := ddlScanner{sql: statement}
+	for scanner.pos < len(scanner.sql) {
+		switch scanner.sql[scanner.pos] {
+		case '\'', '"', '`':
+			if !scanner.skipQuoted(scanner.sql[scanner.pos]) {
+				return true
+			}
+		case '/':
+			if scanner.pos+2 < len(scanner.sql) &&
+				scanner.sql[scanner.pos:scanner.pos+2] == "/*" &&
+				(scanner.sql[scanner.pos+2] == '!' || scanner.sql[scanner.pos+2] == '+') {
+				return true
+			}
+			start := scanner.pos
+			if !scanner.skipComment() {
+				return true
+			}
+			if scanner.pos == start {
+				scanner.pos++
+			}
+		case '-':
+			start := scanner.pos
+			if !scanner.skipComment() {
+				return true
+			}
+			if scanner.pos == start {
+				scanner.pos++
+			}
+		default:
+			scanner.pos++
+		}
+	}
+	return false
+}
+
+func opaqueTailHasDisallowedWord(tail string) bool {
+	scanner := ddlScanner{sql: tail}
+	for scanner.pos < len(scanner.sql) {
+		switch scanner.sql[scanner.pos] {
+		case '\'', '"', '`':
+			if !scanner.skipQuoted(scanner.sql[scanner.pos]) {
+				return true
+			}
+		case '-', '/':
+			start := scanner.pos
+			if !scanner.skipComment() {
+				return true
+			}
+			if scanner.pos == start {
+				scanner.pos++
+			}
+		default:
+			if !isDDLIdentifierStart(scanner.sql[scanner.pos]) {
+				scanner.pos++
+				continue
+			}
+			start := scanner.pos
+			scanner.pos++
+			for scanner.pos < len(scanner.sql) && isDDLIdentifierPart(scanner.sql[scanner.pos]) {
+				scanner.pos++
+			}
+			switch strings.ToLower(scanner.sql[start:scanner.pos]) {
+			case "as", "connection", "directory", "encryption", "federated", "from", "inherits", "on", "partition", "select", "tablespace", "union", "using", "values", "where", "with", "without":
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func canonicalCreateDDL(statement string) string {
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(statement), ";")) + ";"
+}
+
+func SameOpaqueDDL(left, right string) bool {
+	return OpaqueDDLComparisonKey(left) == OpaqueDDLComparisonKey(right)
+}
+
+func OpaqueDDLComparisonKey(statement string) string {
+	return normalizeVolatileTableOptions(canonicalCreateDDL(statement))
+}
+
+//nolint:gocyclo // Engine extraction must share one quote/comment-aware scan with the bounded DDL grammar.
+func OpaqueTableEngine(statement string) (string, bool) {
+	tailStart, ok := createTableTailStart(statement)
+	if !ok {
+		return "", false
+	}
+	scanner := ddlScanner{sql: statement[tailStart:]}
+	engine := ""
+	for scanner.pos < len(scanner.sql) {
+		switch scanner.sql[scanner.pos] {
+		case '\'', '"', '`':
+			if !scanner.skipQuoted(scanner.sql[scanner.pos]) {
+				return "", false
+			}
+		case '-', '/':
+			start := scanner.pos
+			if !scanner.skipComment() {
+				return "", false
+			}
+			if scanner.pos == start {
+				scanner.pos++
+			}
+		default:
+			if !isDDLIdentifierStart(scanner.sql[scanner.pos]) {
+				scanner.pos++
+				continue
+			}
+			start := scanner.pos
+			scanner.pos++
+			for scanner.pos < len(scanner.sql) && isDDLIdentifierPart(scanner.sql[scanner.pos]) {
+				scanner.pos++
+			}
+			if !strings.EqualFold(scanner.sql[start:scanner.pos], "engine") {
+				continue
+			}
+			scanner.skipSpace()
+			if scanner.peek() != '=' {
+				return "", false
+			}
+			scanner.pos++
+			scanner.skipSpace()
+			if scanner.pos >= len(scanner.sql) || !isDDLIdentifierStart(scanner.sql[scanner.pos]) {
+				return "", false
+			}
+			start = scanner.pos
+			scanner.pos++
+			for scanner.pos < len(scanner.sql) && isDDLIdentifierPart(scanner.sql[scanner.pos]) {
+				scanner.pos++
+			}
+			if engine != "" {
+				return "", false
+			}
+			engine = strings.ToLower(scanner.sql[start:scanner.pos])
+		}
+	}
+	return engine, engine != ""
+}
+
+//nolint:gocyclo // Only unquoted table-level AUTO_INCREMENT counters may be normalized.
+func normalizeVolatileTableOptions(statement string) string {
+	tailStart, ok := createTableTailStart(statement)
+	if !ok {
+		return statement
+	}
+	tail := statement[tailStart:]
+	scanner := ddlScanner{sql: tail}
+	var normalized strings.Builder
+	last := 0
+	for scanner.pos < len(scanner.sql) {
+		switch scanner.sql[scanner.pos] {
+		case '\'', '"', '`':
+			if !scanner.skipQuoted(scanner.sql[scanner.pos]) {
+				return statement
+			}
+		case '-', '/':
+			start := scanner.pos
+			if !scanner.skipComment() {
+				return statement
+			}
+			if scanner.pos == start {
+				scanner.pos++
+			}
+		default:
+			if !isDDLIdentifierStart(scanner.sql[scanner.pos]) {
+				scanner.pos++
+				continue
+			}
+			wordStart := scanner.pos
+			scanner.pos++
+			for scanner.pos < len(scanner.sql) && isDDLIdentifierPart(scanner.sql[scanner.pos]) {
+				scanner.pos++
+			}
+			if !strings.EqualFold(scanner.sql[wordStart:scanner.pos], "auto_increment") {
+				continue
+			}
+			cursor := scanner.pos
+			for cursor < len(scanner.sql) && isDDLSpace(scanner.sql[cursor]) {
+				cursor++
+			}
+			if cursor >= len(scanner.sql) || scanner.sql[cursor] != '=' {
+				continue
+			}
+			cursor++
+			for cursor < len(scanner.sql) && isDDLSpace(scanner.sql[cursor]) {
+				cursor++
+			}
+			valueStart := cursor
+			for cursor < len(scanner.sql) && scanner.sql[cursor] >= '0' && scanner.sql[cursor] <= '9' {
+				cursor++
+			}
+			if cursor == valueStart {
+				continue
+			}
+			normalized.WriteString(tail[last:valueStart])
+			normalized.WriteByte('0')
+			last = cursor
+			scanner.pos = cursor
+		}
+	}
+	if last == 0 {
+		return statement
+	}
+	normalized.WriteString(tail[last:])
+	return statement[:tailStart] + normalized.String()
+}
+
+func createTableTailStart(statement string) (int, bool) {
+	scanner := ddlScanner{sql: statement}
+	if !scanner.consumeWord("create") || !scanner.consumeWord("table") {
+		return 0, false
+	}
+	if _, ok := scanner.readIdentifier(); !ok {
+		return 0, false
+	}
+	scanner.skipSpace()
+	if scanner.peek() == '.' {
+		scanner.pos++
+		if _, ok := scanner.readIdentifier(); !ok {
+			return 0, false
+		}
+		scanner.skipSpace()
+	}
+	if scanner.peek() != '(' {
+		return 0, false
+	}
+	if _, ok := scanner.skipBalancedBody(); !ok {
+		return 0, false
+	}
+	return scanner.pos, true
+}
+
+func isDDLSpace(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\n', '\r', '\v', '\f':
+		return true
+	default:
+		return false
+	}
+}
+
+func ValidatedOpaqueCreateDDL(tableName, statement string) (string, error) {
+	parsed, err := ParseSchemaDDL(statement)
+	if err != nil {
+		return "", err
+	}
+	table, ok := parsed.Tables[tableName]
+	if len(parsed.Tables) != 1 || !ok || !table.Opaque ||
+		!SameOpaqueDDL(table.RawDDL, statement) {
+		return "", apperrors.New(
+			apperrors.CodeValidationFailed,
+			fmt.Sprintf("opaque CREATE TABLE definition does not match table %q", tableName),
+			nil,
+		)
+	}
+	return table.RawDDL, nil
 }
 
 type ddlScanner struct {
@@ -371,7 +678,7 @@ func LoadDesiredDir(dir string) (Schema, error) {
 		if err != nil {
 			return Schema{}, err
 		}
-		parsed, err := ParseDesiredSQL(string(data))
+		parsed, err := ParseSchemaDDL(string(data))
 		if err != nil {
 			return Schema{}, err
 		}
@@ -391,11 +698,21 @@ func LoadDesiredDir(dir string) (Schema, error) {
 func SchemaFromDDLMap(tables map[string]string) (Schema, error) {
 	result := Schema{Tables: map[string]Table{}}
 	for _, tableName := range sortedTableNamesFromDDLMap(tables) {
-		parsed, err := ParseDesiredSQL(tables[tableName])
+		parsed, err := ParseSchemaDDL(tables[tableName])
 		if err != nil {
 			return Schema{}, err
 		}
+		if len(parsed.Tables) != 1 {
+			return Schema{}, apperrors.New(apperrors.CodeValidationFailed, fmt.Sprintf("DDL map entry %q must contain exactly one table", tableName), nil)
+		}
 		for name, table := range parsed.Tables {
+			if name != tableName {
+				return Schema{}, apperrors.New(
+					apperrors.CodeValidationFailed,
+					fmt.Sprintf("DDL map entry %q defines table %q", tableName, name),
+					nil,
+				)
+			}
 			if _, exists := result.Tables[name]; exists {
 				return Schema{}, apperrors.New(apperrors.CodeValidationFailed, fmt.Sprintf("duplicate table %q in DDL map", name), nil)
 			}
@@ -660,13 +977,38 @@ func containsDangerousDDLWord(fragment string, additional ...string) bool {
 	return false
 }
 
+//nolint:gocyclo // Diff keeps all fail-closed opaque and destructive transition rules visible in one pass.
 func Diff(current, desired Schema) DiffResult {
 	var result DiffResult
+	opaqueCreates := 0
 	for _, tableName := range sortedTableNames(desired.Tables) {
 		desiredTable := desired.Tables[tableName]
 		currentTable, ok := current.Tables[tableName]
 		if !ok {
-			result.Changes = append(result.Changes, Change{Action: ActionCreateTable, Table: tableName, Columns: desiredTable.Columns})
+			change := Change{
+				Action:      ActionCreateTable,
+				Table:       tableName,
+				Columns:     desiredTable.Columns,
+				RawDDL:      desiredTable.RawDDL,
+				Opaque:      desiredTable.Opaque,
+				Destructive: desiredTable.Opaque,
+			}
+			result.Changes = append(result.Changes, change)
+			if change.Destructive {
+				result.Destructive = true
+				opaqueCreates++
+			}
+			continue
+		}
+		if currentTable.Opaque || desiredTable.Opaque {
+			if currentTable.Opaque && desiredTable.Opaque &&
+				SameOpaqueDDL(currentTable.RawDDL, desiredTable.RawDDL) {
+				continue
+			}
+			result.Unsupported = append(
+				result.Unsupported,
+				fmt.Sprintf("table %s contains schema details that cannot be reconciled losslessly; restore the complete exported definition or manage the change manually", tableName),
+			)
 			continue
 		}
 		currentCols := columnMap(currentTable.Columns)
@@ -714,6 +1056,12 @@ func Diff(current, desired Schema) DiffResult {
 			result.Warnings = append(result.Warnings, fmt.Sprintf("possible column rename in table %s: add+drop detected; drop will lose data, please confirm manually", tableName))
 		}
 	}
+	if opaqueCreates > 0 && len(result.Changes) > 1 {
+		result.Unsupported = append(
+			result.Unsupported,
+			"an opaque CREATE TABLE cannot be combined safely with other schema changes; create or restore that table in a separate plan",
+		)
+	}
 	return result
 }
 
@@ -737,6 +1085,9 @@ func PruneChanges(current, desired Schema) []Change {
 }
 
 func ClassifyChange(change Change) (Risk, bool) {
+	if change.Opaque {
+		return RiskR3, true
+	}
 	switch change.Action {
 	case ActionCreateTable, ActionAddColumn:
 		return RiskR1, false

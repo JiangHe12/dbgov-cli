@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/JiangHe12/opskit-core/v2/apperrors"
 
@@ -26,6 +27,8 @@ type Backend struct {
 	DMLErr            error
 	ExecutedDML       []string
 	DDLs              map[string]string
+	DDLSequences      map[string][]string
+	TableDDLCalls     map[string]int
 	TableDDLErr       error
 	CloseErr          error
 	CloseCalls        int
@@ -86,12 +89,48 @@ func (b *Backend) TableDDL(ctx context.Context, table string) (string, error) {
 	if b.TableDDLErr != nil {
 		return "", b.TableDDLErr
 	}
+	if sequence := b.DDLSequences[table]; len(sequence) > 0 {
+		if b.TableDDLCalls == nil {
+			b.TableDDLCalls = map[string]int{}
+		}
+		call := b.TableDDLCalls[table]
+		b.TableDDLCalls[table] = call + 1
+		if call >= len(sequence) {
+			call = len(sequence) - 1
+		}
+		return sequence[call], nil
+	}
 	if b.DDLs != nil {
 		if ddl, ok := b.DDLs[table]; ok {
 			return ddl, nil
 		}
 	}
-	return "CREATE TABLE `users` (`id` BIGINT, `legacy` TEXT);", nil
+	current := b.Schema
+	if len(b.IntrospectSchemas) > 0 {
+		call := b.IntrospectCalls - 1
+		if call < 0 {
+			call = 0
+		}
+		if call >= len(b.IntrospectSchemas) {
+			call = len(b.IntrospectSchemas) - 1
+		}
+		current = b.IntrospectSchemas[call]
+	}
+	tbl, ok := current.Tables[table]
+	if !ok {
+		return "", apperrors.New(apperrors.CodeResourceNotFound, fmt.Sprintf("table %q not found", table), nil)
+	}
+	columns := make([]string, 0, len(tbl.Columns))
+	for _, column := range tbl.Columns {
+		columnName := strings.ReplaceAll(column.Name, "`", "``")
+		definition := "`" + columnName + "` " + column.Type
+		if column.AutoIncrement {
+			definition += " AUTO_INCREMENT"
+		}
+		columns = append(columns, definition)
+	}
+	tableName := strings.ReplaceAll(table, "`", "``")
+	return "CREATE TABLE `" + tableName + "` (" + strings.Join(columns, ", ") + ");", nil
 }
 
 func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
@@ -99,6 +138,14 @@ func (b *Backend) RenderDDL(changes []schema.Change) ([]string, error) {
 	for _, change := range changes {
 		switch change.Action {
 		case schema.ActionCreateTable:
+			if change.Opaque {
+				statement, err := schema.ValidatedOpaqueCreateDDL(change.Table, change.RawDDL)
+				if err != nil {
+					return nil, err
+				}
+				statements = append(statements, statement)
+				continue
+			}
 			statements = append(statements, "CREATE TABLE `"+change.Table+"` (`id` BIGINT);")
 		case schema.ActionAddColumn:
 			statements = append(statements, "ALTER TABLE `"+change.Table+"` ADD COLUMN `"+change.Column+"` "+change.Type+";")

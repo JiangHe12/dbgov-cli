@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## v0.4.3
+
+### Security
+
+- Apply, import, reconcile, and rollback now collect and compare two complete
+  post-authorization schema states, rebuild the plan from the stable state, and
+  bind the exact target, current schema, desired schema, risk, statements, and
+  snapshot before DDL execution. Detectable post-authorization drift fails
+  closed; genuine no-op paths remain R0 and create no mutation intent.
+- Real MySQL `SHOW CREATE TABLE` output is preserved as validated opaque DDL
+  when it can be recreated exactly. PostgreSQL introspection emits supported
+  structured schemas; unsupported, ambiguous, cross-object, or lossy DDL forms
+  fail closed instead of producing an incomplete rollback.
+
+### Changed
+
+- Updated the shared `opskit-core/v2` dependency to v2.0.3, carrying corrected
+  committed-state reporting for secure-file replacements that encounter a
+  later durability error.
+
+### Fixed
+
+- Canonicalized MySQL table DDL consistently across introspection, comparison,
+  export, and recreation, and corrected PostgreSQL foreign-key introspection
+  for current server versions by joining separately unnested key arrays by
+  ordinal position.
+- The npm launcher now reports asynchronous spawn failures, propagates process
+  signals, and maps missing exit codes to failure. Install scripts remain
+  compatible with Node.js 14.
+- Narrowed schema capability and workflow documentation to the behavior that
+  the implementation and real-database tests can prove.
+
 ## v0.4.2
 
 ### Security
