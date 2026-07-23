@@ -8,6 +8,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if err := configureTestProcessOwner(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "configure test process owner: %v\n", err)
+		os.Exit(1)
+	}
 	home, err := os.MkdirTemp("", "dbgov-cli-test-home-")
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "create isolated test home: %v\n", err)
