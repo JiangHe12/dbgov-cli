@@ -167,7 +167,7 @@ jobs:
           cosign sign-blob --yes --output-signature "${BINARY}.sig" --output-certificate "${BINARY}.crt" "${BINARY}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dbgov-cli-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dbgov-cli-*
@@ -180,7 +180,7 @@ jobs:
       id-token: write
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: artifacts
           pattern: dbgov-cli-*
@@ -235,7 +235,7 @@ jobs:
         run: test "$(find artifacts -maxdepth 1 -type f | wc -l)" -eq 27
 
       - name: Upload release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-assets
           path: artifacts/*
@@ -260,7 +260,7 @@ jobs:
           echo "$BODY" > release_notes.md
 
       - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-assets
           path: artifacts
@@ -317,7 +317,7 @@ jobs:
           done
 
       - name: Create Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body_path: release_notes.md
           files: artifacts/*
@@ -339,7 +339,7 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Download signed release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-assets
           path: artifacts
